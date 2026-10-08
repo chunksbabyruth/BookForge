@@ -1,0 +1,8 @@
+ git init
+   git add .
+   git commit -m "BookForge 1.2"
+   git branch -M main
+   git remote add origin https://github.com/YOUR-USERNAME/BookForge.git
+   git push -u origin main
+      git tag v1.2
+   git push origin v1.2
