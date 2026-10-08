@@ -1,9 +1,10 @@
+```yaml
 name: Build BookForge for Windows
 
 on:
   push:
-    tags: ["v*"]        # pushing a tag like v1.2 builds everything and attaches it to a Release
-  workflow_dispatch:     # also lets you click "Run workflow" on the Actions tab
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,47 +12,96 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out BookForge
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install libraries
-        run: pip install reportlab pypdf beautifulsoup4 pillow python-docx
-
-      # PyInstaller's stock launcher is shared by thousands of programs (including
-      # some malware), which is the main cause of antivirus false alarms. Compiling
-      # our own launcher gives BookForge a unique one. Falls back to the stock one
-      # if the compile ever fails, so the build never breaks.
-      - name: Install PyInstaller with a freshly compiled bootloader
-        env:
-          PYINSTALLER_COMPILE_BOOTLOADER: "1"
         run: |
-          pip install --no-binary pyinstaller pyinstaller
-          if ($LASTEXITCODE -ne 0) { pip install pyinstaller }
+          python -m pip install --upgrade pip
+          python -m pip install reportlab pypdf beautifulsoup4 pillow python-docx
+          python -m pip install pyinstaller
 
-      - name: Build folder version (recommended download - fewest antivirus alarms)
-        run: pyinstaller --noconfirm --onedir --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --version-file version_info.txt --collect-data docx --collect-submodules reportlab.pdfbase BookForge.py
+      - name: Find BookForge files
+        shell: powershell
+        run: |
+          Write-Host "Searching repository for BookForge.py..."
 
-      - name: Zip the folder version
-        run: Compress-Archive -Path dist/BookForge -DestinationPath BookForge-Windows.zip
+          $script = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter "BookForge.py" -Recurse -File | Select-Object -First 1
+
+          if (-not $script) {
+              Write-Error "BookForge.py was not found anywhere in the repository."
+              exit 1
+          }
+
+          $projectDir = $script.Directory.FullName
+
+          Write-Host "BookForge.py found at:"
+          Write-Host $script.FullName
+          Write-Host ""
+          Write-Host "Project directory:"
+          Write-Host $projectDir
+
+          $icon = Join-Path $projectDir "bookforge.ico"
+          $version = Join-Path $projectDir "version_info.txt"
+
+          if (-not (Test-Path $icon)) {
+              Write-Error "bookforge.ico was not found next to BookForge.py."
+              exit 1
+          }
+
+          if (-not (Test-Path $version)) {
+              Write-Error "version_info.txt was not found next to BookForge.py."
+              exit 1
+          }
+
+          "BOOKFORGE_SCRIPT=$($script.FullName)" >> $env:GITHUB_ENV
+          "BOOKFORGE_DIR=$projectDir" >> $env:GITHUB_ENV
+          "BOOKFORGE_ICON=$icon" >> $env:GITHUB_ENV
+          "BOOKFORGE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build folder version
+        shell: powershell
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --windowed `
+            --name BookForge `
+            --icon "$env:BOOKFORGE_ICON" `
+            --add-data "$env:BOOKFORGE_ICON;." `
+            --version-file "$env:BOOKFORGE_VERSION" `
+            --collect-data docx `
+            --collect-submodules reportlab.pdfbase `
+            "$env:BOOKFORGE_SCRIPT"
+
+      - name: Zip folder version
+        shell: powershell
+        run: |
+          Compress-Archive `
+            -Path "dist/BookForge" `
+            -DestinationPath "BookForge-Windows.zip"
 
       - name: Build single-file version
-        run: pyinstaller --noconfirm --onefile --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --version-file version_info.txt --collect-data docx --collect-submodules reportlab.pdfbase --distpath dist_onefile --workpath build_onefile BookForge.py
-
-      - name: Keep the files as downloadable artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: BookForge
-          path: |
-            BookForge-Windows.zip
-            dist_onefile/BookForge.exe
-
-      - name: Attach the files to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            BookForge-Windows.zip
-            dist_onefile/BookForge.exe
+        shell: powershell
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name BookForge `
+            --icon "$env:BOOKFORGE_ICON" `
+            --add-data "$env:BOOKFORGE_ICON;." `
+            --version-file "$env:BOOKFORGE_VERSION" `
+            --collect-data docx `
+            --collect-submodules reportlab.pdfbase `
+            --distpath "dist_onefile" `
+            --
