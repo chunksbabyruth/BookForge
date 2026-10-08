@@ -1,0 +1,45 @@
+yaml
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ "main" ] # Triggers the build whenever you push to main
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    # 1. Check out your repository code
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    # 2. Set up the Python environment
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11' # Specify your Python version
+        architecture: 'x64'
+
+    # 3. Install your project dependencies (if any)
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if (Test-Path requirements.txt) { pip install -r requirements.txt }
+
+    # 4. Compile the Python script into a standalone .exe
+    - name: Build Executable
+      uses: Nuitka/Nuitka-Action@main
+      with:
+        nuitka-version: main
+        script-name: main.py # CHANGE THIS to your main Python filename
+        mode: app            # Creates a standalone executable package
+
+    # 5. Upload the completed EXE so you can download it
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Windows-Executable
+        path: build/main.exe # Points to the compiled file
