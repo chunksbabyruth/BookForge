@@ -1,0 +1,6 @@
+reportlab
+pypdf
+beautifulsoup4
+pillow
+python-docx
+pyinstaller
