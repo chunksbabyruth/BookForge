@@ -16,17 +16,30 @@ BookForge is built with PyInstaller, and some antivirus programs wrongly flag Py
 
 ## What it does
 
-- **Keeps the text word for word.** Italics, bold, poetry line breaks and footnote numbers are carried over; only invisible typesetting characters are tidied.
+- **Keeps the text word for word.** Italics, bold, strikethrough, underline, lists, poetry line breaks and footnote numbers carry over; only invisible typesetting characters are tidied.
 - **Finds chapters automatically** from EPUB headings, "Chapter 1" lines, Markdown `#` headings, ALL-CAPS lines or your own pattern. You can review, rename, skip or reorder them before building.
 - **Builds the whole book:** title page, "This Book Belongs To" bookplate, dedication, an extra intro page, a contents page with real page numbers, chapter headings, "THE END" and lined notes pages.
-- **Page layout:** 9 page sizes plus custom, mirrored margins with an extra spine margin, any installed font, drop caps, ornaments, running headers, and several page-numbering styles.
+- **Typography:** any installed font, or your own font files (Regular / Italic / Bold / Bold Italic, OpenType included), with separate fonts for body text, headings and drop caps. Hyphenation in 20 languages with your own dictionary for invented words, and no widows, orphans or one-word last lines.
+- **Page layout:** 9 page sizes plus custom, mirrored margins, drop caps 2–5 lines tall with rules for opening quotation marks, ornaments, running headers, and several page-numbering styles.
+- **Section breaks:** recognises the markers your text uses (`***`, `~`, `o0o`…) and centres them.
+- **Fanfiction downloads (AO3, FanFicFare):** optional work-info and summary pages, and author's notes set apart, kept as written, or left out.
 - **Never prints black boxes.** Characters missing from your font (accented Greek, Hebrew, symbols, CJK) are drawn with another installed font that has them.
-- **Removes boilerplate** from Project Gutenberg and Standard Ebooks files (license, imprint, colophon).
+- **Removes boilerplate** from Project Gutenberg, Standard Ebooks and AO3 files.
+
+### Binding (imposition)
+
+Everything the [bookbinder-js](https://github.com/momijizukamori/bookbinder-js) imposer offers, built in:
+
+- **Layouts:** folio, quarto, octavo, sextodecimo, small multi-signature layouts and the one-sheet zine
+- **Signatures:** booklet, perfect bound, standard, or custom sizes, plus flyleafs
+- **Pages:** page range, page rotation, scaling, positioning and margins
+- **Marks:** fold lines, cut lines, spine edge marks, signature order marks and sewing marks
+- **Printing:** duplex or single-sided printing, and aggregated and/or per-signature files
 
 ### Output formats
 
 - Print-ready PDF (pages in reading order, with clickable bookmarks)
-- **Imposed PDF for binding:** 2 pages per landscape sheet, in signatures, with fold and signature-order marks
+- Imposed PDF for binding
 - Wraparound cover template with a spine width calculated from your paper
 - EPUB, Word (.docx), HTML and plain text
 
@@ -53,8 +66,11 @@ build_exe.bat                    # or build the program folder (appears in dist\
 | `BookForge.py` | the window and command-line mode |
 | `bf_core.py` | reads source files, detects chapters, keeps text verbatim |
 | `bf_pdf.py` | typesetting: fonts, margins, page numbers, contents, font fallback |
-| `bf_export.py` | imposition, cover, EPUB, DOCX, HTML, TXT |
+| `bf_export.py` | cover, EPUB, DOCX, HTML, TXT |
 | `bf_build.py` | the one-click build pipeline |
+| `bf_impose.py` | imposition: layouts, signatures, marks |
+| `bf_fonts.py` | font discovery, custom families, OpenType conversion |
+| `bf_theme.py` | the colour theme |
 
 ## License
 

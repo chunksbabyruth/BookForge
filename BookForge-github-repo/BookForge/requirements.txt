@@ -3,4 +3,6 @@ pypdf
 beautifulsoup4
 pillow
 python-docx
+pyphen
+fonttools
 pyinstaller

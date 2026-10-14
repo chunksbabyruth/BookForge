@@ -2,9 +2,10 @@
 import os
 import tempfile
 
-from bf_core import safe_name, SHEET_SIZES, page_size_inches
+from bf_core import safe_name, page_size_inches
 from bf_pdf import build_pdf
-from bf_export import impose, build_cover, build_epub, build_docx, build_html, build_txt
+from bf_export import build_cover, build_epub, build_docx, build_html, build_txt
+import bf_impose
 
 
 def default_out_dir():
@@ -37,19 +38,31 @@ def run_build(book, s, log=print):
             notes.append(f"Print PDF: {n_pages} pages, {pw:g} x {ph:g} in, page numbers and contents included.")
 
     if s["fmt_impose"]:
-        log("Imposing pages into signatures for binding...")
-        out = base + " - Imposed for binding.pdf"
-        info = impose(pdf_path, out, s, log)
-        made.append(out)
-        SW, SH = SHEET_SIZES[s["sheet_size"]]
-        sig = "one single booklet" if int(s["sig_sheets"]) <= 0 else \
-            f"{info['signatures']} signature(s) of up to {int(s['sig_sheets'])} sheets"
+        log("Arranging pages on sheets for binding...")
+        if int(s.get("sig_sheets") or 0) <= 0 and s.get("sig_format", "").startswith("Standard"):
+            s["sig_format"] = "Booklet (one signature)"       # BookForge 1.0-1.2 setting
+        info = bf_impose.impose(pdf_path, folder, safe_name(book.title), s, log)
+        made += info["files"]
+        s["_trim"] = info["trim"]
+        SW, SH = info["sheet_in"]
+        lay = info["layout"]
+        if info["signatures"]:
+            plan = info["plan"]
+            sig = f"{info['signatures']} signature(s) " + (
+                f"of {plan[0]} sheet(s) each" if len(set(plan)) == 1 else "of " + ", ".join(map(str, plan)) + " sheets")
+        else:
+            sig = "small-format layout"
+        flip = "SHORT" if SW > SH else "LONG"
+        if s.get("rotate_paper"):
+            flip = "LONG" if flip == "SHORT" else "SHORT"
+        how = (f"double-sided, FLIP ON {flip} EDGE (or tick 'Rotate back sides' if your printer only offers the "
+               "other flip)") if info["duplex"] else (
+            "on a single-sided printer: print the 'fronts' file, put the printed stack back in the tray "
+            "(turned over so the blank sides print), then print the 'backs' file")
         notes.append(
-            f"Imposed PDF: {info['sheets']} sheets of {s['sheet_size']} paper (landscape, {SW:g} x {SH:g} in), "
-            f"printed double-sided; {sig}; {info['blanks']} blank page(s) added at the end to fill the last "
-            "signature.\n  Print at Actual size / 100%, double-sided, FLIP ON SHORT EDGE (or tick "
-            "'Rotate back sides' in BookForge if your printer only flips on the long edge). "
-            "Print one test sheet first.")
+            f"Imposed for binding ({lay}): {info['sheets']} sheet(s) of {s['sheet_size']} paper "
+            f"({SW:g} x {SH:g} in); {sig}; {info['blanks']} blank page(s) added to fill the last sheet.\n"
+            f"  Print at Actual size / 100%, {how}. Print one test sheet first.\n  Folding: {info['instructions']}")
 
     if s["fmt_cover"]:
         log("Drawing cover template...")

@@ -5,7 +5,6 @@ line wrapping is normalised; italics/bold/superscripts and line breaks are
 carried through as a tiny markup subset: <i> <b> <super> <sub> <br/>.
 """
 import html
-import io
 import posixpath
 import re
 import zipfile
@@ -15,7 +14,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 APP_AUTHOR = "ChunksBabyRuth"
 
 # --------------------------------------------------------------------------
@@ -36,9 +35,17 @@ DEFAULTS = {
     "custom_font_path": "", "body_size": 13.0, "line_spacing": 1.38,
     "align": "Justified", "indent": 0.25, "para_space": 6.0,
     "first_para_indent": True, "title_size": 23.0, "sub_size": 14.5,
+    "heading_font": "Same as body text", "dropcap_font": "Same as headings", "heading_bold": True,
+    "custom_fonts": [],
+    "hyph_lang": "English (US)", "hyph_min": 6, "hyph_words": "", "avoid_runts": True,
+    "drop_cap_lines": 2, "drop_cap_quote": "Hang the quote in the margin",
+    "scene_markers": "***, * * *, *, ~, ~~~, #, ###, o0o, oOo, xXx, -o-, \u2042, \u00a7",
+    "scene_symbols": True,
+    "fic_info": "Leave out", "fic_summary": "Add a summary page",
+    "an_mode": "Set apart (smaller, indented)",
     "chapter_label": "None", "title_case": "As written",
     "chapter_start": "New page", "chapter_sink": 0.0, "ornament": False,
-    "drop_cap": False, "scene_break": "* * *", "verse_style": "Centered italic",
+    "drop_cap": False, "scene_break": "Keep the source's own", "verse_style": "Centered italic",
     "pn_position": "Bottom center", "pn_style": "Rule above",
     "pn_mode": "Every page (title page = 1)", "pn_hide_openers": False,
     "pn_hide_blank": True, "pn_hide_title": False, "running_heads": False,
@@ -92,6 +99,9 @@ class Block:
     lines: list = field(default_factory=list)   # verse lines (markup)
     image: bytes = None
     image_name: str = ""
+    bullet: str = ""     # list items: "\u2022", "1." ...
+    depth: int = 0       # list nesting level
+    label: str = ""      # author's notes: "Notes", "Chapter End Notes", "Summary" ...
 
 
 @dataclass
@@ -117,6 +127,9 @@ class Book:
     language: str = "en"
     chapters: list = field(default_factory=list)
     front_blocks: list = field(default_factory=list)
+    fic_meta: list = field(default_factory=list)      # fanfic work info lines (markup)
+    fic_summary: list = field(default_factory=list)   # Blocks
+    fic_notes: list = field(default_factory=list)     # Blocks (work-level author's notes)
 
     def active(self):
         return [c for c in self.chapters if c.include]
@@ -144,7 +157,7 @@ def norm_ws(m):
     m = re.sub(r"\s+", " ", m)
     m = re.sub(r"\s*<br/>\s*", "<br/>", m)
     for _ in range(4):
-        m = re.sub(r"<(i|b|super|sub)>\s*</\1>", "", m)
+        m = re.sub(r"<(i|b|super|sub|strike|u)>\s*</\1>", "", m)
         m = re.sub(r"^\s*(<br/>\s*)+|(\s*<br/>)+\s*$", "", m)
     return m.strip()
 
@@ -216,6 +229,12 @@ def inline_markup(node):
             out.append("<i>" + inline_markup(c) + "</i>")
         elif n in BOLD or (n == "span" and "bold" in _classes(c)):
             out.append("<b>" + inline_markup(c) + "</b>")
+        elif n in ("s", "strike", "del") or (n == "span" and (
+                "line-through" in (c.get("style") or "").lower() or "strike" in _classes(c))):
+            out.append("<strike>" + inline_markup(c) + "</strike>")
+        elif n in ("u", "ins") or (n == "span" and (
+                "underline" in (c.get("style") or "").lower() or "underline" in _classes(c))):
+            out.append("<u>" + inline_markup(c) + "</u>")
         elif n == "sup":
             out.append("<super>" + inline_markup(c) + "</super>")
         elif n == "sub":
@@ -276,7 +295,24 @@ def _verse_lines(tag):
     return lines
 
 
-def walk(node, out, strip_pg):
+NOTE_WORDS = {"notes", "note", "endnotes", "end-notes", "chapter-notes", "chapternotes", "summary",
+              "authors-note", "author-note", "authors-notes", "authornote", "fff_chapter_notes",
+              "fff_head_notes", "fff_foot_notes", "fff_chapter_summary", "chapter-summary"}
+BULLETS = ("\u2022", "\u2013", "\u2022")
+
+
+def _note_kind(tag):
+    """'notes' / 'summary' when an element is an author's-note box (AO3, FanFicFare...), else None."""
+    sem = _semantics(tag)
+    if any(k in sem for k in ("endnote", "footnote", "rearnote")) and "fff" not in sem:
+        return None                      # real endnotes (Standard Ebooks etc.) stay as text
+    words = set(_classes(tag).replace(",", " ").split()) | {str(tag.get("id", "")).lower()}
+    if not words & NOTE_WORDS:
+        return None
+    return "summary" if any("summary" in w for w in words) else "notes"
+
+
+def walk(node, out, strip_pg, depth=0):
     buf = []
 
     def flush():
@@ -315,6 +351,14 @@ def walk(node, out, strip_pg):
             continue
         flush()
         cls = _classes(c)
+        nk = _note_kind(c) if n in ("div", "section", "aside", "blockquote") else None
+        if nk:
+            sub = []
+            walk(c, sub, strip_pg, depth)
+            out.append(("note_open", nk))
+            out.extend(sub)
+            out.append(("note_close",))
+            continue
         if n in ("header", "hgroup") and c.find(re.compile(r"^h[1-6]$")):
             for ch in c.children:
                 if not isinstance(ch, Tag):
@@ -335,7 +379,7 @@ def walk(node, out, strip_pg):
                     else:
                         out.append(("subtitle", m))
                 else:
-                    walk(ch, out, strip_pg)
+                    walk(ch, out, strip_pg, depth)
         elif re.fullmatch(r"h[1-6]", n):
             t = norm_ws(esc(c.get_text(" ")))
             if t:
@@ -365,19 +409,38 @@ def walk(node, out, strip_pg):
             out.append(("scene",))
         elif n == "blockquote":
             sub = []
-            walk(c, sub, strip_pg)
+            walk(c, sub, strip_pg, depth)
             for ev in sub:
                 out.append(("quote", ev[1]) if ev[0] == "para" else ev)
         elif n in ("ul", "ol"):
-            for i, li in enumerate(c.find_all("li", recursive=False), 1):
+            try:
+                start = int(c.get("start", 1))
+            except ValueError:
+                start = 1
+            for i, li in enumerate(c.find_all("li", recursive=False)):
                 sub = []
-                walk(li, sub, strip_pg)
-                prefix = "\u2022 " if n == "ul" else f"{i}. "
+                walk(li, sub, strip_pg, depth + 1)
+                bullet = BULLETS[depth % 3] if n == "ul" else f"{start + i}."
                 if sub and sub[0][0] == "para":
-                    sub[0] = ("para", prefix + sub[0][1])
-                elif sub:
-                    sub.insert(0, ("para", prefix.strip()))
-                out.extend(sub)
+                    out.append(("item", sub[0][1], bullet, depth))
+                    sub = sub[1:]
+                else:
+                    out.append(("item", "", bullet, depth))
+                for ev in sub:      # further paragraphs of the same item line up with its text
+                    out.append(("item", ev[1], "", depth) if ev[0] == "para" else ev)
+        elif n == "dl":
+            term = None
+            for ch in c.find_all(["dt", "dd"], recursive=False):
+                m = norm_ws(inline_markup(ch))
+                if ch.name == "dt":
+                    if term:
+                        out.append(("para", term))
+                    term = m
+                else:
+                    out.append(("para", (f"<b>{term}</b> " if term else "") + m))
+                    term = None
+            if term:
+                out.append(("para", term))
         elif n == "table":
             for tr in c.find_all("tr"):
                 cells = [norm_ws(inline_markup(td)) for td in tr.find_all(["td", "th"])]
@@ -385,7 +448,7 @@ def walk(node, out, strip_pg):
                 if cells:
                     out.append(("para", "\u2003".join(cells)))
         else:
-            walk(c, out, strip_pg)
+            walk(c, out, strip_pg, depth)
     flush()
 
 
@@ -404,7 +467,7 @@ LABEL_RE = re.compile(r"^\s*((chapter|chap\.|part|book|section|canto|letter|stav
 def _ev_text(ev):
     if ev[0] == "head":
         return ev[2]
-    if ev[0] in ("para", "quote", "subtitle"):
+    if ev[0] in ("para", "quote", "subtitle", "item"):
         return plain(ev[1])
     if ev[0] == "verse":
         return " ".join(plain(l) for l in ev[1])
@@ -425,11 +488,53 @@ def cut_gutenberg(events):
     return events[start:end]
 
 
+NOTE_LABEL_RE = re.compile(r"^\(?\s*((chapter|work)\s+)?(end\s+)?(notes?|summary|author'?s'?\s+notes?)"
+                           r"(\s*\(.*\))?\s*:?\s*\)?$", re.I)
+SEE_END_RE = re.compile(r"^\(\s*see the end of the (chapter|work) for (more )?notes\.?\s*\)$", re.I)
+AN_RE = re.compile(r"^\s*[\(\[]?\s*(?:A/N\b|A/N:|AN\s*:|(?i:author'?s'?\s+notes?)\s*:)")
+META_RE = re.compile(r"^(rating|archive warnings?|warnings?|categor(y|ies)|fandoms?|relationships?|"
+                     r"pairings?|characters?|additional tags|freeform tags|tags|language|series|stats|"
+                     r"published|updated|completed|words|chapters|comments|kudos|bookmarks|hits|status|"
+                     r"collections?|genres?|rated|story url|author url|source|packaged)\s*:", re.I)
+SUMMARY_RE = re.compile(r"^\s*summary\s*:\s*", re.I)
+FIC_BOILER_RE = re.compile(r"^(please drop by the archive and comment|posted originally on the archive of our own|"
+                           r"works inspired by this one|for more notes, see|this story was (archived|downloaded))",
+                           re.I)
+SYMBOLS_ONLY = re.compile(r"^[^\w\s\"'\u2018\u2019\u201c\u201d\u00ab\u00bb()\[\]]"
+                          r"[^\w\"'\u2018\u2019\u201c\u201d\u00ab\u00bb()\[\]]{0,24}$")
+
+
+def scene_markers(s):
+    raw = s.get("scene_markers") or ""
+    return {m.strip().lower() for m in re.split(r"[,\n]", raw) if m.strip()}
+
+
+def is_scene(text, s, markers=None):
+    t = text.strip()
+    if not t or len(t) > 30:
+        return False
+    markers = scene_markers(s) if markers is None else markers
+    if t.lower() in markers or re.sub(r"\s+", " ", t).lower() in markers:
+        return True
+    return bool(s.get("scene_symbols", True) and SYMBOLS_ONLY.match(t))
+
+
 def events_to_book(events, s, meta=None, images=None):
     meta = meta or {}
     images = images or {}
     if s.get("strip_gutenberg"):
         events = cut_gutenberg(events)
+    # headings inside author's-note boxes are note labels, not chapters
+    depth, fixed = 0, []
+    for ev in events:
+        if ev[0] == "note_open":
+            depth += 1
+        elif ev[0] == "note_close":
+            depth = max(0, depth - 1)
+        elif ev[0] == "head" and depth:
+            ev = ("notelabel", ev[2])
+        fixed.append(ev)
+    events = fixed
     heads = [e for e in events if e[0] == "head"]
     counts = {}
     for e in heads:
@@ -450,7 +555,10 @@ def events_to_book(events, s, meta=None, images=None):
 
     book = Book(title=meta.get("title", ""), author=meta.get("author", ""),
                 language=meta.get("language", "en") or "en")
+    markers = scene_markers(s)
+    strip = s.get("strip_gutenberg", True)
     cur = None
+    note_depth, note_label = 0, ""
     pending_label = None
 
     def add_block(b):
@@ -459,9 +567,26 @@ def events_to_book(events, s, meta=None, images=None):
         else:
             cur.blocks.append(b)
 
-    for ev in events:
+    def note(text, label):
+        add_block(Block("anote", text, label=label))
+
+    for idx, ev in enumerate(events):
         k = ev[0]
+        nxt = events[idx + 1][0] if idx + 1 < len(events) else None
+        if k == "note_open":
+            note_depth += 1
+            note_label = "Summary" if ev[1] == "summary" else ""
+            continue
+        if k == "note_close":
+            note_depth = max(0, note_depth - 1)
+            if not note_depth:
+                note_label = ""
+            continue
+        if k == "notelabel":
+            note_label = ev[1].strip().rstrip(":").strip()
+            continue
         if k == "head" and chap_level is not None and (ev[1] == chap_level or ev[1] == part_level):
+            pending_label = None
             text = ev[2].strip()
             lvl = 0 if ev[1] == part_level else 1
             if cur is not None and not cur.blocks and cur.level == lvl and \
@@ -471,6 +596,51 @@ def events_to_book(events, s, meta=None, images=None):
             cur = Chapter(title=text, level=lvl)
             book.chapters.append(cur)
             continue
+        txt = _ev_text(ev).strip() if k in ("para", "quote", "verse", "item", "subtitle") else ""
+        # ---- author's notes, summaries, work info (fanfiction downloads)
+        if note_depth and k in ("para", "quote", "verse", "item", "subtitle"):
+            if k == "para" and len(txt) < 45 and NOTE_LABEL_RE.match(txt):
+                note_label = txt.rstrip(":").strip()
+                continue
+            note(ev[1] if k != "verse" else "<br/>".join(ev[1]), note_label)
+            continue
+        if k == "quote" and pending_label is not None:
+            note(ev[1], pending_label)
+            continue
+        pending_label = None
+        if k == "para":
+            if len(txt) < 45 and NOTE_LABEL_RE.match(txt) and nxt == "quote":
+                pending_label = txt.rstrip(":").strip()
+                continue
+            if SEE_END_RE.match(txt) or AN_RE.match(txt):
+                note(ev[1], "")
+                continue
+            if strip and FIC_BOILER_RE.match(txt):
+                continue
+            segs = ev[1].split("<br/>")
+            if len(segs) > 1 and sum(1 for sg in segs if META_RE.match(plain(sg).strip())) >= 2:
+                for sg in segs:          # title-page block of "Label: value" lines (FanFicFare)
+                    pt = plain(sg).strip()
+                    if not pt:
+                        continue
+                    if SUMMARY_RE.match(pt):
+                        note(SUMMARY_RE.sub("", re.sub(r"^\s*<b>(.*?)</b>", r"\1", sg)).strip(), "Summary")
+                    elif META_RE.match(pt):
+                        add_block(Block("meta", sg))
+                    else:
+                        add_block(Block("para", sg))
+                continue
+            if SUMMARY_RE.match(txt) and (cur is None or len(cur.blocks) < 20) and \
+                    any(b.kind == "meta" for b in (cur.blocks if cur else book.front_blocks)):
+                note(SUMMARY_RE.sub("", re.sub(r"^\s*<b>(.*?)</b>", r"\1", ev[1])).strip(), "Summary")
+                continue
+            if META_RE.match(txt) and len(txt) < 600:
+                add_block(Block("meta", ev[1]))
+                continue
+            if is_scene(txt, s, markers):
+                add_block(Block("scene", ev[1]))
+                continue
+        # ---- ordinary content
         if k == "head":
             if chap_level is not None and ev[1] < chap_level and cur is None:
                 continue          # book title etc. before first chapter
@@ -479,13 +649,15 @@ def events_to_book(events, s, meta=None, images=None):
             add_block(Block("para", ev[1]))
         elif k == "quote":
             add_block(Block("quote", ev[1]))
+        elif k == "item":
+            add_block(Block("item", ev[1], bullet=ev[2], depth=ev[3]))
         elif k == "subtitle":
             add_block(Block("subtitle", ev[1]) if cur is not None and not cur.blocks
                       else Block("para", ev[1]))
         elif k == "verse":
             add_block(Block("verse", lines=ev[1]))
         elif k == "scene":
-            add_block(Block("scene"))
+            add_block(Block("scene", ev[1] if len(ev) > 1 else ""))
         elif k == "image":
             if s.get("include_images") and ev[1] in images:
                 add_block(Block("image", image=images[ev[1]], image_name=ev[1]))
@@ -494,10 +666,45 @@ def events_to_book(events, s, meta=None, images=None):
         ch = Chapter(title=book.title or "Untitled", blocks=book.front_blocks)
         book.chapters = [ch]
         book.front_blocks = []
-    # clean up
+
+    # ---- fanfic work info / summary / notes: from the front, or from a preface "chapter"
+    def harvest(blocks):
+        rest = []
+        for b in blocks:
+            if b.kind == "meta":
+                book.fic_meta.append(b.text)
+            elif b.kind == "anote" and "summary" in b.label.lower():
+                book.fic_summary.append(b)
+            elif b.kind == "anote":
+                book.fic_notes.append(b)
+            else:
+                rest.append(b)
+        return rest
+
+    book.front_blocks = harvest(book.front_blocks)
+    for ch in book.chapters[:2]:
+        if sum(1 for b in ch.blocks if b.kind == "meta") >= 3:
+            ch.blocks = harvest(ch.blocks)
+            if all(b.kind in ("para", "head", "scene") and len(plain(b.text)) < 200 for b in ch.blocks):
+                ch.include = False          # nothing but the work's title page
+    if len(book.fic_meta) < 3:              # not really a fanfic header: put lines back
+        book.front_blocks = [Block("para", m) for m in book.fic_meta] + book.front_blocks
+        book.fic_meta = []
+    for ch in book.chapters:                # stray meta lines inside a story stay as text
+        for b in ch.blocks:
+            if b.kind == "meta":
+                b.kind = "para"
+    if len([c for c in book.chapters if c.include and c.level == 1]) == 1:
+        only = next(c for c in book.chapters if c.include and c.level == 1)
+        if only.title.strip().lower() == "chapter text" and book.title:
+            only.title = book.title
+
+    # ---- clean up
     out = []
     seen_real = False
     for ch in book.chapters:
+        if not ch.include:
+            continue
         if not seen_real and BYLINE_RE.match(ch.title or "") and len(ch.blocks) <= 3:
             book.front_blocks.extend(ch.blocks)
             continue
@@ -508,6 +715,11 @@ def events_to_book(events, s, meta=None, images=None):
         while ch.blocks and ch.blocks[-1].kind == "scene":
             ch.blocks.pop()
         if s.get("skip_contents") and CONTENTS_RE.match(ch.title or ""):
+            continue
+        if strip and re.match(r"^\s*afterword\s*$", ch.title or "", re.I) and \
+                all(b.kind == "anote" for b in ch.blocks):
+            if out:                          # AO3 "Afterword" = the work's end notes
+                out[-1].blocks.extend(ch.blocks)
             continue
         if s.get("drop_empty") and ch.level == 1 and not ch.blocks:
             continue
@@ -603,7 +815,44 @@ def parse_html_file(path, s):
 
 def parse_docx(path, s):
     import docx
+    from docx.oxml.ns import qn
     d = docx.Document(path)
+    numbering = None
+    try:
+        numbering = d.part.numbering_part.element
+    except Exception:
+        pass
+
+    def num_format(num_id, ilvl):
+        if numbering is None:
+            return None
+        for num in numbering.findall(qn("w:num")):
+            if num.get(qn("w:numId")) == str(num_id):
+                an = num.find(qn("w:abstractNumId"))
+                aid = an.get(qn("w:val")) if an is not None else None
+                for ab in numbering.findall(qn("w:abstractNum")):
+                    if ab.get(qn("w:abstractNumId")) == aid:
+                        for lv in ab.findall(qn("w:lvl")):
+                            if lv.get(qn("w:ilvl")) == str(ilvl):
+                                nf = lv.find(qn("w:numFmt"))
+                                return nf.get(qn("w:val")) if nf is not None else None
+        return None
+
+    def fmt_number(n, fmt):
+        if fmt in ("lowerLetter", "upperLetter"):
+            c = chr(ord("a") + (n - 1) % 26)
+            return (c.upper() if fmt == "upperLetter" else c) + "."
+        if fmt in ("lowerRoman", "upperRoman"):
+            vals = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"),
+                    (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+            r, x = "", n
+            for v, sym in vals:
+                while x >= v:
+                    r, x = r + sym, x - v
+            return (r.lower() if fmt == "lowerRoman" else r) + "."
+        return f"{n}."
+
+    counters = {}
     events = []
     for p in d.paragraphs:
         sty = (p.style.name or "").lower() if p.style is not None else ""
@@ -617,13 +866,35 @@ def parse_docx(path, s):
             t = esc(r.text).replace("\n", "<br/>")
             if not t:
                 continue
+            if r.font.strike or r.font.double_strike:
+                t = f"<strike>{t}</strike>"
+            if r.underline:
+                t = f"<u>{t}</u>"
             if r.italic:
                 t = f"<i>{t}</i>"
             if r.bold:
                 t = f"<b>{t}</b>"
             parts.append(t)
         m = norm_ws("".join(parts))
-        if m:
+        if not m:
+            continue
+        ppr = p._p.pPr
+        numpr = ppr.numPr if ppr is not None else None
+        if numpr is not None and numpr.numId is not None and numpr.numId.val != 0 or "list" in sty:
+            num_id = numpr.numId.val if numpr is not None and numpr.numId is not None else sty
+            ilvl = numpr.ilvl.val if numpr is not None and numpr.ilvl is not None else 0
+            fmt = num_format(num_id, ilvl) if numpr is not None else (
+                "decimal" if "number" in sty else "bullet")
+            if fmt in (None, "bullet", "none"):
+                bullet = BULLETS[ilvl % 3]
+            else:
+                key = (num_id, ilvl)
+                counters[key] = counters.get(key, 0) + 1
+                for k2 in [k for k in counters if k[0] == num_id and k[1] > ilvl]:
+                    counters.pop(k2)
+                bullet = fmt_number(counters[key], fmt)
+            events.append(("item", m, bullet, int(ilvl)))
+        else:
             events.append(("para", m))
     cp = d.core_properties
     return events_to_book(events, s, {"title": cp.title or "", "author": cp.author or ""})
@@ -638,7 +909,12 @@ NUM_RE = re.compile(r"^\s*([IVXLCDM]+|\d+)\.?\s*$")
 SCENE_RE = re.compile(r"^\s*((\*\s*){3,}|#|~{3,}|-{3,}|_{3,}|(\u2022\s*){3,})\s*$")
 
 
+MD_LIST_RE = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(\S.*)$")
+TXT_LIST_RE = re.compile(r"^(\s*)([\u2022\u25e6\u25aa\u2023\u00b7])\s+(\S.*)$")
+
+
 def _md_inline(t):
+    t = re.sub(r"~~(.+?)~~", r"<strike>\1</strike>", t)
     t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
     t = re.sub(r"__(.+?)__", r"<b>\1</b>", t)
     t = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<i>\1</i>", t)
@@ -690,6 +966,7 @@ def parse_text(text, s, is_md=False, meta=None):
     each_line = lp == "Each line is a paragraph" or (lp == "Auto" and nonblank > 20 and blank < nonblank * 0.08)
 
     events = []
+    markers = scene_markers(s)
     head_set = set(head_idx)
     skip_next = set()
     para = []
@@ -739,9 +1016,19 @@ def parse_text(text, s, is_md=False, meta=None):
         if not l.strip():
             flush()
             continue
-        if SCENE_RE.match(l):
+        if SCENE_RE.match(l) or is_scene(l, s, markers):
             flush()
-            events.append(("scene",))
+            events.append(("scene", esc(l.strip())))
+            continue
+        lm = (MD_LIST_RE if is_md else TXT_LIST_RE).match(l)
+        if lm:
+            flush()
+            ind = len(lm.group(1).expandtabs(4))
+            depth = 0 if ind < 2 else (1 if ind < 6 else 2)
+            mark = lm.group(2)
+            bullet = BULLETS[depth % 3] if not mark[0].isdigit() else mark
+            body = esc(lm.group(3))
+            events.append(("item", norm_ws(_md_inline(body) if is_md else body), bullet, depth))
             continue
         t = esc(l)
         if is_md:

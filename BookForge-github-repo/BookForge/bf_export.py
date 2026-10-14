@@ -8,7 +8,7 @@ import zipfile
 from datetime import datetime, timezone
 
 from bf_core import SHEET_SIZES, PAPERS, page_size_inches, plain, esc
-from bf_pdf import register_fonts, apply_case, auto_label, LABELISH
+from bf_pdf import font_roles, apply_case, auto_label, LABELISH
 
 
 # --------------------------------------------------------------------------
@@ -82,6 +82,8 @@ def impose(pdf_in, out_path, s, log=print):
 
 def trim_size(s):
     pw, ph = page_size_inches(s)
+    if s.get("_trim"):
+        return s["_trim"]
     if s.get("fmt_impose"):
         SW, SH = SHEET_SIZES[s["sheet_size"]]
         k = min((SW / 2) / pw, SH / ph)
@@ -100,7 +102,11 @@ def build_cover(book, s, out_path, n_pages):
     from reportlab.platypus import Paragraph, Frame
     from reportlab.pdfbase.pdfmetrics import stringWidth
 
-    R, B, I, BI = register_fonts(s)
+    (R, B, I, BI), (HR, HB, _hi, _hbi), _d = font_roles(s, lambda m: None)
+    if s.get("heading_bold", True):
+        B = HB
+    else:
+        B = HR
     tw, th = trim_size(s)
     leaves = math.ceil(n_pages / 2)
     spine = leaves * PAPERS.get(s["paper"], 0.004)
@@ -176,8 +182,22 @@ def chapter_heads(book, s):
         yield ch, lbl, title
 
 
+def an_mode(s):
+    return s.get("an_mode", "Set apart (smaller, indented)")
+
+
+def scene_text(b, s):
+    sb = s.get("scene_break", "* * *")
+    if sb == "Blank space":
+        return ""
+    if sb == "Keep the source's own":
+        return plain(b.text) or "* * *"
+    return sb
+
+
 def to_xhtml(markup):
     m = markup.replace("<super>", "<sup>").replace("</super>", "</sup>").replace("<br/>", "<br />")
+    m = m.replace("<strike>", "<s>").replace("</strike>", "</s>")
     m = re.sub(r"</?font[^>]*>", "", m)
     return m.replace("&nbsp;", "&#160;")
 
@@ -204,6 +224,10 @@ h3{text-align:center;margin:1.5em 0 .8em;}
 .quote{margin:1em 2em;text-indent:0;}
 .subtitle{text-align:center;font-style:italic;margin:0 2em 1.5em;text-indent:0;}
 .scene{text-align:center;margin:1em 0;text-indent:0;}
+.item{text-indent:-1.2em;text-align:left;}
+.anote{font-size:.88em;margin:0 2em .3em;text-indent:0;text-align:left;}
+.anlabel{font-size:.82em;font-weight:bold;margin:1em 2em .2em;text-indent:0;}
+.meta{text-indent:-1em;margin:0 0 .3em 1em;text-align:left;}
 .titlepage{text-align:center;margin-top:25%;}
 .titlepage .t{font-size:2.2em;font-weight:bold;text-indent:0;text-align:center;}
 .titlepage p{text-align:center;text-indent:0;}
@@ -215,10 +239,26 @@ nav ol{list-style:none;} a{color:inherit;}
 """
 
 
-def blocks_html(blocks, imgmap):
+def blocks_html(blocks, imgmap, s=None):
+    s = s or {}
     out = []
+    prev_label = None
     for b in blocks:
-        if b.kind == "para":
+        if b.kind != "anote":
+            prev_label = None
+        if b.kind == "anote":
+            if an_mode(s).startswith("Leave"):
+                continue
+            keep = an_mode(s).startswith("Keep")
+            if b.label and b.label != prev_label:
+                out.append(f'<p class="{"quote" if keep else "anlabel"}">{esc(b.label)}</p>')
+            out.append(f'<p class="{"quote" if keep else "anote"}">{to_xhtml(b.text)}</p>')
+            prev_label = b.label
+        elif b.kind == "item":
+            ind = 1.5 * (b.depth + 1)
+            bullet = esc(b.bullet) + "&#160;" if b.bullet else ""
+            out.append(f'<p class="item" style="margin-left:{ind}em">{bullet}{to_xhtml(b.text)}</p>')
+        elif b.kind == "para":
             out.append(f"<p>{to_xhtml(b.text)}</p>")
         elif b.kind == "quote":
             out.append(f'<p class="quote">{to_xhtml(b.text)}</p>')
@@ -230,10 +270,25 @@ def blocks_html(blocks, imgmap):
         elif b.kind == "head":
             out.append(f"<h3>{to_xhtml(b.text)}</h3>")
         elif b.kind == "scene":
-            out.append('<p class="scene">* * *</p>')
+            out.append(f'<p class="scene">{esc(scene_text(b, s)) or "&#160;"}</p>')
         elif b.kind == "image" and id(b) in imgmap:
             out.append(f'<p class="img"><img src="{imgmap[id(b)]}" alt="" /></p>')
     return "\n".join(out)
+
+
+
+
+
+def fic_sections(book, s):
+    """[(heading, [(css_class, markup)])] for the fanfic info / summary / notes pages."""
+    out = []
+    if book.fic_meta and s.get("fic_info", "Leave out") != "Leave out":
+        out.append(("Work Info", [("meta", m) for m in book.fic_meta]))
+    if book.fic_summary and s.get("fic_summary", "Add a summary page") != "Leave out":
+        out.append((book.fic_summary[0].label or "Summary", [("flush", b.text) for b in book.fic_summary]))
+    if book.fic_notes and not an_mode(s).startswith("Leave"):
+        out.append((book.fic_notes[0].label or "Notes", [("flush", b.text) for b in book.fic_notes]))
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -276,6 +331,14 @@ def build_epub(book, s, out_path):
     files["OEBPS/title.xhtml"] = page(book.title, "\n".join(tp))
     manifest.append('<item id="title" href="title.xhtml" media-type="application/xhtml+xml"/>')
     spine.append("title")
+    fic = fic_sections(book, s)
+    if fic:
+        body = "".join(f"<h2>{esc(h)}</h2>" + "".join(
+            f'<p class="{"meta" if c == "meta" else "quote"}">{to_xhtml(m)}</p>' for c, m in items)
+            for h, items in fic)
+        files["OEBPS/info.xhtml"] = page("About this work", body)
+        manifest.append('<item id="info" href="info.xhtml" media-type="application/xhtml+xml"/>')
+        spine.append("info")
     if (s.get("note_text") or "").strip():
         body = (f"<h2>{esc(s.get('note_title') or '')}</h2>" if s.get("note_title") else "") + \
             "".join(f"<p>{esc(' '.join(p.split()))}</p>" for p in re.split(r"\n\s*\n", s["note_text"].strip()))
@@ -293,7 +356,7 @@ def build_epub(book, s, out_path):
             parts.append(f'<h{1 if ch.level == 0 else 2}>{esc(title)}</h{1 if ch.level == 0 else 2}>')
         if ch.level == 0:
             parts.append("</div>")
-        parts.append(blocks_html(ch.blocks, imgmap))
+        parts.append(blocks_html(ch.blocks, imgmap, s))
         if i == len(heads) and s.get("the_end"):
             parts.append('<p class="end">THE END</p>')
         files["OEBPS/" + fn] = page(title or lbl, "\n".join(parts))
@@ -306,7 +369,7 @@ def build_epub(book, s, out_path):
     files["OEBPS/nav.xhtml"] = page("Contents", nav)
     manifest.append('<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>')
     if s.get("toc"):
-        spine.insert(1 if "note" not in spine else 2, "nav")
+        spine.insert(1 + ("note" in spine) + ("info" in spine), "nav")
     ncx = ('<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" '
            f'version="2005-1"><head><meta name="dtb:uid" content="{uid}"/></head>'
            f"<docTitle><text>{esc(book.title)}</text></docTitle><navMap>" +
@@ -365,8 +428,8 @@ def build_docx(book, s, out_path):
     st_el.append(uf)
 
     font = WORD_FONT.get(s["font_family"], s["font_family"])
-    if "Custom" in font:
-        font = "Times New Roman"
+    hfam = s.get("heading_font") or "Same as body text"
+    hfont = font if hfam == "Same as body text" else WORD_FONT.get(hfam, hfam)
     size = float(s["body_size"])
     normal = d.styles["Normal"]
     normal.font.name = font
@@ -380,7 +443,7 @@ def build_docx(book, s, out_path):
     pf.widow_control = True
     for hn, hs in (("Heading 1", float(s["title_size"])), ("Heading 2", float(s["title_size"]))):
         h = d.styles[hn]
-        h.font.name, h.font.size, h.font.bold = font, Pt(hs), True
+        h.font.name, h.font.size, h.font.bold = hfont, Pt(hs), bool(s.get("heading_bold", True))
         h.font.color.rgb = RGBColor(0, 0, 0)
         h.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
         h.paragraph_format.space_after = Pt(16)
@@ -399,7 +462,7 @@ def build_docx(book, s, out_path):
         return p
 
     def add_markup(p, markup, base_italic=False):
-        fl = {"i": 0, "b": 0, "super": 0, "sub": 0}
+        fl = {"i": 0, "b": 0, "super": 0, "sub": 0, "strike": 0, "u": 0}
         for tok in re.split(r"(<[^>]+>)", markup):
             if not tok:
                 continue
@@ -414,6 +477,10 @@ def build_docx(book, s, out_path):
             r = p.add_run(html.unescape(tok))
             r.italic = bool(fl["i"]) != base_italic
             r.bold = bool(fl["b"])
+            if fl["strike"]:
+                r.font.strike = True
+            if fl["u"]:
+                r.underline = True
             if fl["super"]:
                 r.font.superscript = True
             if fl["sub"]:
@@ -456,6 +523,14 @@ def build_docx(book, s, out_path):
                 el = OxmlElement("w:fldChar")
                 el.set(qn("w:fldCharType"), kind)
                 r._r.append(el)
+    for heading, items in fic_sections(book, s):
+        center(heading, float(s["sub_size"]), bold=True, brk=True, after=12)
+        for cls, m in items:
+            p = d.add_paragraph()
+            p.paragraph_format.first_line_indent = Inches(-0.25 if cls == "meta" else 0)
+            p.paragraph_format.left_indent = Inches(0.25 if cls == "meta" else 0)
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            add_markup(p, m)
     if (s.get("note_text") or "").strip():
         first = True
         if s.get("note_title"):
@@ -481,8 +556,35 @@ def build_docx(book, s, out_path):
                 rl.add_break()
         if title:
             h.add_run(title)
+        prev_label = None
         for b in ch.blocks:
-            if b.kind == "para":
+            if b.kind != "anote":
+                prev_label = None
+            if b.kind == "anote":
+                if an_mode(s).startswith("Leave"):
+                    continue
+                keep = an_mode(s).startswith("Keep")
+                if b.label and b.label != prev_label:
+                    p = d.add_paragraph()
+                    p.paragraph_format.first_line_indent = Inches(0)
+                    p.paragraph_format.left_indent = Inches(0 if keep else 0.35)
+                    add_markup(p, esc(b.label) if keep else f"<b>{esc(b.label)}</b>")
+                p = d.add_paragraph()
+                p.paragraph_format.first_line_indent = Inches(0)
+                p.paragraph_format.left_indent = p.paragraph_format.right_indent = Inches(0.35 if not keep else 0.4)
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                add_markup(p, b.text)
+                if not keep:
+                    for r in p.runs:
+                        r.font.size = Pt(size * 0.88)
+                prev_label = b.label
+            elif b.kind == "item":
+                p = d.add_paragraph()
+                p.paragraph_format.left_indent = Inches(0.3 * (b.depth + 1))
+                p.paragraph_format.first_line_indent = Inches(-0.25 if b.bullet else 0)
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                add_markup(p, (esc(b.bullet) + "\t" if b.bullet else "") + b.text)
+            elif b.kind == "para":
                 add_markup(d.add_paragraph(), b.text)
             elif b.kind == "subtitle":
                 p = center("", after=14)
@@ -506,7 +608,7 @@ def build_docx(book, s, out_path):
                 p = center("", bold=True, before=12, after=8)
                 add_markup(p, f"<b>{b.text}</b>")
             elif b.kind == "scene":
-                center(s["scene_break"] if s["scene_break"] != "Blank space" else "")
+                center(scene_text(b, s))
             elif b.kind == "image" and b.image:
                 try:
                     pw_text = pw - float(s["margin_inner"]) - float(s["margin_outer"])
@@ -556,6 +658,9 @@ def build_html(book, s, out_path):
         if v:
             out.append(f"<p><{tag}>{esc(v)}</{tag}></p>")
     out.append("</div>")
+    for heading, items in fic_sections(book, s):
+        out.append(f"<h2>{esc(heading)}</h2>")
+        out += [f'<p class="{"meta" if c == "meta" else "quote"}">{to_xhtml(m)}</p>' for c, m in items]
     if s["toc"]:
         out.append(f"<h2>{esc(s['toc_title'])}</h2><ol>")
         for i, (ch, lbl, title) in enumerate(heads, 1):
@@ -568,7 +673,7 @@ def build_html(book, s, out_path):
             out.append(f'<p class="label">{esc(lbl)}</p>')
         if title:
             out.append(f"<h2>{esc(title)}</h2>")
-        out.append(blocks_html(ch.blocks, imgmap))
+        out.append(blocks_html(ch.blocks, imgmap, s))
     if s.get("the_end"):
         out.append('<p class="end">THE END</p>')
     out.append("</body></html>")
@@ -583,6 +688,8 @@ def build_txt(book, s, out_path):
             out.append(v)
     out.append("")
     heads = list(chapter_heads(book, s))
+    for heading, items in fic_sections(book, s):
+        out += [heading] + [plain(m) for _c, m in items] + [""]
     if s["toc"]:
         out.append(s["toc_title"])
         for ch, lbl, title in heads:
@@ -599,10 +706,14 @@ def build_txt(book, s, out_path):
             if b.kind in ("para", "quote", "head", "subtitle"):
                 out.append(plain(b.text))
                 out.append("")
+            elif b.kind == "anote" and not an_mode(s).startswith("Leave"):
+                out += [("[" + b.label + "] " if b.label else "") + plain(b.text), ""]
+            elif b.kind == "item":
+                out.append("  " * b.depth + (b.bullet + " " if b.bullet else "  ") + plain(b.text))
             elif b.kind == "verse":
                 out += [plain(l) for l in b.lines] + [""]
             elif b.kind == "scene":
-                out += ["* * *", ""]
+                out += [scene_text(b, s), ""]
     if s.get("the_end"):
         out.append("THE END")
     with open(out_path, "w", encoding="utf-8") as f:

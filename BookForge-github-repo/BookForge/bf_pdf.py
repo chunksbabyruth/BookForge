@@ -26,28 +26,7 @@ GREY = HexColor("#555555")
 # --------------------------------------------------------------------------
 # Fonts
 # --------------------------------------------------------------------------
-BUILTIN = {
-    "Times (built-in)": ("Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic"),
-    "Helvetica (built-in)": ("Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique"),
-    "Courier (built-in)": ("Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"),
-}
-WIN_FAMILIES = {
-    "Georgia": ("georgia.ttf", "georgiab.ttf", "georgiai.ttf", "georgiaz.ttf"),
-    "Palatino Linotype": ("pala.ttf", "palab.ttf", "palai.ttf", "palabi.ttf"),
-    "Book Antiqua": ("bkant.ttf", "antquab.ttf", "antquai.ttf", "antquabi.ttf"),
-    "Garamond": ("gara.ttf", "garabd.ttf", "garait.ttf", ""),
-    "Cambria": ("cambria.ttc", "cambriab.ttf", "cambriai.ttf", "cambriaz.ttf"),
-    "Constantia": ("constan.ttf", "constanb.ttf", "constani.ttf", "constanz.ttf"),
-    "Century Schoolbook": ("schlbk.ttf", "schlbkb.ttf", "schlbki.ttf", "schlbkbi.ttf"),
-    "Bookman Old Style": ("bookos.ttf", "bookosb.ttf", "bookosi.ttf", "bookosbi.ttf"),
-    "Times New Roman": ("times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"),
-    "Sitka Text": ("sitka.ttc", "sitkab.ttc", "sitkai.ttc", "sitkaz.ttc"),
-    "Arial": ("arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"),
-    "Calibri": ("calibri.ttf", "calibrib.ttf", "calibrii.ttf", "calibriz.ttf"),
-    "Verdana": ("verdana.ttf", "verdanab.ttf", "verdanai.ttf", "verdanaz.ttf"),
-    "Comic Sans MS": ("comic.ttf", "comicbd.ttf", "comici.ttf", "comicz.ttf"),
-}
-CUSTOM_LABEL = "Custom font file (.ttf)..."
+from bf_fonts import BUILTIN_NAMES, SAME_BODY, SAME_HEAD, resolve, migrate
 
 
 def _font_index():
@@ -77,16 +56,6 @@ def font_index():
     return _FONT_INDEX
 
 
-def available_fonts():
-    idx = font_index()
-    names = list(BUILTIN)
-    for fam, files in WIN_FAMILIES.items():
-        if files[0] in idx:
-            names.append(fam)
-    names.append(CUSTOM_LABEL)
-    return names
-
-
 def _ttf(name, path):
     if name in pdfmetrics.getRegisteredFontNames():
         return name
@@ -95,43 +64,92 @@ def _ttf(name, path):
     return name
 
 
-def register_fonts(s):
-    """Return (regular, bold, italic, bolditalic) reportlab font names."""
-    fam = s.get("font_family", "Times (built-in)")
-    if fam in BUILTIN:
-        return BUILTIN[fam]
-    paths = [None, None, None, None]
-    tag = "BF_" + re.sub(r"\W", "", fam)
-    if fam == CUSTOM_LABEL:
-        p = s.get("custom_font_path", "")
-        if not p or not os.path.exists(p):
-            return BUILTIN["Times (built-in)"]
-        paths[0] = p
-        d, b = os.path.split(p)
-        stem, ext = os.path.splitext(b)
-        for i, word in ((1, "Bold"), (2, "Italic"), (3, "BoldItalic")):
-            for cand in (stem.replace("Regular", word), stem + "-" + word, stem + word):
-                cp = os.path.join(d, cand + ext)
-                if cand != stem and os.path.exists(cp):
-                    paths[i] = cp
-                    break
-        tag = "BF_Custom_" + re.sub(r"\W", "", stem)
-    else:
-        idx = font_index()
-        for i, f in enumerate(WIN_FAMILIES.get(fam, ())):
-            if f and f in idx:
-                paths[i] = idx[f]
-        if not paths[0]:
-            return BUILTIN["Times (built-in)"]
+def font_roles(s, log=print):
+    """(body, headings, drop cap) font families as reportlab (R, B, I, BI) name tuples."""
+    migrate(s)
+    body = resolve(s.get("font_family") or "Times (built-in)", s, log)
+    hf = s.get("heading_font") or SAME_BODY
+    head = body if hf == SAME_BODY else resolve(hf, s, log)
+    dc = s.get("dropcap_font") or SAME_HEAD
+    drop = head if dc == SAME_HEAD else body if dc == SAME_BODY else resolve(dc, s, log)
+    return body, head, drop
+
+
+def register_fonts(s, log=lambda m: None):
+    return font_roles(s, log)[0]
+
+
+# --------------------------------------------------------------------------
+# Hyphenation (pyphen dictionaries + the user's own word list)
+# --------------------------------------------------------------------------
+HYPH_LANGS = {"Off": None, "English (US)": "en_US", "English (UK)": "en_GB", "French": "fr",
+              "German": "de_DE", "Spanish": "es", "Italian": "it_IT", "Portuguese (Brazil)": "pt_BR",
+              "Portuguese (Portugal)": "pt_PT", "Dutch": "nl_NL", "Swedish": "sv", "Danish": "da_DK",
+              "Norwegian": "nb_NO", "Finnish": "fi_FI", "Polish": "pl_PL", "Czech": "cs_CZ",
+              "Hungarian": "hu_HU", "Russian": "ru_RU", "Ukrainian": "uk_UA", "Greek": "el_GR",
+              "Latin": "la"}
+
+
+def parse_hyph_words(text):
+    """'Ka-la-din' -> {'kaladin': [2, 4]}; a word with no hyphens is never split."""
+    out = {}
+    for tok in re.split(r"[,;\s]+", text or ""):
+        tok = tok.strip()
+        if not tok:
+            continue
+        parts = re.split(r"[-\u00ad\u00b7=]", tok)
+        word, pos, n = "".join(parts), [], 0
+        for part in parts[:-1]:
+            n += len(part)
+            pos.append(n)
+        out[word.lower()] = pos
+    return out
+
+
+def make_hyphenator(s):
+    lang = HYPH_LANGS.get(s.get("hyph_lang", "English (US)"))
+    if not lang:
+        return None
     try:
-        r = _ttf(tag + "-R", paths[0])
-        b = _ttf(tag + "-B", paths[1]) if paths[1] else r
-        i = _ttf(tag + "-I", paths[2]) if paths[2] else r
-        bi = _ttf(tag + "-BI", paths[3]) if paths[3] else (b if b != r else i)
-        registerFontFamily(r, normal=r, bold=b, italic=i, boldItalic=bi)
-        return r, b, i, bi
+        import pyphen
+        dic = pyphen.Pyphen(lang=lang if lang in pyphen.LANGUAGES else "en_US", left=2, right=3)
     except Exception:
-        return BUILTIN["Times (built-in)"]
+        dic = None
+    custom = parse_hyph_words(s.get("hyph_words", ""))
+
+    def hyphenate(word):
+        if "\xa0" in word:              # words tied by a no-break space: only split the first one
+            first, rest = word.split("\xa0", 1)
+            return [(a, b + "\xa0" + rest) for a, b in hyphenate(first)]
+        m = re.match(r"^(\W*)(.*?)(\W*)$", word, re.S)
+        pre, core, post = m.groups()
+        key = core.lower()
+        if key in custom:
+            pos = custom[key]
+        elif dic is not None and core.isalpha():
+            pos = [int(x) for x in dic.positions(core)]
+        else:
+            pos = []
+        return [(pre + core[:p], core[p:] + post) for p in sorted(pos, reverse=True) if 1 < p < len(core) - 1]
+    return hyphenate
+
+
+def no_runt(markup):
+    """Tie the last two words together so a paragraph never ends with one short word alone."""
+    depth, i = 0, len(markup) - 1
+    while i > 0:
+        ch = markup[i]
+        if ch == ">":
+            depth += 1
+        elif ch == "<":
+            depth -= 1
+        elif ch == " " and depth == 0:
+            tail = plain(markup[i + 1:]).strip()
+            if 0 < len(tail) <= 7:
+                return markup[:i] + "&#160;" + markup[i + 1:]
+            return markup
+        i -= 1
+    return markup
 
 
 # --------------------------------------------------------------------------
@@ -174,7 +192,7 @@ def _cmap(fontname):
 class Coverage:
     def __init__(self, regular):
         self.regular = regular
-        self.builtin = regular in {v[0] for v in BUILTIN.values()}
+        self.builtin = regular in BUILTIN_NAMES
         self.choice = {}
         self.missing = set()
         self._fbs = None
@@ -389,18 +407,34 @@ class Rule(Flowable):
             c.line(x0, y, x0 + self.w, y)
 
 
-class DropLetter(Flowable):
-    """A big initial letter that spans two lines of text (used with ImageAndFlowables)."""
+DROP_RE = re.compile(r"^((?:<[^>]+>)*)((?:&\w+;|['\"\u2018\u201c\u201e\u00ab(\u00bf\u00a1])*)(\w)")
 
-    def __init__(self, letter, font, body_size, lead):
+
+class DropLetter(Flowable):
+    """A big initial spanning `lines` lines of text (used with ImageAndFlowables).
+
+    quote_mode: how an opening quotation mark is handled
+      "hang"  - quote hangs in the margin so the letter lines up with the text
+      "small" - quote at text size just before the big letter
+      "big"   - quote is drawn as large as the letter
+    """
+
+    def __init__(self, letter, font, body_size, lead, lines=2, quote="", quote_mode="hang", qfont=None):
         Flowable.__init__(self)
         from reportlab.pdfbase.pdfmetrics import stringWidth
-        self.letter, self.font = letter, font
         cap = 0.7
-        self.size = (lead + body_size * cap) / cap
-        self.lead, self.body = lead, body_size
-        self.width = stringWidth(letter, font, self.size)
-        self.height = lead * 2 - (lead - body_size) * 0.5
+        lines = max(2, int(lines))
+        self.size = (lead * (lines - 1) + body_size * cap) / cap
+        self.letter, self.font, self.lead, self.body, self.lines = letter, font, lead, body_size, lines
+        self.quote, self.mode, self.qfont = quote, quote_mode, qfont or font
+        if quote and quote_mode == "big":
+            self.letter = quote + letter
+            self.quote = ""
+        self.lw = stringWidth(self.letter, font, self.size)
+        self.qsize = body_size if quote_mode == "small" else self.size * 0.6
+        self.qw = stringWidth(self.quote, self.qfont, self.qsize) if self.quote else 0
+        self.width = self.lw + (self.qw + 1 if self.quote and quote_mode == "small" else 0)
+        self.height = lead * lines - (lead - body_size) * 0.5
 
     def wrap(self, aw, ah):
         return self.width, self.height
@@ -410,10 +444,19 @@ class DropLetter(Flowable):
 
     def draw(self):
         c = self.canv
-        c.setFont(self.font, self.size)
         c.setFillColor(black)
-        base = self.height - self.body * 0.95 - self.lead
-        c.drawString(0, base, self.letter)
+        base = self.height - self.body * 0.95 - self.lead * (self.lines - 1)
+        x = 0
+        if self.quote:
+            top = base + self.size * 0.7
+            c.setFont(self.qfont, self.qsize)
+            if self.mode == "small":
+                c.drawString(0, self.height - self.body * 0.95, self.quote)
+                x = self.qw + 1
+            else:                           # hang in the margin, top-aligned with the letter
+                c.drawString(-self.qw - 1, top - self.qsize * 0.7, self.quote)
+        c.setFont(self.font, self.size)
+        c.drawString(x, base, self.letter)
 
 
 class WriteLines(Flowable):
@@ -476,7 +519,11 @@ def build_pdf(book, s, out_path, log=print):
     fw, fh = W - mi - mo, H - mt - mb
     if fw < 1.5 * inch or fh < 2 * inch:
         raise ValueError("Margins are too large for this page size.")
-    R, B, I, BI = register_fonts(s)
+    (R, B, I, BI), (HR, HB, HI, HBI), (DR, _db, _di, _dbi) = font_roles(s, log)
+    HT = HB if s.get("heading_bold", True) else HR      # font for titles and headings
+    hyph = make_hyphenator(s)
+    hy = {"hyphenationLang": hyph, "embeddedHyphenation": 0, "uriWasteReduce": 0.3,
+          "hyphenationMinWordLength": int(s.get("hyph_min") or 6)} if hyph else {}
     size = float(s["body_size"])
     lead = size * float(s["line_spacing"])
     ts, ss = float(s["title_size"]), float(s["sub_size"])
@@ -486,7 +533,7 @@ def build_pdf(book, s, out_path, log=print):
     st["body"] = ParagraphStyle("body", fontName=R, fontSize=size, leading=lead, alignment=align,
                                 firstLineIndent=float(s["indent"]) * inch,
                                 spaceAfter=float(s["para_space"]), allowWidows=0, allowOrphans=0,
-                                textColor=black)
+                                textColor=black, **hy)
     st["flush"] = ParagraphStyle("flush", parent=st["body"], firstLineIndent=0)
     if s["verse_style"] == "Centered italic":
         st["verse"] = ParagraphStyle("verse", parent=st["body"], fontName=I, alignment=TA_CENTER,
@@ -498,23 +545,33 @@ def build_pdf(book, s, out_path, log=print):
     st["quote"] = ParagraphStyle("quote", parent=st["body"], fontSize=size * 0.94,
                                  leading=lead * 0.94, firstLineIndent=0, leftIndent=0.4 * inch,
                                  rightIndent=0.4 * inch)
-    st["sub"] = ParagraphStyle("sub", fontName=B, fontSize=ss, leading=ss * 1.25,
+    st["item"] = ParagraphStyle("item", parent=st["body"], firstLineIndent=0, spaceAfter=max(2.0, float(
+        s["para_space"]) * 0.5))
+    st["anote"] = ParagraphStyle("anote", parent=st["body"], fontSize=size * 0.88, leading=lead * 0.88,
+                                 firstLineIndent=0, leftIndent=0.35 * inch, rightIndent=0.35 * inch,
+                                 spaceAfter=3, alignment=TA_LEFT)
+    st["anlabel"] = ParagraphStyle("anlabel", fontName=HT, fontSize=size * 0.82, leading=size * 1.1,
+                                   leftIndent=0.35 * inch, spaceBefore=8, spaceAfter=2, keepWithNext=1)
+    st["meta"] = ParagraphStyle("meta", fontName=R, fontSize=size * 0.9, leading=lead * 0.9,
+                                alignment=TA_LEFT, spaceAfter=4, leftIndent=0.25 * inch,
+                                firstLineIndent=-0.25 * inch)
+    st["sub"] = ParagraphStyle("sub", fontName=HT, fontSize=ss, leading=ss * 1.25,
                                alignment=TA_CENTER, spaceBefore=12, spaceAfter=8, keepWithNext=1)
-    st["label"] = ParagraphStyle("label", fontName=R, fontSize=ss, leading=ss * 1.3,
+    st["label"] = ParagraphStyle("label", fontName=HR, fontSize=ss, leading=ss * 1.3,
                                  alignment=TA_CENTER, spaceAfter=4, keepWithNext=1)
-    st["ctitle"] = ParagraphStyle("ctitle", fontName=B, fontSize=ts, leading=ts * 1.25,
+    st["ctitle"] = ParagraphStyle("ctitle", fontName=HT, fontSize=ts, leading=ts * 1.25,
                                   alignment=TA_CENTER, spaceBefore=6, spaceAfter=16, keepWithNext=1)
     st["csub"] = ParagraphStyle("csub", fontName=I, fontSize=size, leading=lead, alignment=TA_CENTER,
                                 leftIndent=0.3 * inch, rightIndent=0.3 * inch, spaceBefore=0,
                                 spaceAfter=18, keepWithNext=1)
-    st["part"] = ParagraphStyle("part", fontName=B, fontSize=ts * 1.2, leading=ts * 1.5,
+    st["part"] = ParagraphStyle("part", fontName=HT, fontSize=ts * 1.2, leading=ts * 1.5,
                                 alignment=TA_CENTER)
     st["scene"] = ParagraphStyle("scene", fontName=R, fontSize=size, leading=lead,
                                  alignment=TA_CENTER, spaceBefore=6, spaceAfter=12)
     bt = max(30.0, ts * 1.5)
-    st["btitle"] = ParagraphStyle("btitle", fontName=B, fontSize=bt, leading=bt * 1.2,
+    st["btitle"] = ParagraphStyle("btitle", fontName=HT, fontSize=bt, leading=bt * 1.2,
                                   alignment=TA_CENTER)
-    st["bsub"] = ParagraphStyle("bsub", fontName=I, fontSize=ss + 1, leading=(ss + 1) * 1.35,
+    st["bsub"] = ParagraphStyle("bsub", fontName=HI if HI != HR else I, fontSize=ss + 1, leading=(ss + 1) * 1.35,
                                 alignment=TA_CENTER, spaceBefore=14)
     st["bauth"] = ParagraphStyle("bauth", fontName=R, fontSize=ss, leading=ss * 1.4,
                                  alignment=TA_CENTER, spaceBefore=36)
@@ -525,20 +582,31 @@ def build_pdf(book, s, out_path, log=print):
     st["head"] = ParagraphStyle("head", fontName=I, fontSize=max(8.5, size * 0.75),
                                 leading=max(8.5, size * 0.75) * 1.2, alignment=TA_CENTER)
     st["ded"] = ParagraphStyle("ded", fontName=I, fontSize=size, leading=lead, alignment=TA_CENTER)
-    st["toct"] = ParagraphStyle("toct", fontName=B, fontSize=ts, leading=ts * 1.3,
+    st["toct"] = ParagraphStyle("toct", fontName=HT, fontSize=ts, leading=ts * 1.3,
                                 alignment=TA_CENTER, spaceAfter=20)
     ts0 = ParagraphStyle("toc0", fontName=R, fontSize=size * 0.92, leading=size * 1.45,
                          leftIndent=0, firstLineIndent=0, spaceBefore=1)
     tsP = ParagraphStyle("tocP", parent=ts0, fontName=B, spaceBefore=8)
     ts1 = ParagraphStyle("toc1", parent=ts0, leftIndent=0.3 * inch)
 
-    cov = Coverage(R)
+    covs = {}
 
-    def P(markup, style):
+    def cov_for(fontname):
+        if fontname not in covs:
+            covs[fontname] = Coverage(fontname)
+        return covs[fontname]
+    cov = cov_for(R)
+    runts = bool(s.get("avoid_runts", True))
+    body_styles = ("body", "flush", "quote", "item", "anote")
+
+    def P(markup, style, **kw):
+        if runts and style.name in body_styles and len(markup) > 60:
+            markup = no_runt(markup)
+        c = cov_for(style.fontName)
         try:
-            return Paragraph(cov.apply(markup), style)
+            return Paragraph(c.apply(markup), style, **kw)
         except Exception:
-            return Paragraph(cov.apply(esc(plain(markup))), style)
+            return Paragraph(c.apply(esc(plain(markup))), style, **kw)
 
     story = []
     recto = s["chapter_start"] == "Right-hand page"
@@ -599,6 +667,36 @@ def build_pdf(book, s, out_path, log=print):
                 story.append(P(esc(" ".join(para.split())), st["body"]))
         started = True
 
+    an_mode = s.get("an_mode", "Set apart (smaller, indented)")
+
+    def fic_pages():
+        nonlocal started
+        if book.fic_meta and s.get("fic_info", "Leave out") != "Leave out":
+            if started:
+                new_page()
+            story.append(Anchor("workinfo", "Work info", 0))
+            story.append(P("Work Info", st["sub"]))
+            story.append(Spacer(1, 8))
+            for m in book.fic_meta:
+                story.append(P(m, st["meta"]))
+            started = True
+        summ = book.fic_summary if s.get("fic_summary", "Add a summary page") != "Leave out" else []
+        notes = book.fic_notes if not an_mode.startswith("Leave") else []
+        if summ or notes:
+            if started:
+                new_page()
+            story.append(Anchor("summary", "Summary" if summ else "Notes", 0))
+            for group, default in ((summ, "Summary"), (notes, "Notes")):
+                if not group:
+                    continue
+                story.append(P(esc(group[0].label or default), st["sub"]))
+                story.append(Spacer(1, 6))
+                for b in group:
+                    story.append(P(b.text, st["flush"]))
+                story.append(Spacer(1, 14))
+            started = True
+
+    fic_pages()
     if s.get("note_place") == "Before contents":
         note_page()
 
@@ -698,25 +796,54 @@ def build_pdf(book, s, out_path, log=print):
             story.append(Spacer(1, 10))
         fresh = True
         cap_pending = bool(s["drop_cap"])
+        prev_label, in_note = None, False
         for b in blocks:
+            if b.kind != "anote" and in_note:
+                in_note, prev_label = False, None
+                if not an_mode.startswith("Keep"):
+                    story.append(Spacer(1, 8))
             if b.kind == "para":
                 txt = b.text
                 sty = st["flush"] if (fresh and not s["first_para_indent"]) else st["body"]
-                m = re.match(r"^((?:<[^>]+>)*)((?:&\w+;|['\"\u2018\u201c(])?)(\w)", txt) \
-                    if (cap_pending and txt) else None
+                m = DROP_RE.match(txt) if (cap_pending and txt) else None
                 cap_pending = False
+                qmode = s.get("drop_cap_quote", "Hang the quote in the margin")
+                if m and m.group(2) and qmode.startswith("No drop cap"):
+                    m = None
                 if m:
-                    letter = html.unescape(m.group(2)) + m.group(3)
+                    quote = html.unescape(m.group(2))
                     rest = m.group(1) + txt[m.end():]
+                    mode = "small" if qmode.startswith("Quote at text") else "big" if qmode.startswith(
+                        "Make") else "hang"
                     try:
-                        story.append(ImageAndFlowables(DropLetter(letter, R, size, lead),
-                                                       [P(rest, st["flush"])], imageSide="left",
-                                                       imageRightPadding=3, imageBottomPadding=0,
-                                                       imageTopPadding=0, imageLeftPadding=0))
+                        story.append(ImageAndFlowables(
+                            DropLetter(m.group(3), DR, size, lead, int(s.get("drop_cap_lines") or 2),
+                                       quote, mode, DR),
+                            [P(rest, st["flush"])], imageSide="left", imageRightPadding=3,
+                            imageBottomPadding=0, imageTopPadding=0, imageLeftPadding=0))
                     except Exception:
                         story.append(P(txt, sty))
                 else:
                     story.append(P(txt, sty))
+                fresh = False
+            elif b.kind == "anote":
+                if an_mode.startswith("Leave"):
+                    continue
+                keep = an_mode.startswith("Keep")
+                if not in_note and not keep:
+                    story.append(Spacer(1, 4))
+                if b.label and b.label != prev_label:
+                    story.append(P(esc(b.label), st["flush"] if keep else st["anlabel"]))
+                story.append(P(b.text, st["quote"] if keep else st["anote"]))
+                prev_label, in_note = b.label, True
+            elif b.kind == "item":
+                d = max(0, min(int(b.depth), 4))
+                key = f"item{d}"
+                if key not in st:
+                    st[key] = ParagraphStyle(key, parent=st["item"], leftIndent=(d + 1) * 0.3 * inch,
+                                             bulletIndent=d * 0.3 * inch + 0.04 * inch, bulletFontName=R,
+                                             bulletFontSize=size)
+                story.append(P(b.text or "&#160;", st[key], bulletText=b.bullet or None))
                 fresh = False
             elif b.kind == "quote":
                 story.append(P(b.text, st["quote"]))
@@ -729,8 +856,14 @@ def build_pdf(book, s, out_path, log=print):
                 story.append(P(b.text, st["sub"]))
                 fresh = True
             elif b.kind == "scene":
-                story.append(P(esc(s["scene_break"]) if s["scene_break"] != "Blank space" else "&#160;",
-                               st["scene"]))
+                sb = s["scene_break"]
+                if sb == "Blank space":
+                    mark = "&#160;"
+                elif sb == "Keep the source's own":
+                    mark = b.text or "*&#160;&#160;*&#160;&#160;*"
+                else:
+                    mark = esc(sb)
+                story.append(P(mark, st["scene"]))
                 fresh = True
             elif b.kind == "image" and b.image:
                 try:
@@ -812,11 +945,15 @@ def build_pdf(book, s, out_path, log=print):
         doc.multiBuild(story, maxPasses=12)
     else:
         doc.build(story)
-    used = sorted({f for f in cov.choice.values() if f})
+    used = sorted({f for c in covs.values() for f in c.choice.values() if f})
+    missing = set().union(*[c.missing for c in covs.values()]) if covs else set()
     if used:
         log("Some characters aren't in the chosen font, so they were drawn with: " +
             ", ".join(sorted({u.split("_", 1)[1].rsplit("-", 1)[0] for u in used})))
-    if cov.missing:
-        log(f"WARNING: {len(cov.missing)} character(s) aren't in any installed font and may show as "
-            "boxes: " + " ".join(sorted(cov.missing))[:120])
+    if missing:
+        log(f"WARNING: {len(missing)} character(s) aren't in any installed font and may show as "
+            "boxes: " + " ".join(sorted(missing))[:120])
+    if hyph is not None:
+        log(f"Hyphenation: {s.get('hyph_lang')}" + (" + your word list" if (s.get("hyph_words") or "").strip()
+                                                    else ""))
     return doc.page
