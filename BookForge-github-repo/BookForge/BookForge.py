@@ -10,14 +10,14 @@ import threading
 import traceback
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox
 
 from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, APP_NAME, APP_VERSION, APP_AUTHOR,
-                     load_book, apply_info, plain)
+                     load_book, apply_info, plain, esc, Block)
 import bf_fonts
 from bf_fonts import SAME_BODY, SAME_HEAD
 from bf_pdf import HYPH_LANGS
-from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE
+from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE, FOLD_SIDES, UNITS
 from bf_build import run_build, default_out_dir
 import bf_theme as th
 
@@ -106,6 +106,7 @@ class App(tk.Tk):
         self.k = "src"
         self.vars, self.texts = {}, {}
         self.book, self.book_sig, self.busy, self.mode = None, None, False, ""
+        self.edited = False
         self.q = queue.Queue()
         self.custom_fonts = []
         self.font_combos = []
@@ -222,7 +223,8 @@ class App(tk.Tk):
         holder.rowconfigure(0, weight=1)
         holder.columnconfigure(0, weight=1)
         self.pages = []
-        builders = (self._tab_source, self._tab_info, self._tab_layout, self._tab_front, self._tab_output)
+        builders = (self._tab_source, self._tab_chapters, self._tab_info, self._tab_layout, self._tab_front,
+                    self._tab_output)
         for (key, _label, _c), build in zip(th.TABS, builders):
             self.k = key
             page = th.ScrollPage(holder, key)
@@ -244,7 +246,7 @@ class App(tk.Tk):
         self.build_btn.pack(side="left", pady=(8, 0))
         right = ttk.Frame(bar, style="Paper.TFrame")
         right.pack(side="left", fill="both", expand=True, padx=(14, 0), pady=(8, 0))
-        self.status = ttk.Label(right, text="Ready. Pick a source on the Source tab, then click Build book.",
+        self.status = ttk.Label(right, text="Ready. Pick a source, check the chapters, then click Build book.",
                                 style="Paper.TLabel")
         self.status.pack(anchor="w")
         self.prog = ttk.Progressbar(right, mode="indeterminate", style="Build.Horizontal.TProgressbar")
@@ -257,10 +259,12 @@ class App(tk.Tk):
     def show_tab(self, i):
         self.cur_page = i
         self.pages[i].tkraise()
+        if th.TABS[i][0] == "chap" and not self.busy:
+            self.after(50, self.auto_scan)
 
     def _wheel(self, e):
         w = e.widget
-        if isinstance(w, (tk.Text, tk.Listbox)) or str(w).endswith("popdown.f.l"):
+        if isinstance(w, (tk.Text, tk.Listbox, ttk.Treeview)) or str(w).endswith("popdown.f.l"):
             return
         self.pages[getattr(self, "cur_page", 0)].wheel(e.delta)
 
@@ -284,9 +288,21 @@ class App(tk.Tk):
         t.rowconfigure(1, weight=1)
         pg = ttk.LabelFrame(t, text="Paste or type text  (mark chapters with \"Chapter 1\" lines "
                                     "or # headings)", padding=8, style=self.S("TLabelframe"))
-        pg.grid(row=1, column=0, sticky="nsew", padx=6, pady=5)
+        pg.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=6, pady=5)
         self.paste_frame = self.textbox(pg, "paste_text", height=8)
         self.paste_frame.pack(fill="both", expand=True)
+
+        d = self.group(t, "Cleaning up the source", row=2, column=0, columnspan=2)
+        d.columnconfigure(1, weight=1)
+        checks = [("Remove Gutenberg / Standard Ebooks / AO3 boilerplate", "strip_gutenberg"),
+                  ("Skip the source's own contents list", "skip_contents"),
+                  ("Skip cover-image page", "skip_cover"),
+                  ("Include pictures from the source", "include_images"),
+                  ("Keep text before the first chapter", "keep_front_text"),
+                  ("Drop empty chapters", "drop_empty"),
+                  ("Keep line breaks inside paragraphs (poetry)", "preserve_breaks")]
+        for i, (txt, key) in enumerate(checks):
+            self.check(d, i % 4, txt, key, c=i // 4, span=1)
 
         sb = self.group(t, "Section breaks", row=3, column=0, columnspan=2)
         self.entry(sb, 0, "Markers this text uses", "scene_markers", 50)
@@ -295,51 +311,100 @@ class App(tk.Tk):
                                                                                  padx=6)
         self.check(sb, 2, "Also treat lines made only of symbols (~~~, ***, \u2022\u2022\u2022) as section breaks",
                    "scene_symbols")
-        d = self.group(t, "Chapters & cleanup", row=2, column=0, columnspan=2)
-        d.columnconfigure(1, weight=0)
-        d.columnconfigure(2, weight=1)
-        d.columnconfigure(3, weight=1)
-        self.combo(d, 0, "Find chapters by", "split_mode",
-                   ["Auto", "Heading level 1", "Heading level 2", "Heading level 3",
-                    "Markdown # headings", "Chapter / Part lines", "ALL-CAPS lines",
-                    "Custom pattern", "No chapters"], width=24)
-        self.entry(d, 1, "Custom pattern (regex)", "custom_regex", 26)
-        self.combo(d, 2, "Paragraphs in text files", "line_paragraphs",
-                   ["Auto", "Blank line between paragraphs", "Each line is a paragraph"], width=24)
-        checks = [("Remove Gutenberg / Standard Ebooks boilerplate", "strip_gutenberg"),
-                  ("Skip the source's own contents list", "skip_contents"),
-                  ("Skip cover-image page", "skip_cover"),
-                  ("Include pictures from the source", "include_images"),
-                  ("Keep text before the first chapter", "keep_front_text"),
-                  ("Drop empty chapters", "drop_empty"),
-                  ("Keep line breaks inside paragraphs (poetry)", "preserve_breaks")]
-        for i, (txt, key) in enumerate(checks):
-            self.check(d, i % 4, txt, key, c=2 + i // 4, span=1)
+        nxt = ttk.Frame(t, style=self.S("Page.TFrame"))
+        nxt.grid(row=4, column=0, columnspan=2, sticky="e", padx=6, pady=(4, 8))
+        ttk.Button(nxt, text="Next: check the chapters  \u2192", style=self.S("TButton"),
+                   command=lambda: self.shelf.select(1)).pack(side="right")
 
-        r = ttk.LabelFrame(t, text="Chapters found", padding=8, style=self.S("TLabelframe"))
-        r.grid(row=1, column=1, sticky="nsew", padx=6, pady=5)
-        r.rowconfigure(1, weight=1)
-        r.columnconfigure(0, weight=1)
-        top = ttk.Frame(r, style=self.S("Card.TFrame"))
-        top.grid(row=0, column=0, sticky="we")
-        ttk.Button(top, text="Scan chapters", command=self.scan, style=self.S("TButton")).pack(side="left")
-        self.scan_lbl = ttk.Label(top, text="Not scanned yet.", style=self.S("CardHint.TLabel"))
-        self.scan_lbl.pack(side="left", padx=8)
-        lf = ttk.Frame(r, style=self.S("Card.TFrame"))
-        lf.grid(row=1, column=0, sticky="nsew", pady=4)
-        self.chlist = tk.Listbox(lf, font=("Segoe UI", 10), activestyle="none", selectmode="extended")
-        th.style_text(self.chlist, self.k)
-        sb = ttk.Scrollbar(lf, command=self.chlist.yview)
-        self.chlist.configure(yscrollcommand=sb.set)
-        self.chlist.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        self.chlist.bind("<Double-Button-1>", lambda e: self.rename_ch())
-        bot = ttk.Frame(r, style=self.S("Card.TFrame"))
-        bot.grid(row=2, column=0, sticky="we")
-        for txt, fn in (("Rename", self.rename_ch), ("Skip / include", self.toggle_ch),
-                        ("Move up", lambda: self.move_ch(-1)), ("Move down", lambda: self.move_ch(1))):
-            ttk.Button(bot, text=txt, command=fn, style=self.S("TButton")).pack(side="left", padx=2,
-                                                                              expand=True, fill="x")
+    # ------------------------------------------------------------ Chapters step
+    SPLIT_LABELS = [
+        ("Auto", "Find them automatically (recommended)"),
+        ("Chapter / Part lines", "Lines that start with Chapter, Part, Prologue..."),
+        ("Markdown # headings", "Lines that start with # (Markdown)"),
+        ("ALL-CAPS lines", "Short lines written in CAPITAL LETTERS"),
+        ("Heading level 1", "Headings in the file - biggest size (level 1)"),
+        ("Heading level 2", "Headings in the file - level 2"),
+        ("Heading level 3", "Headings in the file - level 3"),
+        ("Custom pattern", "My own pattern (advanced)"),
+        ("No chapters", "Don't split - the whole text is one chapter"),
+    ]
+
+    def _tab_chapters(self, t):
+        t.rowconfigure(2, weight=1)
+        t.columnconfigure(0, weight=3)
+        t.columnconfigure(1, weight=2)
+        how = self.group(t, "How are chapters marked in your text?", row=0, column=0, columnspan=2)
+        how.columnconfigure(1, weight=1)
+        labels = [lab for _v, lab in self.SPLIT_LABELS]
+        self.split_disp = tk.StringVar()
+        cb = ttk.Combobox(how, textvariable=self.split_disp, values=labels, state="readonly", width=46,
+                          style=self.S("TCombobox"))
+        cb.grid(row=0, column=0, sticky="w", padx=6, pady=3)
+        cb.bind("<<ComboboxSelected>>", self._split_chosen)
+        self.var("split_mode").trace_add("write", lambda *a: self._show_split())
+        self._show_split()
+        ttk.Button(how, text="Find chapters again", command=self.scan,
+                   style=self.S("TButton")).grid(row=0, column=1, sticky="w", padx=6)
+        self.entry(how, 1, "My own pattern", "custom_regex", 30)
+        ttk.Label(how, text="only used with \"My own pattern\"  (e.g.  ^Part \\d+)",
+                  style=self.S("CardHint.TLabel")).grid(row=2, column=1, sticky="w", padx=6)
+        self.combo(how, 3, "In text files, a new paragraph starts at", "line_paragraphs",
+                   ["Auto", "Blank line between paragraphs", "Each line is a paragraph"], width=30)
+
+        self.chap_summary = ttk.Label(t, text="No chapters yet - pick a source on the Source tab.",
+                                      style=self.S("PageHint.TLabel"), font=("Segoe UI Semibold", 11))
+        self.chap_summary.grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 2))
+
+        lst = ttk.LabelFrame(t, text="Chapters in the order they will be printed", padding=8,
+                             style=self.S("TLabelframe"))
+        lst.grid(row=2, column=0, sticky="nsew", padx=6, pady=5)
+        lst.rowconfigure(1, weight=1)
+        lst.columnconfigure(0, weight=1)
+        ttk.Label(lst, text="Click a chapter to see how it starts. Double-click a title to rename it. "
+                            "Click the tick to leave a chapter out.", style=self.S("CardHint.TLabel"),
+                  wraplength=520).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        tf = ttk.Frame(lst, style=self.S("Card.TFrame"))
+        tf.grid(row=1, column=0, sticky="nsew")
+        cols = ("print", "num", "title", "starts", "words")
+        self.ctree = ttk.Treeview(tf, columns=cols, show="headings", selectmode="extended", height=14)
+        for c, head, w, anchor, stretch in (("print", "Print", 52, "center", False), ("num", "#", 46, "center", False),
+                                            ("title", "Chapter title", 260, "w", True),
+                                            ("starts", "Starts with...", 230, "w", True),
+                                            ("words", "Words", 70, "e", False)):
+            self.ctree.heading(c, text=head)
+            self.ctree.column(c, width=w, anchor=anchor, stretch=stretch)
+        self.ctree.tag_configure("skipped", foreground="#9AA3AD")
+        vs = ttk.Scrollbar(tf, command=self.ctree.yview)
+        self.ctree.configure(yscrollcommand=vs.set)
+        self.ctree.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        self.ctree.bind("<<TreeviewSelect>>", lambda e: self.show_preview())
+        self.ctree.bind("<Double-Button-1>", self._tree_double)
+        self.ctree.bind("<Button-1>", self._tree_click, add="+")
+        bot = ttk.Frame(lst, style=self.S("Card.TFrame"))
+        bot.grid(row=2, column=0, sticky="we", pady=(6, 0))
+        for n, (txt, fn) in enumerate((("Rename", self.rename_ch), ("Skip / include", self.toggle_ch),
+                                       ("Move up", lambda: self.move_ch(-1)), ("Move down", lambda: self.move_ch(1)),
+                                       ("Merge into previous", self.merge_ch),
+                                       ("Undo all changes", self.reset_chapters))):
+            ttk.Button(bot, text=txt, command=fn, style=self.S("TButton")).grid(row=n // 3, column=n % 3,
+                                                                              sticky="we", padx=2, pady=2)
+        for c in range(3):
+            bot.columnconfigure(c, weight=1)
+
+        pv = ttk.LabelFrame(t, text="How the selected chapter starts", padding=8, style=self.S("TLabelframe"))
+        pv.grid(row=2, column=1, sticky="nsew", padx=6, pady=5)
+        pv.rowconfigure(0, weight=1)
+        pv.columnconfigure(0, weight=1)
+        self.preview = tk.Text(pv, wrap="word", height=14, width=40, font=("Georgia", 10), padx=8, pady=6)
+        th.style_text(self.preview, self.k)
+        self.preview.grid(row=0, column=0, sticky="nsew")
+        self.preview.tag_configure("found", font=("Segoe UI Semibold", 10), foreground="#2F6B71")
+        self.preview.tag_configure("note", foreground="#6B7480", font=("Georgia", 9, "italic"))
+        self.preview.configure(state="disabled")
+        ttk.Label(pv, text="Wrong split? Select the chapter that shouldn't exist and click \"Merge into "
+                           "previous\". Missing chapters? Change \"How are chapters marked\" above.",
+                  style=self.S("CardHint.TLabel"), wraplength=280).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
     def _tab_info(self, t):
         g = self.group(t, "Title page details (leave blank to use the source's own)", row=0, column=0,
@@ -492,7 +557,7 @@ class App(tk.Tk):
         self.combo(pr, 0, "Paper size", "sheet_size", list(SHEETS))
         self.spin(pr, 1, "Custom width", "sheet_w", 1, 2000, 0.25)
         self.spin(pr, 2, "Custom height", "sheet_h", 1, 2000, 0.25)
-        self.combo(pr, 3, "Custom size unit", "sheet_unit", ["in", "mm", "pt"])
+        self.combo(pr, 3, "Custom size unit", "sheet_unit", list(UNITS))
         self.combo(pr, 4, "Printer", "printer_type", ["Duplex (two-sided printer)",
                                                        "Single-sided (fronts and backs files)",
                                                        "Single-sided, backs in reverse order"])
@@ -509,6 +574,9 @@ class App(tk.Tk):
         self.spin(pl, 7, "Small layouts: fore-edge padding (pt)", "wacky_fore", 0, 72, 1)
         mk = self.group(t, "Marks", row=3, column=1)
         self.check(mk, 0, "Fold lines", "fold_marks")
+        self.combo(mk, 9, "Fold lines printed on", "fold_side", FOLD_SIDES, width=30)
+        ttk.Label(mk, text="Inside = the side you see while folding (as bookbinder-js does)",
+                  style=self.S("CardHint.TLabel")).grid(row=10, column=0, columnspan=2, sticky="w", padx=6)
         self.check(mk, 1, "Cut lines / crop marks", "cut_marks")
         self.check(mk, 2, "Page edge marks at the spine", "edge_marks")
         self.check(mk, 3, "Signature order marks on the spine", "sig_marks")
@@ -616,9 +684,10 @@ class App(tk.Tk):
         seen = set(names)
         names += sorted((f for f in inst if f not in seen), key=str.lower)
         self.fonts = names
+        display = [n for n in bf_fonts.included_families() if bf_fonts.INCLUDED[n][3] == "display"]
         for cb, role in self.font_combos:
-            extra = {"body": [], "head": [SAME_BODY], "drop": [SAME_HEAD, SAME_BODY]}[role]
-            cb.configure(values=extra + names)
+            extra = {"body": [], "head": [SAME_BODY] + display, "drop": [SAME_HEAD, SAME_BODY] + display}[role]
+            cb.configure(values=extra + [n for n in names if n not in extra])
 
     def font_manager(self):
         w = tk.Toplevel(self)
@@ -631,7 +700,11 @@ class App(tk.Tk):
         fr.columnconfigure(1, weight=1)
         ttk.Label(fr, text="Make a font family from any font files (.ttf, .otf, .ttc, .woff). Only Regular is "
                            "required.\nTip: to use Medium weights, pick Medium as Regular and Medium Italic as "
-                           "Italic.", style=self.S("Card.TLabel"), justify="left").grid(
+                           "Italic.\n\nIncluded with BookForge (free licence): " +
+                           ", ".join(bf_fonts.included_families()) + ".\nCommercial fonts can't be included: " +
+                           ", ".join(bf_fonts.NOT_INCLUDED) + " appear in the font lists automatically once "
+                           "installed on this PC (several come with Windows or Microsoft Office).",
+                  style=self.S("Card.TLabel"), justify="left", wraplength=560).grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
         lb = tk.Listbox(fr, height=5, font=("Segoe UI", 10), activestyle="none")
         th.style_text(lb, self.k)
@@ -749,9 +822,15 @@ class App(tk.Tk):
         self.status.configure(text=label)
         self.prog.stop()
 
-    def scan(self):
+    def scan(self, force=False):
         if self.busy:
             return
+        if self.edited and not force and not messagebox.askyesno(
+                "Find chapters again?", "You've renamed, skipped, moved or merged chapters. Finding the "
+                                        "chapters again will undo those changes. Continue?"):
+            self._show_split()
+            return
+        self.edited = False
         s = self.collect()
         self._start("Reading the source...", "scan")
 
@@ -763,49 +842,143 @@ class App(tk.Tk):
                 self.q.put(("error", str(e), traceback.format_exc()))
         threading.Thread(target=work, daemon=True).start()
 
+    # ------------------------------------------------------------ chapters: table helpers
+    def _split_chosen(self, _e=None):
+        lab = self.split_disp.get()
+        for v, l in self.SPLIT_LABELS:
+            if l == lab:
+                self.var("split_mode").set(v)
+        self.scan()
+
+    def _show_split(self):
+        v = self.var("split_mode").get()
+        self.split_disp.set(dict(self.SPLIT_LABELS).get(v, self.SPLIT_LABELS[0][1]))
+
+    def auto_scan(self):
+        """Opening the Chapters step reads the source if it hasn't been read (or has changed)."""
+        s = self.collect()
+        src_ok = (s["source_mode"] == "paste" and s.get("paste_text", "").strip()) or \
+            (s["source_mode"] == "file" and os.path.exists(s.get("source_path", "")))
+        if src_ok and (self.book is None or (self.source_sig(s) != self.book_sig and not self.edited)):
+            self.scan()
+
     def fill_list(self):
-        self.chlist.delete(0, "end")
+        sel = self._sel()
+        self.ctree.delete(*self.ctree.get_children())
         if not self.book:
             return
         n = 0
-        for ch in self.book.chapters:
-            if ch.level == 1:
+        for i, ch in enumerate(self.book.chapters):
+            if ch.level == 1 and ch.include:
                 n += 1
             words = sum(len(plain(b.text).split()) + sum(len(plain(l).split()) for l in b.lines) for b in ch.blocks)
-            tag = "PART  " if ch.level == 0 else f"{n:>3}.  "
-            line = f"{tag}{ch.display()}   ({words:,} words)"
-            if not ch.include:
-                line = "   [skipped]  " + ch.display()
-            self.chlist.insert("end", line)
-            if not ch.include:
-                self.chlist.itemconfig("end", foreground="#9AA3AD")
-        act = self.book.active()
-        self.scan_lbl.configure(text=f"{len([c for c in act if c.level == 1])} chapters will be printed."
-                                     "  Double-click to rename.")
+            first = next((plain(b.text) for b in ch.blocks if b.kind in ("para", "quote", "verse", "item")
+                          and plain(b.text).strip()), "")
+            if not first:
+                first = next((plain(l) for b in ch.blocks for l in b.lines if plain(l).strip()), "")
+            num = "PART" if ch.level == 0 else (str(n) if ch.include else "-")
+            self.ctree.insert("", "end", iid=str(i), values=("\u2714" if ch.include else "\u2014", num,
+                                                            ch.display(), " ".join(first.split())[:70],
+                                                            f"{words:,}"),
+                              tags=() if ch.include else ("skipped",))
+        for i in sel:
+            if self.ctree.exists(str(i)):
+                self.ctree.selection_add(str(i))
+        act = [c for c in self.book.chapters if c.include]
+        n_ch = len([c for c in act if c.level == 1])
+        skipped = len(self.book.chapters) - len(act)
+        s = self.collect()
+        start = {"New page": "starts on a new page", "Right-hand page": "starts on a right-hand page",
+                 "Continuous": "follows straight on"}.get(s.get("chapter_start"), "starts on a new page")
+        msg = f"{n_ch} chapter{'s' if n_ch != 1 else ''} will be printed"
+        if skipped:
+            msg += f", {skipped} left out"
+        msg += f". Each {start}" + (" and is listed in the Contents." if s.get("toc") else ".")
+        if self.edited:
+            msg += "  (You've made changes - they'll be used when you build.)"
+        self.chap_summary.configure(text=msg)
 
     def _sel(self):
-        return list(self.chlist.curselection())
+        return sorted(int(x) for x in self.ctree.selection()) if hasattr(self, "ctree") else []
+
+    def show_preview(self):
+        sel = self._sel()
+        self.preview.configure(state="normal")
+        self.preview.delete("1.0", "end")
+        if self.book and len(sel) == 1:
+            ch = self.book.chapters[sel[0]]
+            found = (ch.label + " / " if ch.label else "") + ch.title
+            self.preview.insert("end", f"Heading found in your text:\n\u201c{found}\u201d\n\n", "found")
+            shown = 0
+            for b in ch.blocks:
+                if shown >= 12:
+                    self.preview.insert("end", "...")
+                    break
+                if b.kind == "anote":
+                    self.preview.insert("end", f"[{b.label or 'Note'}] {plain(b.text)}\n\n", "note")
+                elif b.kind == "scene":
+                    self.preview.insert("end", "* * *\n\n")
+                elif b.kind == "verse":
+                    self.preview.insert("end", "\n".join(plain(l) for l in b.lines) + "\n\n")
+                elif b.kind == "image":
+                    self.preview.insert("end", "[picture]\n\n")
+                else:
+                    self.preview.insert("end", plain(b.text) + "\n\n")
+                shown += 1
+        self.preview.configure(state="disabled")
+
+    def _tree_click(self, e):
+        if self.ctree.identify_region(e.x, e.y) == "cell" and self.ctree.identify_column(e.x) == "#1":
+            row = self.ctree.identify_row(e.y)
+            if row:
+                self.ctree.selection_set(row)
+                self.toggle_ch()
+                return "break"
+
+    def _tree_double(self, e):
+        if self.ctree.identify_region(e.x, e.y) == "cell" and self.ctree.identify_column(e.x) != "#1":
+            row = self.ctree.identify_row(e.y)
+            if row:
+                self.ctree.selection_set(row)
+                self.rename_ch()
+                return "break"
+
+    def _changed(self):
+        self.edited = True
+        self.fill_list()
+        self.show_preview()
 
     def rename_ch(self):
         sel = self._sel()
         if not self.book or len(sel) != 1:
             return
         ch = self.book.chapters[sel[0]]
-        new = simpledialog.askstring("Rename chapter", "Chapter title:", initialvalue=ch.title, parent=self)
-        if new is not None:
-            ch.title = new.strip()
-            self.fill_list()
-            self.chlist.selection_set(sel[0])
+        x, y, w, h = self.ctree.bbox(str(sel[0]), "title") or (0, 0, 0, 0)
+        if not w:
+            return
+        ent = ttk.Entry(self.ctree)
+        ent.insert(0, ch.title)
+        ent.select_range(0, "end")
+        ent.place(x=x, y=y, width=w, height=h)
+        ent.focus_set()
+
+        def done(save):
+            if save and ent.get().strip() != ch.title:
+                ch.title = ent.get().strip()
+                ent.destroy()
+                self._changed()
+            else:
+                ent.destroy()
+        ent.bind("<Return>", lambda e: done(True))
+        ent.bind("<Escape>", lambda e: done(False))
+        ent.bind("<FocusOut>", lambda e: done(True))
 
     def toggle_ch(self):
         if not self.book:
             return
         for i in self._sel():
             self.book.chapters[i].include = not self.book.chapters[i].include
-        sel = self._sel()
-        self.fill_list()
-        for i in sel:
-            self.chlist.selection_set(i)
+        self._changed()
 
     def move_ch(self, d):
         sel = self._sel()
@@ -815,9 +988,31 @@ class App(tk.Tk):
         chs = self.book.chapters
         if 0 <= j < len(chs):
             chs[i], chs[j] = chs[j], chs[i]
-            self.fill_list()
-            self.chlist.selection_set(j)
-            self.chlist.see(j)
+            self.ctree.selection_set(str(j))
+            self._changed()
+            self.ctree.see(str(j))
+
+    def merge_ch(self):
+        """Undo a wrong split: the chapter's heading goes back into the text where it was."""
+        sel = self._sel()
+        if not self.book or len(sel) != 1 or sel[0] == 0:
+            return
+        i = sel[0]
+        prev, ch = self.book.chapters[i - 1], self.book.chapters[i]
+        heading = ch.title if not ch.label else f"{ch.label} {ch.title}".strip()
+        prev.blocks.append(Block("head" if ch.heading_kind == "head" else "para", esc(heading)))
+        prev.blocks.extend(ch.blocks)
+        del self.book.chapters[i]
+        self.ctree.selection_set(str(i - 1))
+        self._changed()
+
+    def reset_chapters(self):
+        if self.book and (not self.edited or messagebox.askyesno(
+                "Undo all changes", "Find the chapters again from the source? Your renames, skips, moves "
+                                    "and merges will be lost.")):
+            self.edited = False
+            self.book = None
+            self.scan(force=True)
 
     def build(self):
         if self.busy:
@@ -833,6 +1028,12 @@ class App(tk.Tk):
             pass
         sig = self.source_sig(s)
         cached = self.book if (self.book is not None and sig == self.book_sig) else None
+        if cached is None and self.book is not None and self.edited:
+            if messagebox.askyesno("Keep your chapter changes?",
+                                   "The source or chapter settings changed after you edited the chapters.\n\n"
+                                   "Yes = build with your edited chapters\nNo = find the chapters again "
+                                   "(your edits will be lost)"):
+                cached = self.book
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
         self.logbox.configure(state="disabled")
@@ -869,6 +1070,7 @@ class App(tk.Tk):
                     self.refresh_fonts(item[1])
                 elif kind == "scanned":
                     self.book, self.book_sig = item[1], item[2]
+                    self.edited = False
                     for k in ("title", "author"):
                         if not self.var(k).get().strip() and getattr(self.book, k):
                             self.var(k).set(getattr(self.book, k))

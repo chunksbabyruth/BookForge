@@ -52,9 +52,7 @@ def run_build(book, s, log=print):
                 f"of {plan[0]} sheet(s) each" if len(set(plan)) == 1 else "of " + ", ".join(map(str, plan)) + " sheets")
         else:
             sig = "small-format layout"
-        flip = "SHORT" if SW > SH else "LONG"
-        if s.get("rotate_paper"):
-            flip = "LONG" if flip == "SHORT" else "SHORT"
+        flip = "SHORT" if SW > SH else "LONG"            # sheet size already reflects "Rotate paper 90"
         how = (f"double-sided, FLIP ON {flip} EDGE (or tick 'Rotate back sides' if your printer only offers the "
                "other flip)") if info["duplex"] else (
             "on a single-sided printer: print the 'fronts' file, put the printed stack back in the tray "
@@ -62,7 +60,9 @@ def run_build(book, s, log=print):
         notes.append(
             f"Imposed for binding ({lay}): {info['sheets']} sheet(s) of {s['sheet_size']} paper "
             f"({SW:g} x {SH:g} in); {sig}; {info['blanks']} blank page(s) added to fill the last sheet.\n"
-            f"  Print at Actual size / 100%, {how}. Print one test sheet first.\n  Folding: {info['instructions']}")
+            f"  Print at Actual size / 100%, {how}. Print one test sheet first.\n  Folding: {info['instructions']}"
+            + ("\n  Fold lines are printed on the inside of each fold (the side facing you as you fold)."
+               if s.get("fold_marks") and s.get("fold_side", "Inside").startswith("Inside") else ""))
 
     if s["fmt_cover"]:
         log("Drawing cover template...")

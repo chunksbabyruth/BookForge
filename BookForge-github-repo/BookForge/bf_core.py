@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 APP_AUTHOR = "ChunksBabyRuth"
 
 # --------------------------------------------------------------------------
@@ -111,6 +111,7 @@ class Chapter:
     level: int = 1       # 0 = part, 1 = chapter
     blocks: list = field(default_factory=list)
     include: bool = True
+    heading_kind: str = "head"   # what the heading was in the source: "head" (a heading) or "para" (a line)
 
     def display(self):
         if self.label and self.title:
@@ -460,8 +461,18 @@ END_RE = re.compile(r"(\*\*\*\s*END OF (THE|THIS) PROJECT GUTENBERG|"
                     r"^\s*End of (the )?Project Gutenberg|FULL PROJECT GUTENBERG LICEN[CS]E)", re.I)
 BYLINE_RE = re.compile(r"^\s*((translated|illustrated|edited|written|retold)\s+)?by\s", re.I)
 CONTENTS_RE = re.compile(r"^\s*(table of )?contents\.?\s*$|^\s*list of (illustrations|plates)\.?\s*$", re.I)
+NUM_WORDS = (r"(?:(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|"
+             r"fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|"
+             r"ninety|hundred|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|final)"
+             r"(?:[- ](?:one|two|three|four|five|six|seven|eight|nine|first|second|third|fourth|fifth|"
+             r"sixth|seventh|eighth|ninth))?)")
 LABEL_RE = re.compile(r"^\s*((chapter|chap\.|part|book|section|canto|letter|stave|act)\s+"
-                      r"([ivxlcdm]+|\d+|[a-z\-]+)\.?|[ivxlcdm]+\.?|\d+\.?)\s*$", re.I)
+                      r"([ivxlcdm]+|\d+|" + NUM_WORDS + r")\.?|[ivxlcdm]+\.?|\d+\.?)\s*$", re.I)
+# AO3 / fanfic page labels that start with "Chapter" but are not chapters
+AO3_LABEL_RE = re.compile(r"^\s*(chapter\s+(summary|notes|end\s+notes|text)|(work\s+)?(end\s+)?notes|"
+                          r"summary|author'?s'?\s+notes?)\s*:?\s*$", re.I)
+PARA_CHAPTER_RE = re.compile(r"^\s*(chapter|part|prologue|epilogue|interlude)\b.{0,50}$", re.I)
+FIC_FRONT_RE = re.compile(r"^\s*(preface|afterword)\s*$", re.I)
 
 
 def _ev_text(ev):
@@ -490,7 +501,7 @@ def cut_gutenberg(events):
 
 NOTE_LABEL_RE = re.compile(r"^\(?\s*((chapter|work)\s+)?(end\s+)?(notes?|summary|author'?s'?\s+notes?)"
                            r"(\s*\(.*\))?\s*:?\s*\)?$", re.I)
-SEE_END_RE = re.compile(r"^\(\s*see the end of the (chapter|work) for (more )?notes\.?\s*\)$", re.I)
+SEE_END_RE = re.compile(r"^\(?\s*see the end of the (chapter|work) for (more )?notes\.?\s*\)?$", re.I)
 AN_RE = re.compile(r"^\s*[\(\[]?\s*(?:A/N\b|A/N:|AN\s*:|(?i:author'?s'?\s+notes?)\s*:)")
 META_RE = re.compile(r"^(rating|archive warnings?|warnings?|categor(y|ies)|fandoms?|relationships?|"
                      r"pairings?|characters?|additional tags|freeform tags|tags|language|series|stats|"
@@ -522,7 +533,7 @@ def is_scene(text, s, markers=None):
 def events_to_book(events, s, meta=None, images=None):
     meta = meta or {}
     images = images or {}
-    if s.get("strip_gutenberg"):
+    if s.get("strip_gutenberg") and not s.get("_gut_cut_done"):
         events = cut_gutenberg(events)
     # headings inside author's-note boxes are note labels, not chapters
     depth, fixed = 0, []
@@ -535,13 +546,31 @@ def events_to_book(events, s, meta=None, images=None):
             ev = ("notelabel", ev[2])
         fixed.append(ev)
     events = fixed
-    heads = [e for e in events if e[0] == "head"]
+    toc = {re.sub(r"\W+", "", t.lower()) for t in (meta or {}).get("toc_titles", [])}
+    toc.discard("")
+    heads = [e for e in events if e[0] == "head" and not AO3_LABEL_RE.match(e[2])]
+    events = [e for e in events if not (e[0] == "head" and AO3_LABEL_RE.match(e[2]))]
+    # Chapters marked only by "Chapter 1." paragraphs (e.g. AO3 one-shots with chapters in the text)
+    para_mode = False
+    if s.get("split_mode", "Auto") == "Auto":
+        mtitle = re.sub(r"\W+", "", (meta or {}).get("title", "").lower())
+        story_heads = {re.sub(r"\W+", "", e[2].lower()) for e in heads if not FIC_FRONT_RE.match(e[2])}
+        story_heads = {h for h in story_heads if h and not (mtitle and mtitle.startswith(h))}
+        para_marks = [i for i, e in enumerate(events) if e[0] == "para" and len(plain(e[1]).strip()) <= 60
+                      and PARA_CHAPTER_RE.match(plain(e[1]).strip()) and not AO3_LABEL_RE.match(plain(e[1]).strip())]
+        if len(story_heads) <= 1 and len(para_marks) >= 2:
+            para_mode = True
+            for i in para_marks:
+                events[i] = ("head", 99, plain(events[i][1]).strip())
+            heads = [e for e in events if e[0] == "head"]
     counts = {}
     for e in heads:
         counts[e[1]] = counts.get(e[1], 0) + 1
     mode = s.get("split_mode", "Auto")
     part_level = None
-    if mode.startswith("Heading level"):
+    if para_mode:
+        chap_level = 99
+    elif mode.startswith("Heading level"):
         chap_level = int(mode[-1])
     elif mode == "No chapters":
         chap_level = None
@@ -557,8 +586,14 @@ def events_to_book(events, s, meta=None, images=None):
                 language=meta.get("language", "en") or "en")
     markers = scene_markers(s)
     strip = s.get("strip_gutenberg", True)
+    # EPUB table of contents: if it lists most chapter headings, headings it leaves out are
+    # headings the author used inside the story, not chapters.
+    lvl_heads = [e[2] for e in heads if chap_level is not None and e[1] == chap_level]
+    in_toc = [h for h in lvl_heads if re.sub(r"\W+", "", h.lower()) in toc]
+    use_toc = bool(toc) and len(in_toc) >= 2 and len(in_toc) >= 0.6 * len(lvl_heads)
     cur = None
     note_depth, note_label = 0, ""
+    see_label = ""
     pending_label = None
 
     def add_block(b):
@@ -588,12 +623,17 @@ def events_to_book(events, s, meta=None, images=None):
         if k == "head" and chap_level is not None and (ev[1] == chap_level or ev[1] == part_level):
             pending_label = None
             text = ev[2].strip()
+            if use_toc and cur is not None and not LABEL_RE.match(text) and \
+                    not FIC_FRONT_RE.match(text) and re.sub(r"\W+", "", text.lower()) not in toc:
+                add_block(Block("head", esc(text)))         # heading inside the story text
+                continue
             lvl = 0 if ev[1] == part_level else 1
             if cur is not None and not cur.blocks and cur.level == lvl and \
                     LABEL_RE.match(cur.title) and not cur.label and not LABEL_RE.match(text):
                 cur.label, cur.title = cur.title, text
                 continue
-            cur = Chapter(title=text, level=lvl)
+            cur = Chapter(title=text, level=lvl,
+                          heading_kind="para" if (s.get("_gut_cut_done") or para_mode) else "head")
             book.chapters.append(cur)
             continue
         txt = _ev_text(ev).strip() if k in ("para", "quote", "verse", "item", "subtitle") else ""
@@ -612,8 +652,13 @@ def events_to_book(events, s, meta=None, images=None):
             if len(txt) < 45 and NOTE_LABEL_RE.match(txt) and nxt == "quote":
                 pending_label = txt.rstrip(":").strip()
                 continue
+            if len(txt) < 45 and NOTE_LABEL_RE.match(txt) and nxt == "para" and \
+                    SEE_END_RE.match(_ev_text(events[idx + 1]).strip()):
+                see_label = txt.rstrip(":").strip()
+                continue
             if SEE_END_RE.match(txt) or AN_RE.match(txt):
-                note(ev[1], "")
+                note(ev[1], see_label if SEE_END_RE.match(txt) else "")
+                see_label = ""
                 continue
             if strip and FIC_BOILER_RE.match(txt):
                 continue
@@ -634,7 +679,7 @@ def events_to_book(events, s, meta=None, images=None):
                     any(b.kind == "meta" for b in (cur.blocks if cur else book.front_blocks)):
                 note(SUMMARY_RE.sub("", re.sub(r"^\s*<b>(.*?)</b>", r"\1", ev[1])).strip(), "Summary")
                 continue
-            if META_RE.match(txt) and len(txt) < 600:
+            if META_RE.match(txt) and len(txt) < 4000:      # AO3 tag lists can be long
                 add_block(Block("meta", ev[1]))
                 continue
             if is_scene(txt, s, markers):
@@ -644,6 +689,8 @@ def events_to_book(events, s, meta=None, images=None):
         if k == "head":
             if chap_level is not None and ev[1] < chap_level and cur is None:
                 continue          # book title etc. before first chapter
+            if strip and chap_level is not None and ev[1] != chap_level and FIC_FRONT_RE.match(ev[2]):
+                continue          # AO3 "Afterword" page heading
             add_block(Block("head", esc(ev[2])))
         elif k == "para":
             add_block(Block("para", ev[1]))
@@ -687,6 +734,22 @@ def events_to_book(events, s, meta=None, images=None):
             ch.blocks = harvest(ch.blocks)
             if all(b.kind in ("para", "head", "scene") and len(plain(b.text)) < 200 for b in ch.blocks):
                 ch.include = False          # nothing but the work's title page
+    if len(book.fic_meta) >= 3:              # a fanfic download: its "Preface" pages are not chapters
+        tnorm = re.sub(r"\W+", "", (book.title or "").lower())
+        for ch in book.chapters[:3]:
+            if not ch.include or not (FIC_FRONT_RE.match(ch.title or "") and ch.title.strip().lower() == "preface"
+                                      or (tnorm and re.sub(r"\W+", "", ch.title.lower()) == tnorm)):
+                continue
+            if sum(len(plain(b.text)) for b in ch.blocks if b.kind in ("para", "verse")) > 4000:
+                continue                     # real story text: leave it alone
+            rest = harvest(ch.blocks)
+            for b in rest:                   # e.g. "Translation into ... available" lists
+                pt = plain(b.text).strip()
+                if b.kind in ("para", "item") and pt and not BYLINE_RE.match(pt) and \
+                        not FIC_BOILER_RE.match(pt) and pt.lower() != (book.title or "").lower() and \
+                        "posted originally on the archive" not in pt.lower():
+                    book.fic_meta.append(b.text)
+            ch.include = False
     if len(book.fic_meta) < 3:              # not really a fanfic header: put lines back
         book.front_blocks = [Block("para", m) for m in book.fic_meta] + book.front_blocks
         book.fic_meta = []
@@ -761,6 +824,21 @@ def parse_epub(path, s):
     for it in opf.find("opf:manifest", NS):
         manifest[it.get("id")] = (posixpath.normpath(posixpath.join(base, it.get("href", ""))),
                                   it.get("media-type", ""), it.get("properties", "") or "")
+    toc_titles = []
+    for _id, (href, mt, props) in manifest.items():
+        try:
+            if mt == "application/x-dtbncx+xml" and href in names:
+                import warnings
+                from bs4 import XMLParsedAsHTMLWarning
+                warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+                ncx = BeautifulSoup(z.read(href), "html.parser")
+                toc_titles += [x.get_text(" ", strip=True) for x in ncx.find_all("navlabel")]
+            elif "nav" in props and href in names:
+                nav = BeautifulSoup(z.read(href), "html.parser")
+                toc_titles += [a.get_text(" ", strip=True) for a in nav.find_all("a")]
+        except Exception:
+            pass
+    meta["toc_titles"] = toc_titles
     spine = [ir.get("idref") for ir in opf.find("opf:spine", NS)
              if ir.get("linear", "yes") != "no"]
     events, images = [], {}
@@ -801,6 +879,10 @@ def parse_html_file(path, s):
     events = []
     walk(soup.body or soup, events, s.get("strip_gutenberg", True))
     meta = {"title": (soup.title.get_text().strip() if soup.title else "")}
+    h1 = soup.find("h1")
+    h1t = " ".join(h1.get_text(" ").split()) if h1 else ""
+    if h1t and meta["title"].startswith(h1t) and len(h1t) < len(meta["title"]):
+        meta["title"] = h1t           # e.g. AO3: "<Title> - <Author> - <Fandom>" -> "<Title>"
     images = {}
     if s.get("include_images"):
         import os
@@ -930,6 +1012,15 @@ def parse_text(text, s, is_md=False, meta=None):
         lines = lines[st + 1:]
         en = next((i for i, l in enumerate(lines) if END_RE.search(l)), len(lines))
         lines = lines[:en]
+    # "Rating:" on one line and its value on the next (copied AO3 work info) -> one line
+    for i, l in enumerate(lines):
+        if META_RE.match(l.strip()) and l.strip().endswith(":"):
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and lines[j].strip() and not META_RE.match(lines[j].strip()):
+                lines[i] = l.rstrip() + " " + lines[j].strip()
+                lines[j] = ""
     n = len(lines)
 
     def standalone(i):
@@ -940,7 +1031,14 @@ def parse_text(text, s, is_md=False, meta=None):
     mode = s.get("split_mode", "Auto")
     md_heads = [i for i, l in enumerate(lines) if re.match(r"^#{1,6}\s+\S", l)]
     kw_heads = [i for i, l in enumerate(lines) if len(l.strip()) < 80 and
-                (KEYWORD_RE.match(l) or NUM_RE.match(l)) and standalone(i)]
+                (KEYWORD_RE.match(l) or NUM_RE.match(l)) and standalone(i) and not AO3_LABEL_RE.match(l)]
+    # When the chapter lines are numbered ("Chapter 12: ..."), an un-numbered "Chapter ..." line
+    # (e.g. "Chapter triggers!" in an author's note) is ordinary text, not a chapter.
+    chap_lines = [i for i in kw_heads if re.match(r"^\s*chapter\b", lines[i], re.I)]
+    numbered = [i for i in chap_lines if re.match(r"^\s*chapter\s+([ivxlcdm]+\b|\d+|" + NUM_WORDS + r"\b)",
+                                                 lines[i], re.I)]
+    if len(numbered) >= 2 and len(numbered) > len(chap_lines) / 2:
+        kw_heads = [i for i in kw_heads if i not in chap_lines or i in numbered]
     caps_heads = [i for i, l in enumerate(lines) if 3 < len(l.strip()) <= 60 and standalone(i)
                   and l.strip() == l.strip().upper() and re.search(r"[A-Z]{3}", l)
                   and not l.strip().endswith(("!", "?", ",")) and not SCENE_RE.match(l)]
@@ -982,11 +1080,42 @@ def parse_text(text, s, is_md=False, meta=None):
                 events.append(("para", m))
             para.clear()
 
+    has_ct = any(l.strip().lower() == "chapter text" for l in lines)
+    note = {"open": False, "left": None}
+
+    def close_note():
+        if note["open"]:
+            flush()
+            events.append(("note_close",))
+            note["open"], note["left"] = False, None
+
+    seen_head = False
     for i, raw in enumerate(lines):
         if i in skip_next:
             continue
         l = raw.rstrip()
+        st = l.strip()
+        if st and standalone(i) and AO3_LABEL_RE.match(st) and kind != "md":
+            close_note()
+            flush()
+            if st.lower() == "chapter text":
+                continue                      # AO3 landmark: the story starts here
+            lab = st.rstrip(":").strip()
+            events.append(("note_open", "summary" if "summary" in lab.lower() else "notes"))
+            events.append(("notelabel", lab))
+            note["open"] = True
+            starts_chapter = seen_head and not re.search(r"end", lab, re.I)
+            note["left"] = 1 if (starts_chapter and not has_ct) else None
+            continue
+        if note["open"] and note["left"] is not None and not st and para:
+            flush()
+            note["left"] -= 1
+            if note["left"] <= 0:
+                close_note()
+            continue
         if i in head_set:
+            close_note()
+            seen_head = seen_head or not FIC_FRONT_RE.match(st)
             flush()
             if kind == "md":
                 mm = re.match(r"^(#{1,6})\s+(.*)$", l)
@@ -1002,7 +1131,11 @@ def parse_text(text, s, is_md=False, meta=None):
                 j = i + 1
                 while j < n and not lines[j].strip():
                     j += 1
-                if kind == "kw" and LABEL_RE.match(title) and j < n and j not in head_set:
+                k2 = j + 1
+                while k2 < n and not lines[k2].strip():
+                    k2 += 1
+                has_body = k2 < n and k2 not in head_set     # text must follow, or it isn't a title
+                if kind == "kw" and LABEL_RE.match(title) and j < n and j not in head_set and has_body:
                     cand = lines[j].strip()
                     after_blank = j + 1 >= n or not lines[j + 1].strip()
                     if cand and len(cand) < 70 and after_blank and not cand.endswith((".", ",", ";")) \
@@ -1039,9 +1172,10 @@ def parse_text(text, s, is_md=False, meta=None):
             flush()
         else:
             para.append(t)
+    close_note()
     flush()
     s2 = dict(s)
-    s2["strip_gutenberg"] = False
+    s2["_gut_cut_done"] = True
     if kind in ("kw", "caps", "custom"):
         s2["split_mode"] = "Auto"
     if kind == "none":

@@ -28,6 +28,107 @@ STYLES = ("R", "B", "I", "BI")
 FONT_EXT = (".ttf", ".otf", ".ttc", ".otc", ".woff", ".woff2")
 
 
+# --------------------------------------------------------------------------
+# Fonts that ship with BookForge (SIL Open Font License, original files from
+# github.com/google/fonts, unmodified; licences in fonts/<folder>/OFL.txt).
+# Most are variable fonts: genuine static Regular/Bold instances are made on the user's
+# PC the first time they are used (cached), never faked. Missing styles stay missing.
+# --------------------------------------------------------------------------
+INCLUDED = {   # name: (folder, upright file, italic file or None, use)
+    "EB Garamond": ("ebgaramond", "EBGaramond[wght].ttf", "EBGaramond-Italic[wght].ttf", "book"),
+    "Crimson Pro": ("crimsonpro", "CrimsonPro[wght].ttf", "CrimsonPro-Italic[wght].ttf", "book"),
+    "Source Serif 4": ("sourceserif4", "SourceSerif4[opsz,wght].ttf", "SourceSerif4-Italic[opsz,wght].ttf", "book"),
+    "Libre Baskerville": ("librebaskerville", "LibreBaskerville[wght].ttf", "LibreBaskerville-Italic[wght].ttf",
+                          "book"),
+    "Libre Caslon Text": ("librecaslontext", "LibreCaslonText[wght].ttf", "LibreCaslonText-Italic[wght].ttf",
+                          "book"),
+    "Literata": ("literata", "Literata[opsz,wght].ttf", "Literata-Italic[opsz,wght].ttf", "book"),
+    "Lora": ("lora", "Lora[wght].ttf", "Lora-Italic[wght].ttf", "book"),
+    "Alegreya": ("alegreya", "Alegreya[wght].ttf", "Alegreya-Italic[wght].ttf", "book"),
+    "Cormorant Garamond": ("cormorantgaramond", "CormorantGaramond[wght].ttf",
+                           "CormorantGaramond-Italic[wght].ttf", "display"),
+    "Cinzel": ("cinzel", "Cinzel[wght].ttf", None, "display"),
+    "IM Fell English": ("imfellenglish", "IMFeENrm28P.ttf", "IMFeENit28P.ttf", "display"),
+    "Playfair Display": ("playfairdisplay", "PlayfairDisplay[wght].ttf", "PlayfairDisplay-Italic[wght].ttf",
+                         "display"),
+}
+# Requested fonts that are commercial / come with Windows or Office: they can't be shipped, but
+# appear in the font lists automatically once installed on the PC (or added with "My fonts...").
+NOT_INCLUDED = ["Garamond", "Palatino Linotype", "Book Antiqua", "Georgia", "Baskerville", "Caslon",
+                "Minion Pro", "Bembo", "Sabon"]
+
+
+def included_dir():
+    import sys
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "fonts")
+
+
+def included_families():
+    """Included families whose files are present (book fonts first, then title/display fonts)."""
+    d = included_dir()
+    names = [n for n, v in INCLUDED.items() if os.path.exists(os.path.join(d, v[0], v[1]))]
+    return sorted(names, key=lambda n: (INCLUDED[n][3] != "book", n.lower()))
+
+
+def _set_style_names(ft, italic, weight):
+    """Give a generated instance its own style names; fonts that share a PostScript name get merged
+    into one in a PDF, which would silently turn Bold back into Regular."""
+    name = ft["name"]
+    fam = name.getDebugName(16) or name.getDebugName(1) or "Font"
+    sub = {(False, 400): "Regular", (False, 700): "Bold", (True, 400): "Italic", (True, 700): "Bold Italic"}[
+        (italic, weight)]
+    ps_base = re.sub(r"[^A-Za-z0-9]", "", fam)
+    for rec in list(name.names):
+        if rec.nameID in (1, 16):
+            rec.string = fam
+        elif rec.nameID in (2, 17):
+            rec.string = sub
+        elif rec.nameID == 4:
+            rec.string = f"{fam} {sub}"
+        elif rec.nameID == 6:
+            rec.string = f"{ps_base}-{sub.replace(' ', '')}"
+
+
+def _static(path, weight, italic=False):
+    """A genuine static instance of a variable font at `weight` (None if out of range / not variable)."""
+    from fontTools.ttLib import TTFont as FT
+    ft = FT(path, lazy=True)
+    if "fvar" not in ft:
+        return path if weight == 400 else None
+    axes = {a.axisTag: (a.minValue, a.defaultValue, a.maxValue) for a in ft["fvar"].axes}
+    lo, _d, hi = axes.get("wght", (weight, weight, weight))
+    if not lo <= weight <= hi:
+        return None
+    st = os.stat(path)
+    # keyed on the font file itself (name + size), not its location: the single-file program
+    # unpacks to a new temporary folder every time it starts
+    key = hashlib.sha1(f"v3|{os.path.basename(path)}|{weight}|{italic}|{st.st_size}".encode()).hexdigest()[:12]
+    cdir = os.path.join(appdata_dir(), "fontcache")
+    os.makedirs(cdir, exist_ok=True)
+    out = os.path.join(cdir, f"inc_{key}.ttf")
+    if not os.path.exists(out):
+        from fontTools.varLib import instancer
+        loc = {tag: (weight if tag == "wght" else dflt) for tag, (_mn, dflt, _mx) in axes.items()}
+        inst = instancer.instantiateVariableFont(FT(path), loc)
+        _set_style_names(inst, italic, weight)
+        inst.save(out)
+    return out
+
+
+def included_files(name):
+    """{"R": (path, 0), ...} with only the styles this family genuinely has."""
+    folder, up, it, _use = INCLUDED[name]
+    d = os.path.join(included_dir(), folder)
+    files = {}
+    for sty, fname, w in (("R", up, 400), ("B", up, 700), ("I", it, 400), ("BI", it, 700)):
+        if fname and os.path.exists(os.path.join(d, fname)):
+            p = _static(os.path.join(d, fname), w, italic=sty in ("I", "BI"))
+            if p:
+                files[sty] = (p, 0)
+    return files
+
+
 def appdata_dir():
     d = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "BookForge")
     os.makedirs(d, exist_ok=True)
@@ -154,7 +255,8 @@ def scan_installed(force=False):
 
 def list_families(custom=(), installed=True):
     names = list(BUILTIN)
-    names += [c["name"] for c in custom if c.get("name")]
+    names += [n for n in included_families() if n not in names]
+    names += [c["name"] for c in custom if c.get("name") and c["name"] not in names]
     if installed:
         seen = set(names)
         names += sorted((f for f in scan_installed() if f not in seen), key=str.lower)
@@ -281,6 +383,28 @@ def resolve(display, s, log=print):
     if display in BUILTIN:
         return BUILTIN[display]
     custom = {c.get("name"): c for c in s.get("custom_fonts") or []}
+    if display in INCLUDED and display not in custom:
+        try:
+            import time
+            t0 = time.time()
+            files = included_files(display)
+            if time.time() - t0 > 1:
+                log(f'Prepared the included font "{display}" (first use only - it is saved for next time).')
+        except Exception as e:
+            files = {}
+            log(f'WARNING: couldn\'t prepare the included font "{display}" ({e}).')
+        if "R" not in files:
+            log(f'WARNING: the included font "{display}" is missing from this copy of BookForge, so Times was used.')
+            return BUILTIN["Times (built-in)"]
+        missing = [lab for k, lab in (("B", "bold"), ("I", "italic"), ("BI", "bold italic")) if k not in files]
+        if missing:
+            log(f'Note: "{display}" has no {", ".join(missing)} style; the nearest real style is used '
+                f'(nothing is faked).')
+        try:
+            return register_family(display, files)
+        except Exception as e:
+            log(f'WARNING: couldn\'t use the font "{display}" ({e}), so Times was used.')
+            return BUILTIN["Times (built-in)"]
     if display in custom:
         c = custom[display]
         files = {k: (c[k], 0) for k in STYLES if c.get(k) and os.path.exists(c[k])}

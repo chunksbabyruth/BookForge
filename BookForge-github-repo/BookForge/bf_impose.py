@@ -21,9 +21,23 @@ SHEETS = {  # portrait width, height in points
     "Half Letter": (396, 612), "Executive": (522, 756), "Note": (540, 720),
     "A3": (842, 1191), "A4": (595, 842), "A5": (420, 595), "A6": (297, 420),
     "B4": (708, 1000), "B5": (498, 708), "JIS B4": (729, 1032), "JIS B5": (516, 729),
-    "Postcard": (283, 416), "Custom": None,
+    "Postcard": (283, 416),
+    "Ledger (17 x 11)": (792, 1224), "US Foolscap (8.5 x 13)": (612, 936), "Foolscap (9 x 13)": (648, 936),
+    "A0": (2384, 3370), "A1": (1684, 2384), "A2": (1191, 1684), "A7": (210, 297), "A8": (148, 210),
+    "A9": (105, 148), "B0": (2834, 4008), "B1": (2004, 2834), "B2": (1417, 2004), "B3": (1000, 1417),
+    "B6": (354, 498), "B7": (249, 354), "B8": (175, 249), "B9": (124, 175), "B10": (87, 124),
+    "JIS B0": (2920, 4127), "JIS B1": (2064, 2920), "JIS B2": (1460, 2064), "JIS B3": (1032, 1460),
+    "JIS B6": (363, 516), "JIS B7": (258, 363), "Arch A": (648, 864), "Arch B": (864, 1296),
+    "Arch C": (1296, 1728), "Arch E": (2592, 3456), "ID-1": (153, 242.65), "ID-2": (210, 297),
+    "ID-3": (249, 354), "Crown Quarto": (535, 697), "Large Crown Quarto": (569, 731),
+    "Demy Quarto": (620, 782), "Royal Quarto": (671, 884), "Crown Octavo": (348, 527),
+    "Large Crown Octavo": (365, 561), "Demy Octavo": (391, 612), "Royal Octavo": (442, 663),
+    "Small Paperback": (314, 504), "Penguin Small Paperback": (314, 513),
+    "Penguin Large Paperback": (365, 561),
+    "Custom": None,
 }
-UNITS = {"in": 72.0, "mm": 72.0 / 25.4, "pt": 1.0}
+UNITS = {"in": 72.0, "cm": 72.0 / 2.54, "mm": 72.0 / 25.4, "pt": 1.0}
+FOLD_SIDES = ["Inside (recommended)", "Outside", "Both sides"]
 FOLD_LAYOUTS = {  # name: (rows, cols, folds, landscape sheet)
     "Folio - 2 pages per side": (1, 2, "V", True),
     "Quarto - 4 pages per side": (2, 2, "HV", False),
@@ -56,7 +70,7 @@ IMPOSE_DEFAULTS = {
     "printer_type": "Duplex (two-sided printer)", "rotate_paper": False, "rotate_back": False,
     "imp_scaling": "Keep proportional", "imp_position": "Centered",
     "imp_fore": 0.0, "imp_binding": 0.0, "imp_top": 0.0, "imp_bottom": 0.0,
-    "fold_marks": True, "cut_marks": False, "edge_marks": False, "sig_marks": True,
+    "fold_marks": True, "fold_side": "Inside (recommended)", "cut_marks": False, "edge_marks": False, "sig_marks": True,
     "sewing_marks": False, "sewing_where": "Center of every folio", "sewing_margin": 72.0,
     "sewing_count": 3, "sewing_tape": 36.0, "imp_files": "Aggregated file only",
     "wacky_spacing": "Packed", "wacky_fore": 0.0,
@@ -82,22 +96,28 @@ def sheet_points(s):
 
 
 def parse_range(text, n):
-    """'1-8, 10, 12-' -> zero-based page indexes (all pages when empty)."""
+    """'1-8, 10, 12-' -> sorted, de-duplicated zero-based page indexes.
+
+    Like bookbinder-js: reversed ranges ('6-4') are accepted and anything that selects no
+    valid page falls back to the whole document. Open-ended ranges ('12-', '-5') also work.
+    """
     text = (text or "").strip()
     if not text:
         return list(range(n))
-    out = []
+    picked = set()
     for part in re.split(r"[,;\s]+", text):
         if not part:
             continue
         m = re.fullmatch(r"(\d*)\s*-\s*(\d*)", part)
-        if m:
+        if m and (m.group(1) or m.group(2)):
             a = int(m.group(1) or 1)
             b = int(m.group(2) or n)
-            out += list(range(max(1, a), min(n, b) + 1))
+            if a > b:
+                a, b = b, a
+            picked.update(p for p in range(a, b + 1) if 1 <= p <= n)
         elif part.isdigit() and 1 <= int(part) <= n:
-            out.append(int(part))
-    return [p - 1 for p in out]
+            picked.add(int(part))
+    return [p - 1 for p in sorted(picked)] if picked else list(range(n))
 
 
 def signature_plan(sheets, s):
@@ -156,7 +176,37 @@ def fold_plan(rows, cols, folds, nsheets):
                 state[k] = {"up": "B", "rot": 0, "nv": 0, "inside": "B"}
         layers.append(layer)
     h, w = rows, cols
+    guides = {"F": [], "B": []}           # (x1, y1, x2, y2, fold_no, "in"/"out") in cell units
+
+    def crease(a, b):
+        """Shared edge of two neighbouring cells, in the simulation's (back-view) grid units."""
+        ra, ca = a[1], a[2]
+        rb, cb = b[1], b[2]
+        if ra == rb and abs(ca - cb) == 1:
+            x = max(ca, cb)
+            return (x, ra, x, ra + 1)
+        if ca == cb and abs(ra - rb) == 1:
+            y = max(ra, rb)
+            return (ca, y, ca + 1, y)
+        return None
     for fi, f in enumerate(folds):
+        # The fold is a valley as seen from above, so its guide belongs on the face that is
+        # showing on top of the packet right now - only across the top layer.
+        top_layer = layers[0]
+        face = state[next(iter(top_layer.values()))]["up"]
+        other = "F" if face == "B" else "B"
+        pairs = ([(top_layer.get((r, w // 2 - 1)), top_layer.get((r, w // 2))) for r in range(h)]
+                 if f == "V" else
+                 [(top_layer.get((h // 2 - 1, c)), top_layer.get((h // 2, c))) for c in range(w)])
+        for a, b in pairs:
+            seg = crease(a, b) if a and b else None
+            if not seg:
+                continue
+            x1, y1, x2, y2 = seg
+            mirrored = (cols - x1, y1, cols - x2, y2)       # same spot seen from the other face
+            on_back, on_front = (seg, mirrored)
+            guides[face].append((on_back if face == "B" else on_front) + (fi, "in"))
+            guides[other].append((on_back if other == "B" else on_front) + (fi, "out"))
         last = fi == len(folds) - 1
         if last:
             for st in state.values():
@@ -209,7 +259,17 @@ def fold_plan(rows, cols, folds, nsheets):
         plan[sh]["F"].append((r, cols - 1 - c, front_page, st["rot"], "L" if bind == "R" else "R",
                               st["inside"] == "F"))
     _PLANS[key] = plan
+    _GUIDES[(rows, cols, folds)] = guides
     return plan
+
+
+_GUIDES = {}
+
+
+def fold_guides(rows, cols, folds):
+    """Fold-line segments per sheet face ("F" = side printed first, "B" = other side)."""
+    fold_plan(rows, cols, folds, 1)
+    return _GUIDES[(rows, cols, folds)]
 
 
 def fold_instructions(layout, nested=True):
@@ -349,6 +409,20 @@ def _dashed(c, x1, y1, x2, y2):
     c.restoreState()
 
 
+FOLD_STYLES = [((10, 5), 0.8), ((5, 5), 0.65), ((3, 5), 0.5), ((1, 5), 0.45)]   # fold 1 boldest
+
+
+def _fold_line(c, x1, y1, x2, y2, fold_no):
+    from reportlab.lib.colors import HexColor
+    dash, width = FOLD_STYLES[min(fold_no, len(FOLD_STYLES) - 1)]
+    c.saveState()
+    c.setStrokeColor(HexColor("#666666"))
+    c.setLineWidth(width)
+    c.setDash(*dash)
+    c.line(x1, y1, x2, y2)
+    c.restoreState()
+
+
 def _cut(c, x1, y1, x2, y2, width=0.35):
     from reportlab.lib.colors import HexColor
     c.saveState()
@@ -395,6 +469,8 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
     if layout in FOLD_LAYOUTS:
         rows, cols, folds, landscape = FOLD_LAYOUTS[layout]
         W, H = (max(W0, H0), min(W0, H0)) if landscape else (min(W0, H0), max(W0, H0))
+        if s.get("rotate_paper"):
+            W, H = H, W
         per_sheet = 2 * rows * cols
         filled = len(order)
         while len(order) % per_sheet:
@@ -422,6 +498,8 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
         fmt = WACKY[layout]
         land = WACKY_LANDSCAPE[fmt]
         W, H = (max(W0, H0), min(W0, H0)) if land else (min(W0, H0), max(W0, H0))
+        if s.get("rotate_paper"):
+            W, H = H, W
         refs = [o for o in order]
         wsides = wacky_sides(fmt, len(refs), duplex)
         for i, side in enumerate(wsides):
@@ -510,17 +588,18 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
         if "rows" not in side:
             rows, cols, folds, _l = FOLD_LAYOUTS[layout]
             cw, ch = info["cell"]
-            if s["fold_marks"] and side["front"]:
-                for k in range(1, cols):
-                    _dashed(cv, k * cw, 0, k * cw, H)
-                for k in range(1, rows):
-                    _dashed(cv, 0, k * ch, W, k * ch)
+            if s["fold_marks"]:
+                where = s.get("fold_side", FOLD_SIDES[0])
+                show = {"in": not where.startswith("Outside"), "out": not where.startswith("Inside")}
+                for (x1, y1, x2, y2, fno, pos) in fold_guides(rows, cols, folds)["F" if side["front"] else "B"]:
+                    if show[pos]:
+                        _fold_line(cv, x1 * cw, H - y1 * ch, x2 * cw, H - y2 * ch, fno)
             for (x, y, w_, h_, bind, it) in rects:
                 if s["cut_marks"] and side["front"]:
                     _crop_marks(cv, x, y, w_, h_)
                 ex = x if bind == "L" else x + w_
                 d = -1 if bind == "L" else 1
-                if s["edge_marks"]:
+                if s["edge_marks"] and it["outer"]:
                     _cut(cv, ex, y + h_, ex + d * 6, y + h_, 0.6)
                     _cut(cv, ex, y, ex + d * 6, y, 0.6)
                 if s["sig_marks"] and it["outer"] and it["sigpage"] == 0 and len(info.get("plan") or []) > 1:
@@ -571,7 +650,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
     overlay = PdfReader(io.BytesIO(buf.getvalue()))
 
     # ---- assemble output files
-    rot_paper = 90 if s.get("rotate_paper") else 0
+    rot_paper = 0          # "Rotate paper 90" now changes the layout itself (see above)
 
     def build(side_list, back_rotate):
         wr = PdfWriter()

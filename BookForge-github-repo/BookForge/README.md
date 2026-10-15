@@ -17,9 +17,9 @@ BookForge is built with PyInstaller, and some antivirus programs wrongly flag Py
 ## What it does
 
 - **Keeps the text word for word.** Italics, bold, strikethrough, underline, lists, poetry line breaks and footnote numbers carry over; only invisible typesetting characters are tidied.
-- **Finds chapters automatically** from EPUB headings, "Chapter 1" lines, Markdown `#` headings, ALL-CAPS lines or your own pattern. You can review, rename, skip or reorder them before building.
+- **Finds chapters automatically** from EPUB headings (checked against the book's own contents list), "Chapter 1" lines, Markdown `#` headings, ALL-CAPS lines or your own pattern. The **Chapters** step shows every chapter, how it starts and its word count. You can rename, skip, reorder or merge wrongly split chapters before building, and your edits are never thrown away without asking.
 - **Builds the whole book:** title page, "This Book Belongs To" bookplate, dedication, an extra intro page, a contents page with real page numbers, chapter headings, "THE END" and lined notes pages.
-- **Typography:** any installed font, or your own font files (Regular / Italic / Bold / Bold Italic, OpenType included), with separate fonts for body text, headings and drop caps. Hyphenation in 20 languages with your own dictionary for invented words, and no widows, orphans or one-word last lines.
+- **Typography:** 12 free book and title fonts included (see *Fonts* below), any installed font, or your own font files (Regular / Italic / Bold / Bold Italic, OpenType included), with separate fonts for body text, headings and drop caps. Hyphenation in 20 languages with your own dictionary for invented words, and no widows, orphans or one-word last lines.
 - **Page layout:** 9 page sizes plus custom, mirrored margins, drop caps 2–5 lines tall with rules for opening quotation marks, ornaments, running headers, and several page-numbering styles.
 - **Section breaks:** recognises the markers your text uses (`***`, `~`, `o0o`…) and centres them.
 - **Fanfiction downloads (AO3, FanFicFare):** optional work-info and summary pages, and author's notes set apart, kept as written, or left out.
@@ -44,6 +44,14 @@ Everything the [bookbinder-js](https://github.com/momijizukamori/bookbinder-js) 
 - EPUB, Word (.docx), HTML and plain text
 
 Full printing and perfect-binding instructions are under **Help** in the program.
+
+## Fonts
+
+Included (SIL Open Font License, original files from [Google Fonts](https://github.com/google/fonts), licences in `fonts/*/OFL.txt`):
+EB Garamond, Crimson Pro, Source Serif 4, Libre Baskerville, Libre Caslon Text, Literata, Lora, Alegreya, and for titles Cormorant Garamond, Cinzel, IM Fell English and Playfair Display.
+Bold styles of variable fonts are generated on your PC the first time you use them. Missing styles are never faked: Cinzel has no italic, and IM Fell English has no bold.
+
+Commercial fonts can't be included: Garamond, Palatino Linotype, Book Antiqua, Georgia, Baskerville, Caslon, Minion Pro, Bembo and Sabon. Several come with Windows or Microsoft Office. They appear in the font lists automatically once installed, or you can add them with **My fonts…**.
 
 ## Command line
 
@@ -71,6 +79,8 @@ build_exe.bat                    # or build the program folder (appears in dist\
 | `bf_impose.py` | imposition: layouts, signatures, marks |
 | `bf_fonts.py` | font discovery, custom families, OpenType conversion |
 | `bf_theme.py` | the colour theme |
+| `tests/` | regression tests: `python tests/test_impose.py`, `test_chapters.py`, `test_build.py` (put test books in `tests/inputs/`) |
+| `docs/BOOKFORGE_TASKS.md` | development task tracker and notes |
 
 ## License
 

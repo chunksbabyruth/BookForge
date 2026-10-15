@@ -19,6 +19,7 @@ BUILD_DOWN = "#175553"
 # (key, tab label, spine colour) -- one bookcloth colour per tab
 TABS = [
     ("src", "Source", "#4A6FA5"),        # slate blue
+    ("chap", "Chapters", "#3F7F86"),     # sea green
     ("info", "Book info", "#7D5A8E"),    # dusty plum
     ("lay", "Layout", "#5E7F3A"),        # moss green
     ("front", "Front & back", "#94691F"),  # ochre
