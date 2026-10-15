@@ -2,7 +2,7 @@ name: Build BookForge for Windows
 
 on:
   push:
-    tags: ["v1.4.3*"]        # pushing a tag like v1.2 builds everything and attaches it to a Release
+    tags: ["v*"]        # pushing a tag like v1.2 builds everything and attaches it to a Release
   workflow_dispatch:     # also lets you click "Run workflow" on the Actions tab
 
 permissions:
@@ -11,6 +11,12 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    # Your repository keeps the program in this sub-folder. If you ever move the files to the top of the
+    # repository, change this line to   working-directory: .   and remove "BookForge-github-repo/BookForge/"
+    # from the two file lists at the bottom.
+    defaults:
+      run:
+        working-directory: BookForge-github-repo/BookForge
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -67,13 +73,13 @@ jobs:
         with:
           name: BookForge
           path: |
-            BookForge-Windows.zip
-            dist_onefile/BookForge.exe
+            BookForge-github-repo/BookForge/BookForge-Windows.zip
+            BookForge-github-repo/BookForge/dist_onefile/BookForge.exe
 
       - name: Attach the files to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            BookForge-Windows.zip
-            dist_onefile/BookForge.exe
+            BookForge-github-repo/BookForge/BookForge-Windows.zip
+            BookForge-github-repo/BookForge/dist_onefile/BookForge.exe
