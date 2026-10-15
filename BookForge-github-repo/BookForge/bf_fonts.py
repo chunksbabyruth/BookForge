@@ -271,6 +271,7 @@ def read_faces(path):
 
 
 _FAMILIES = None
+SCAN_REPORT = {"folders": [], "files": 0, "read": 0, "errors": []}
 
 
 def scan_installed(force=False):
@@ -285,7 +286,9 @@ def scan_installed(force=False):
     except Exception:
         cache = {}
     new_cache, fams = {}, {}
+    SCAN_REPORT.update(folders=font_dirs(), files=0, read=0, errors=[])
     for p in font_files():
+        SCAN_REPORT["files"] += 1
         try:
             st = os.stat(p)
             sig = [st.st_mtime, st.st_size]
@@ -297,9 +300,13 @@ def scan_installed(force=False):
         else:
             try:
                 faces = read_faces(p)
-            except Exception:
+            except Exception as e:
                 faces = []
+                if len(SCAN_REPORT["errors"]) < 8:
+                    SCAN_REPORT["errors"].append(f"{os.path.basename(p)}: {type(e).__name__}: {e}")
         new_cache[p] = [sig, faces]
+        if faces:
+            SCAN_REPORT["read"] += 1
         for fam, sub, idx, restricted in faces:
             sty = _style_of(sub)
             if not sty or restricted:
@@ -312,6 +319,22 @@ def scan_installed(force=False):
         pass
     _FAMILIES = {k: v for k, v in fams.items() if "R" in v}
     return _FAMILIES
+
+
+def font_report():
+    """Plain-text report of every place BookForge looks for fonts and what it found there."""
+    inc = included_families()
+    fams = scan_installed()
+    lines = [f"Included fonts folder: {included_dir()}  (exists: {os.path.isdir(included_dir())})",
+             f"Included fonts found: {len(inc)}  {', '.join(inc)}",
+             "Folders searched for installed fonts:"]
+    lines += [f"  {d}  (exists: {os.path.isdir(d)})" for d in SCAN_REPORT["folders"]]
+    lines += [f"Font files found: {SCAN_REPORT['files']}, read OK: {SCAN_REPORT['read']}",
+              f"Installed font families usable: {len(fams)}"]
+    if SCAN_REPORT["errors"]:
+        lines.append("First errors:")
+        lines += ["  " + e for e in SCAN_REPORT["errors"]]
+    return "\n".join(lines)
 
 
 def list_families(custom=(), installed=True):

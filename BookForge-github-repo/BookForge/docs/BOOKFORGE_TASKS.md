@@ -220,3 +220,14 @@ OPEN / NOT VERIFIED (carry forward):
       BookForge generates), gui_test5 OK, gui_test6 14/14, gui_test7 12/12, classics 0 word differences.
       Packaging check: program contains 76 font files + 14 OFL.txt + 10 OFL-static-files.txt, identical to repo;
       built program embeds original Lora / Playfair / Cinzel with no font preparation.
+
+## "Font lists only show the same 4" (user report)
+- Diagnosis: a 4-entry headings list = no included AND no installed fonts found by the copy the user runs.
+  Current code, frozen with PyInstaller (Wine), finds all 14 included + installed fonts (--font-report).
+  Likely causes: user runs an older .exe (all builds said "1.4"), or the GitHub copy lacks fonts/ (100-file upload
+  limit) so GitHub's build fails / has no fonts. NOT reproducible with the current code.
+- Added: BUILD_DATE shown in title + About; live font count under the Layout font lists (red warning if no
+  included fonts); Settings & storage > Fonts: counts, Rescan fonts, Font report; CLI: BookForge.exe
+  --font-report out.txt; bf_fonts.font_report()/SCAN_REPORT records folders, files, errors.
+- Regression PASS (chapters 16/16, impose 37/37, build 22/22, gui5 OK, gui6 14/14, gui7 12/12, gui8 5/5).
+- Delivered: BookForge-Windows.zip (verification build, folder version) + BookForge-github-repo.zip.

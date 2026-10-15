@@ -12,7 +12,7 @@ import traceback
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, APP_NAME, APP_VERSION, APP_AUTHOR,
+from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, APP_NAME, APP_VERSION, APP_AUTHOR, BUILD_DATE,
                      load_book, apply_info, plain, esc, Block)
 import bf_fonts
 from bf_fonts import SAME_BODY, SAME_HEAD
@@ -99,7 +99,7 @@ def resource(name):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"{APP_NAME} {APP_VERSION} \u2014 one-click book maker by {APP_AUTHOR}")
+        self.title(f"{APP_NAME} {APP_VERSION} (build {BUILD_DATE}) \u2014 one-click book maker by {APP_AUTHOR}")
         self.geometry("1100x800")
         self.minsize(900, 560)
         try:
@@ -466,6 +466,8 @@ class App(tk.Tk):
         fb = ttk.Frame(f, style=self.S("Card.TFrame"))
         fb.grid(row=3, column=1, sticky="w", padx=6, pady=(0, 4))
         ttk.Button(fb, text="My fonts...", command=self.font_manager, style=self.S("TButton")).pack(side="left")
+        self.font_count = ttk.Label(f, text="Looking for fonts...", style=self.S("CardHint.TLabel"))
+        self.font_count.grid(row=12, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0))
         ttk.Label(fb, text="use any font files, e.g. Medium + Medium Italic", style=self.S("CardHint.TLabel")).pack(
             side="left", padx=6)
         self.check(f, 4, "Bold titles and headings", "heading_bold")
@@ -809,11 +811,39 @@ class App(tk.Tk):
                 "(after restarting BookForge, or after choosing the folder here). Fonts installed in Windows "
                 "work too, and \"My fonts...\" on the Layout tab builds a family from any font files.")
 
-        head(10, "Fonts included with BookForge")
-        hint(11, f"{len(bf_fonts.included_families())} font families under the SIL Open Font License 1.1. "
-                 "Their licences ship with the program.")
-        ttk.Button(fr, text="Fonts & licences...", style=self.S("TButton"), command=self.licences_window).grid(
-            row=12, column=0, sticky="w", pady=(4, 0))
+        head(10, "Fonts")
+        counts = ttk.Label(fr, style=self.S("CardHint.TLabel"), wraplength=560, justify="left")
+        counts.grid(row=11, column=0, columnspan=3, sticky="w")
+
+        def show_counts():
+            inst = bf_fonts._FAMILIES
+            counts.configure(text=f"Included with BookForge (SIL Open Font License 1.1, licences ship with the "
+                                  f"program): {len(bf_fonts.included_families())} families.   Installed on this PC "
+                                  f"or in your fonts folder: " +
+                                  (f"{len(inst)} families." if inst is not None else "still looking..."))
+        show_counts()
+
+        def rescan():
+            counts.configure(text="Looking for fonts...")
+
+            def work():
+                self.q.put(("fonts", bf_fonts.scan_installed(force=True)))
+            threading.Thread(target=work, daemon=True).start()
+            w.after(1500, show_counts)
+
+        def report():
+            r = tk.Toplevel(w)
+            r.title("Font report")
+            txt = tk.Text(r, wrap="word", width=100, height=22, font=("Consolas", 9), padx=10, pady=8)
+            th.style_text(txt, self.k)
+            txt.pack(fill="both", expand=True)
+            txt.insert("1.0", f"{APP_NAME} {APP_VERSION} (build {BUILD_DATE})\n" + bf_fonts.font_report())
+        b2 = ttk.Frame(fr, style=self.S("Card.TFrame"))
+        b2.grid(row=12, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Button(b2, text="Rescan fonts", style=self.S("TButton"), command=rescan).pack(side="left")
+        ttk.Button(b2, text="Font report...", style=self.S("TButton"), command=report).pack(side="left", padx=6)
+        ttk.Button(b2, text="Fonts & licences...", style=self.S("TButton"), command=self.licences_window).pack(
+            side="left")
         ttk.Button(fr, text="Close", style=self.S("TButton"), command=w.destroy).grid(row=13, column=2, sticky="e",
                                                                                      pady=(14, 0))
 
@@ -864,7 +894,7 @@ class App(tk.Tk):
         w.transient(self)
         fr = ttk.Frame(w, padding=18, style=self.S("Card.TFrame"))
         fr.pack(fill="both", expand=True)
-        ttk.Label(fr, text=f"{APP_NAME} {APP_VERSION}", style=self.S("Card.TLabel"),
+        ttk.Label(fr, text=f"{APP_NAME} {APP_VERSION}  (build {BUILD_DATE})", style=self.S("Card.TLabel"),
                   font=("Georgia", 15, "bold")).pack(anchor="w")
         ttk.Label(fr, text=f"Made by {APP_AUTHOR}.  Free and open source (MIT License).\n\n"
                            "Turns EPUBs, text and Word files into print-ready books with page numbers, contents, "
@@ -927,6 +957,19 @@ class App(tk.Tk):
     def refresh_fonts(self, installed=None):
         names = bf_fonts.list_families(self.custom_fonts, installed=False)
         inst = installed if installed is not None else (bf_fonts._FAMILIES or {})
+        n_inc = len(bf_fonts.included_families())
+        try:
+            if n_inc == 0:
+                self.font_count.configure(text="No included fonts were found in this copy of BookForge - see "
+                                               "Settings & storage > Font report.", foreground="#E07A6F")
+            else:
+                scanned = installed is not None or bf_fonts._FAMILIES is not None
+                self.font_count.configure(
+                    text=f"{n_inc} fonts included with BookForge + " +
+                         (f"{len(inst)} installed on this PC" if scanned else "looking for installed fonts..."),
+                    foreground=th.MUTED)
+        except (AttributeError, tk.TclError):
+            pass
         seen = set(names)
         names += sorted((f for f in inst if f not in seen), key=str.lower)
         self.fonts = names
@@ -1394,6 +1437,12 @@ def cli(argv):
 
 
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--font-report":
+        bf_fonts.set_user_fonts_dir(None)
+        bf_fonts.scan_installed(force=True)
+        with open(sys.argv[2], "w", encoding="utf-8") as f:
+            f.write(bf_fonts.font_report() + "\n")
+        sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == "--cli":
         sys.exit(cli(sys.argv[2:]))
     if sys.platform == "win32":

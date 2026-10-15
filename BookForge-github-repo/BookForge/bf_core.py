@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
 APP_VERSION = "1.4"
+BUILD_DATE = "2026-10-15"     # shown next to the version so different builds can be told apart
 APP_AUTHOR = "ChunksBabyRuth"
 
 # --------------------------------------------------------------------------
