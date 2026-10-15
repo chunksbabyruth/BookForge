@@ -2,7 +2,7 @@ name: Build BookForge for Windows
 
 on:
   push:
-    tags: ["v*"]        # pushing a tag like v1.2 builds everything and attaches it to a Release
+    tags: ["v1.4.3*"]        # pushing a tag like v1.2 builds everything and attaches it to a Release
   workflow_dispatch:     # also lets you click "Run workflow" on the Actions tab
 
 permissions:
