@@ -1,85 +1,164 @@
 name: Build BookForge for Windows
 
 on:
-  push:
-    tags: ["v1.4.3*"]        # pushing a tag like v1.2 builds everything and attaches it to a Release
-  workflow_dispatch:     # also lets you click "Run workflow" on the Actions tab
+push:
+tags:
+- "v1.4.3*"
+workflow_dispatch:
 
 permissions:
-  contents: write
+contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest
-    # Your repository keeps the program in this sub-folder. If you ever move the files to the top of the
-    # repository, change this line to   working-directory: .   and remove "BookForge-github-repo/BookForge/"
-    # from the two file lists at the bottom.
-    defaults:
-      run:
-        working-directory: BookForge-github-repo/BookForge
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
+build:
+runs-on: windows-latest
 
-      - name: Check the fonts are in the repository
-        run: |
-          if (-not (Test-Path fonts)) { throw "There is no 'fonts' folder at the top of the repository. Upload the fonts folder (with its 14 sub-folders) next to BookForge.py." }
-          Get-ChildItem fonts -Directory | ForEach-Object {
-            $n = (Get-ChildItem $_.FullName -Filter *.ttf).Count
-            $l = Test-Path (Join-Path $_.FullName "OFL.txt")
-            Write-Host ("{0,-20} {1,3} font files   licence OFL.txt: {2}" -f $_.Name, $n, $l)
-          }
-          $ttf = (Get-ChildItem fonts -Recurse -Filter *.ttf).Count
-          $ofl = (Get-ChildItem fonts -Recurse -Filter OFL.txt).Count
-          Write-Host "In the repository: $ttf font files and $ofl licence files (expected 76 and 14)"
-          if ($ttf -lt 76 -or $ofl -lt 14) { throw "Some font files or licences are missing from the repository - compare the list above with the fonts folder on your PC." }
+defaults:
+  run:
+    working-directory: BookForge-github-repo/BookForge
 
-      - name: Install libraries
-        run: pip install reportlab pypdf beautifulsoup4 pillow python-docx pyphen fonttools
+steps:
+  - name: Check out repository
+    uses: actions/checkout@v5
 
-      # PyInstaller's stock launcher is shared by thousands of programs (including
-      # some malware), which is the main cause of antivirus false alarms. Compiling
-      # our own launcher gives BookForge a unique one. Falls back to the stock one
-      # if the compile ever fails, so the build never breaks.
-      - name: Install PyInstaller with a freshly compiled bootloader
-        env:
-          PYINSTALLER_COMPILE_BOOTLOADER: "1"
-        run: |
-          pip install --no-binary pyinstaller pyinstaller
-          if ($LASTEXITCODE -ne 0) { pip install pyinstaller }
+  - name: Set up Python
+    uses: actions/setup-python@v6
+    with:
+      python-version: "3.12"
 
-      - name: Build folder version (recommended download - fewest antivirus alarms)
-        run: pyinstaller --noconfirm --onedir --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --version-file version_info.txt --add-data "fonts;fonts" --collect-data docx --collect-data pyphen --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables --collect-submodules fontTools.varLib BookForge.py
+  - name: Verify project files and fonts
+    shell: pwsh
+    run: |
+      $requiredFiles = @(
+        "BookForge.py",
+        "bookforge.ico",
+        "version_info.txt"
+      )
 
-      - name: Check the fonts and their licences are inside the program
-        run: |
-          $f = "dist/BookForge/_internal/fonts"
-          if (-not (Test-Path $f)) { throw "The fonts folder is missing from the build. Check that fonts/ is in the repository and that the pyinstaller line above has --add-data fonts;fonts" }
-          $ttf = (Get-ChildItem $f -Recurse -Filter *.ttf).Count
-          $ofl = (Get-ChildItem $f -Recurse -Filter OFL.txt).Count
-          Write-Host "Inside the program: $ttf font files and $ofl licence files"
-          if ($ttf -lt 76 -or $ofl -lt 14) { throw "Some fonts or licences are missing from the built program" }
+      foreach ($file in $requiredFiles) {
+        if (-not (Test-Path $file -PathType Leaf)) {
+          throw "Required file is missing: $file"
+        }
+      }
 
-      - name: Zip the folder version
-        run: Compress-Archive -Path dist/BookForge -DestinationPath BookForge-Windows.zip
+      if (-not (Test-Path "fonts" -PathType Container)) {
+        $rootFonts = Join-Path $env:GITHUB_WORKSPACE "fonts"
 
-      - name: Build single-file version
-        run: pyinstaller --noconfirm --onefile --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --version-file version_info.txt --add-data "fonts;fonts" --collect-data docx --collect-data pyphen --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables --collect-submodules fontTools.varLib --distpath dist_onefile --workpath build_onefile BookForge.py
+        if (Test-Path $rootFonts -PathType Container) {
+          Write-Host "Copying fonts from repository root into the project folder."
+          Copy-Item $rootFonts "fonts" -Recurse
+        }
+        else {
+          throw "The fonts folder is missing from both the project folder and repository root. Commit the fonts folder and all 14 font-family folders to GitHub."
+        }
+      }
 
-      - name: Keep the files as downloadable artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: BookForge
-          path: |
-            BookForge-github-repo/BookForge/BookForge-Windows.zip
-            BookForge-github-repo/BookForge/dist_onefile/BookForge.exe
+      $fontFolders = @(Get-ChildItem "fonts" -Directory)
+      $ttf = @(Get-ChildItem "fonts" -Recurse -File -Filter "*.ttf").Count
+      $ofl = @(Get-ChildItem "fonts" -Recurse -File -Filter "OFL.txt").Count
 
-      - name: Attach the files to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            BookForge-github-repo/BookForge/BookForge-Windows.zip
-            BookForge-github-repo/BookForge/dist_onefile/BookForge.exe
+      Write-Host "Font family folders: $($fontFolders.Count)"
+      Write-Host "TTF files: $ttf"
+      Write-Host "OFL licenses: $ofl"
+
+      foreach ($folder in $fontFolders) {
+        $count = @(Get-ChildItem $folder.FullName -Recurse -File -Filter "*.ttf").Count
+        $license = Test-Path (Join-Path $folder.FullName "OFL.txt")
+        Write-Host "$($folder.Name): $count TTF files; OFL license: $license"
+      }
+
+      if ($fontFolders.Count -lt 14 -or $ttf -lt 76 -or $ofl -lt 14) {
+        throw "Font validation failed. Expected at least 14 font folders, 76 TTF files, and 14 OFL.txt licenses."
+      }
+
+  - name: Install application dependencies
+    shell: pwsh
+    run: |
+      python -m pip install --upgrade pip
+      python -m pip install reportlab pypdf beautifulsoup4 pillow python-docx pyphen fonttools
+
+  - name: Install PyInstaller with compiled bootloader
+    shell: pwsh
+    env:
+      PYINSTALLER_COMPILE_BOOTLOADER: "1"
+    run: |
+      python -m pip install --no-binary pyinstaller pyinstaller
+
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Compiled bootloader installation failed. Trying the standard PyInstaller package."
+        python -m pip install pyinstaller
+        if ($LASTEXITCODE -ne 0) {
+          throw "PyInstaller installation failed."
+        }
+      }
+
+  - name: Build folder version
+    shell: pwsh
+    run: |
+      python -m PyInstaller --noconfirm --clean --onedir --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --version-file version_info.txt --add-data "fonts;fonts" --collect-data docx --collect-data pyphen --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables --collect-submodules fontTools.varLib BookForge.py
+
+      if ($LASTEXITCODE -ne 0) {
+        throw "The folder build failed."
+      }
+
+  - name: Verify bundled fonts and licenses
+    shell: pwsh
+    run: |
+      $fontPath = "dist/BookForge/_internal/fonts"
+
+      if (-not (Test-Path $fontPath -PathType Container)) {
+        $fontPath = "dist/BookForge/fonts"
+      }
+
+      if (-not (Test-Path $fontPath -PathType Container)) {
+        throw "Bundled fonts were not found in the PyInstaller output."
+      }
+
+      $ttf = @(Get-ChildItem $fontPath -Recurse -File -Filter "*.ttf").Count
+      $ofl = @(Get-ChildItem $fontPath -Recurse -File -Filter "OFL.txt").Count
+
+      Write-Host "Bundled TTF files: $ttf"
+      Write-Host "Bundled OFL licenses: $ofl"
+
+      if ($ttf -lt 76 -or $ofl -lt 14) {
+        throw "The built application is missing font files or licenses."
+      }
+
+  - name: Package folder version
+    shell: pwsh
+    run: |
+      Compress-Archive -Path "dist/BookForge" -DestinationPath "BookForge-Windows.zip" -Force
+
+      if (-not (Test-Path "BookForge-Windows.zip")) {
+        throw "The Windows ZIP archive was not created."
+      }
+
+  - name: Build single-file version
+    shell: pwsh
+    run: |
+      python -m PyInstaller --noconfirm --clean --onefile --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --version-file version_info.txt --add-data "fonts;fonts" --collect-data docx --collect-data pyphen --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables --collect-submodules fontTools.varLib --distpath dist_onefile --workpath build_onefile BookForge.py
+
+      if ($LASTEXITCODE -ne 0) {
+        throw "The single-file build failed."
+      }
+
+      if (-not (Test-Path "dist_onefile/BookForge.exe")) {
+        throw "The single-file executable was not created."
+      }
+
+  - name: Upload Windows downloads
+    uses: actions/upload-artifact@v4
+    with:
+      name: BookForge-Windows
+      if-no-files-found: error
+      path: |
+        BookForge-github-repo/BookForge/BookForge-Windows.zip
+        BookForge-github-repo/BookForge/dist_onefile/BookForge.exe
+
+  - name: Attach downloads to GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: softprops/action-gh-release@v2
+    with:
+      files: |
+        BookForge-github-repo/BookForge/BookForge-Windows.zip
+        BookForge-github-repo/BookForge/dist_onefile/BookForge.exe
