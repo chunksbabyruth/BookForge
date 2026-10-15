@@ -36,7 +36,7 @@ DEFAULTS = {
     "align": "Justified", "indent": 0.25, "para_space": 6.0,
     "first_para_indent": True, "title_size": 23.0, "sub_size": 14.5,
     "heading_font": "Same as body text", "dropcap_font": "Same as headings", "heading_bold": True,
-    "custom_fonts": [],
+    "custom_fonts": [], "fonts_dir": "", "dark_mode": True,
     "hyph_lang": "English (US)", "hyph_min": 6, "hyph_words": "", "avoid_runts": True,
     "drop_cap_lines": 2, "drop_cap_quote": "Hang the quote in the margin",
     "scene_markers": "***, * * *, *, ~, ~~~, #, ###, o0o, oOo, xXx, -o-, \u2042, \u00a7",

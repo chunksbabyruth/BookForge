@@ -133,8 +133,22 @@ if os.path.exists(os.path.join(INPUTS, ULMO)):
     for p in PdfReader(pdf).pages:
         for v in (p.get("/Resources", {}).get("/Font", {}) or {}).values():
             names.add(str(v.get_object()["/BaseFont"]).split("+")[-1])
-    check({"EBGaramond-Regular", "Cinzel-Bold", "PlayfairDisplay-Regular"} <= names,
-          f"Ulmo: chosen included fonts are embedded {sorted(names)}")
+    import bf_fonts
+    from fontTools.ttLib import TTFont
+
+    def ps(family, style):
+        return TTFont(bf_fonts.included_files(family)[style][0], lazy=True)["name"].getDebugName(6)
+    want = {ps("EB Garamond", "R"), ps("Cinzel", "B"), ps("Playfair Display", "R")}
+    check(want <= names and not any(n.startswith("Times") for n in names),
+          f"Ulmo: the chosen included fonts are the ones embedded {sorted(want)}")
+    originals = set()                       # PostScript names of the unmodified static files shipped
+    for root, _d, files in os.walk(bf_fonts.included_dir()):
+        for f in files:
+            if f.endswith(".ttf") and "[" not in f:
+                originals.add(TTFont(os.path.join(root, f), lazy=True)["name"].getDebugName(6))
+    generated = [n for n in names if n not in originals and n != "Helvetica"]
+    check(not any(x in n for n in generated for x in ("Lora", "PlayfairDisplay", "LibreBaskerville", "Source")),
+          f"fonts BookForge generated itself never carry a Reserved Font Name {generated}")
     check(not any("WARNING" in l for l in log), f"Ulmo: no font warnings ({[l for l in log if 'WARN' in l]})")
     check(len(book.active()) == 22 and any(m.endswith("Imposed for binding.pdf") for m in made),
           "Ulmo: 22 chapters, imposed PDF made")

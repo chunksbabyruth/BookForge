@@ -22,6 +22,10 @@ from bf_build import run_build, default_out_dir
 import bf_theme as th
 
 TEXT_KEYS = ("paste_text", "dedication", "note_text", "blurb", "hyph_words")
+# Fields that belong to one particular book. They are NOT remembered between sessions, so a new
+# session never starts with the previous book's file, text, title or author.
+BOOK_KEYS = ("source_path", "paste_text", "title", "subtitle", "author", "credit", "dedication",
+             "note_title", "note_text", "blurb")
 PARSE_KEYS = ("source_mode", "source_path", "split_mode", "custom_regex", "strip_gutenberg",
               "skip_contents", "skip_cover", "include_images", "keep_front_text", "drop_empty",
               "line_paragraphs", "preserve_breaks")
@@ -102,18 +106,23 @@ class App(tk.Tk):
             self.iconbitmap(resource("bookforge.ico"))
         except Exception:
             pass
+        self.dark = self._saved_dark()
+        th.set_mode(self.dark)
         th.apply(self)
         self.k = "src"
         self.vars, self.texts = {}, {}
         self.book, self.book_sig, self.busy, self.mode = None, None, False, ""
         self.edited = False
+        self.autofilled = {}          # title/author values BookForge filled in itself from a source
         self.q = queue.Queue()
         self.custom_fonts = []
         self.font_combos = []
         self.fonts = bf_fonts.list_families(installed=False)
         self._menu()
         self._ui()
-        self.load_settings(os.path.join(app_dir(), "settings.json"), quiet=True)
+        self.load_settings(os.path.join(app_dir(), "settings.json"), quiet=True, skip_book=True)
+        bf_fonts.set_user_fonts_dir(self.var("fonts_dir").get())
+        self.var("dark_mode").set(self.dark)
         self._mode_changed()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._poll_id = self.after(120, self.poll)
@@ -191,22 +200,29 @@ class App(tk.Tk):
     def _menu(self):
         m = tk.Menu(self)
         f = tk.Menu(m, tearoff=0)
+        f.add_command(label="New book", command=self.new_book)
         f.add_command(label="Open source file...", command=self.browse_source)
         f.add_separator()
         f.add_command(label="Save settings as preset...", command=self.save_preset)
         f.add_command(label="Load preset...", command=self.load_preset)
         f.add_command(label="Reset all settings to defaults", command=self.reset)
+        f.add_command(label="Settings & storage...", command=self.settings_window)
         f.add_separator()
         f.add_command(label="Exit", command=self.on_close)
         m.add_cascade(label="File", menu=f)
         h = tk.Menu(m, tearoff=0)
         h.add_command(label="How to use, print and bind", command=self.show_help)
-        h.add_command(label="About", command=lambda: messagebox.showinfo(
-            "About", f"{APP_NAME} {APP_VERSION}\nMade by {APP_AUTHOR}\n\nTurns EPUBs, text and Word "
-                     "files into print-ready books with page numbers, contents, imposition and "
-                     "covers.\n\nFree and open source (MIT License)."))
+        h.add_command(label="Fonts & licences", command=self.licences_window)
+        h.add_command(label="About", command=self.about_window)
         m.add_cascade(label="Help", menu=h)
         self.config(menu=m)
+
+    def _saved_dark(self):
+        try:
+            with open(os.path.join(app_dir(), "settings.json"), encoding="utf-8") as f:
+                return bool(json.load(f).get("dark_mode", DEFAULTS["dark_mode"]))
+        except Exception:
+            return bool(DEFAULTS["dark_mode"])
 
     def _ui(self):
         bar = ttk.Frame(self, padding=(14, 6, 14, 12), style="Paper.TFrame")
@@ -216,6 +232,11 @@ class App(tk.Tk):
         ttk.Label(head, text=APP_NAME, style="Brand.TLabel").pack(side="left")
         ttk.Label(head, text=f"by {APP_AUTHOR}", style="Maker.TLabel").pack(side="left", padx=(10, 0),
                                                                           pady=(7, 0))
+        ttk.Button(head, text="\u2699  Settings & storage", style="Header.TButton",
+                   command=self.settings_window).pack(side="right")
+        self.dark_btn = ttk.Button(head, style="Header.TButton", command=self.toggle_dark,
+                                   text="\u2600  Light mode" if self.dark else "\u263E  Dark mode")
+        self.dark_btn.pack(side="right", padx=(0, 8))
         self.shelf = th.Shelf(self, self.show_tab)
         self.shelf.pack(side="top", fill="x", padx=14)
         holder = tk.Frame(self, background=th.PAPER)
@@ -252,7 +273,7 @@ class App(tk.Tk):
         self.prog = ttk.Progressbar(right, mode="indeterminate", style="Build.Horizontal.TProgressbar")
         self.prog.pack(fill="x", pady=(4, 4))
         self.logbox = tk.Text(right, height=3, font=("Consolas", 9), state="disabled", relief="flat",
-                              background="#E9EDF2", foreground=th.MUTED, highlightthickness=0,
+                              background=th.P["LOG"], foreground=th.MUTED, highlightthickness=0,
                               padx=6, pady=3)
         self.logbox.pack(fill="x")
 
@@ -352,7 +373,8 @@ class App(tk.Tk):
                    ["Auto", "Blank line between paragraphs", "Each line is a paragraph"], width=30)
 
         self.chap_summary = ttk.Label(t, text="No chapters yet - pick a source on the Source tab.",
-                                      style=self.S("PageHint.TLabel"), font=("Segoe UI Semibold", 11))
+                                      style=self.S("PageHint.TLabel"), font=("Segoe UI Semibold", 11),
+                                      wraplength=900, justify="left")
         self.chap_summary.grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 2))
 
         lst = ttk.LabelFrame(t, text="Chapters in the order they will be printed", padding=8,
@@ -399,8 +421,9 @@ class App(tk.Tk):
         self.preview = tk.Text(pv, wrap="word", height=14, width=40, font=("Georgia", 10), padx=8, pady=6)
         th.style_text(self.preview, self.k)
         self.preview.grid(row=0, column=0, sticky="nsew")
-        self.preview.tag_configure("found", font=("Segoe UI Semibold", 10), foreground="#2F6B71")
-        self.preview.tag_configure("note", foreground="#6B7480", font=("Georgia", 9, "italic"))
+        self.preview.tag_configure("found", font=("Segoe UI Semibold", 10),
+                                   foreground="#7CC4C9" if self.dark else "#2F6B71")
+        self.preview.tag_configure("note", foreground=th.MUTED, font=("Georgia", 9, "italic"))
         self.preview.configure(state="disabled")
         ttk.Label(pv, text="Wrong split? Select the chapter that shouldn't exist and click \"Merge into "
                            "previous\". Missing chapters? Change \"How are chapters marked\" above.",
@@ -625,14 +648,22 @@ class App(tk.Tk):
                 except tk.TclError:
                     pass
 
-    def save_settings(self, path):
+    def save_settings(self, path, keep_book=False):
+        data = self.collect()
+        if not keep_book:
+            for k in BOOK_KEYS:
+                data.pop(k, None)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.collect(), f, indent=1)
+            json.dump(data, f, indent=1)
 
-    def load_settings(self, path, quiet=False):
+    def load_settings(self, path, quiet=False, skip_book=False):
         try:
             with open(path, encoding="utf-8") as f:
-                self.apply(json.load(f))
+                data = json.load(f)
+            if skip_book:                     # settings files from v1.4 and older still contain them
+                for k in BOOK_KEYS:
+                    data.pop(k, None)
+            self.apply(data)
         except Exception as e:
             if not quiet:
                 messagebox.showerror("Couldn't load", str(e))
@@ -659,9 +690,224 @@ class App(tk.Tk):
             for k in ("dedication", "note_text", "blurb", "hyph_words"):
                 self.texts[k].delete("1.0", "end")
 
-    def on_close(self):
+    # ------------------------------------------------------------ light / dark
+    def toggle_dark(self):
+        """Rebuild the window in the other palette, keeping everything the user has entered."""
+        if self.busy:
+            return
+        state = self.collect()
+        tab = self.shelf.current
+        sel = self._sel()
+        self.dark = not self.dark
+        self.var("dark_mode").set(self.dark)
+        th.set_mode(self.dark)
+        for w in list(self.children.values()):
+            w.destroy()
+        th.apply(self)
+        self.font_combos = []
+        self._menu()
+        self._ui()
+        self.apply(state)
+        self._mode_changed()
+        self.refresh_fonts()
+        if self.book:
+            self.fill_list()
+            for i in sel:
+                if self.ctree.exists(str(i)):
+                    self.ctree.selection_add(str(i))
+        self.shelf.select(tab)
         try:
             self.save_settings(os.path.join(app_dir(), "settings.json"))
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------ settings & storage
+    def _open_folder(self, path):
+        os.makedirs(path, exist_ok=True)
+        try:
+            os.startfile(path)
+        except Exception:
+            try:
+                subprocess.Popen(["xdg-open", path])
+            except Exception:
+                messagebox.showinfo("Folder", path)
+
+    def settings_window(self):
+        w = tk.Toplevel(self)
+        w.title("Settings & storage")
+        w.configure(background=th.CARD)
+        w.transient(self)
+        fr = ttk.Frame(w, padding=16, style=self.S("Card.TFrame"))
+        fr.pack(fill="both", expand=True)
+        fr.columnconfigure(1, weight=1)
+
+        def head(r, text):
+            ttk.Label(fr, text=text, style=self.S("Card.TLabel"), font=("Segoe UI Semibold", 11)).grid(
+                row=r, column=0, columnspan=3, sticky="w", pady=(12 if r else 0, 4))
+
+        def hint(r, text):
+            ttk.Label(fr, text=text, style=self.S("CardHint.TLabel"), wraplength=560, justify="left").grid(
+                row=r, column=0, columnspan=3, sticky="w")
+
+        head(0, "Appearance")
+        ttk.Button(fr, text="Switch to light mode" if self.dark else "Switch to dark mode",
+                   style=self.S("TButton"), command=lambda: (w.destroy(), self.toggle_dark())).grid(
+            row=1, column=0, sticky="w")
+
+        head(2, "Where BookForge keeps its own files")
+        ad = app_dir()
+        ttk.Entry(fr, width=60, style=self.S("TEntry")).grid(row=3, column=0, columnspan=2, sticky="we")
+        fr.grid_slaves(row=3, column=0)[0].insert(0, ad)
+        ttk.Button(fr, text="Open", style=self.S("TButton"), command=lambda: self._open_folder(ad)).grid(
+            row=3, column=2, padx=(6, 0))
+        hint(4, "Your remembered settings (settings.json), the font list cache, fonts prepared for printing "
+                "(fontcache) and the last error report. Deleting this folder is safe: BookForge starts fresh "
+                "with default settings.")
+
+        def clear(what):
+            if not messagebox.askyesno("Clear", f"Delete BookForge's {what}?", parent=w):
+                return
+            import shutil
+            if what == "remembered settings":
+                try:
+                    os.remove(os.path.join(ad, "settings.json"))
+                except OSError:
+                    pass
+                self._no_save = True
+            else:
+                shutil.rmtree(os.path.join(ad, "fontcache"), ignore_errors=True)
+                try:
+                    os.remove(os.path.join(ad, "font_cache.json"))
+                except OSError:
+                    pass
+            messagebox.showinfo("Clear", f"Done. The {what} were deleted.", parent=w)
+        b = ttk.Frame(fr, style=self.S("Card.TFrame"))
+        b.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Button(b, text="Clear remembered settings", style=self.S("TButton"),
+                   command=lambda: clear("remembered settings")).pack(side="left")
+        ttk.Button(b, text="Clear prepared fonts", style=self.S("TButton"),
+                   command=lambda: clear("prepared fonts")).pack(side="left", padx=6)
+
+        head(6, "Your fonts folder")
+        fv = tk.StringVar(value=self.var("fonts_dir").get() or bf_fonts.default_user_fonts_dir())
+        ttk.Entry(fr, textvariable=fv, width=60, style=self.S("TEntry")).grid(row=7, column=0, columnspan=2,
+                                                                             sticky="we")
+
+        def choose():
+            p = filedialog.askdirectory(parent=w, title="Choose a folder for your fonts",
+                                        initialdir=fv.get() if os.path.isdir(fv.get()) else os.path.expanduser("~"))
+            if p:
+                fv.set(p)
+                self.var("fonts_dir").set(p)
+                bf_fonts.set_user_fonts_dir(p)
+                threading.Thread(target=lambda: self.q.put(("fonts", bf_fonts.scan_installed(force=True))),
+                                 daemon=True).start()
+        ttk.Button(fr, text="Change...", style=self.S("TButton"), command=choose).grid(row=7, column=2, padx=(6, 0))
+        ttk.Button(fr, text="Open fonts folder", style=self.S("TButton"),
+                   command=lambda: self._open_folder(fv.get())).grid(row=8, column=0, sticky="w", pady=(4, 0))
+        hint(9, "Put any .ttf / .otf / .ttc font files in this folder and they appear in every font list "
+                "(after restarting BookForge, or after choosing the folder here). Fonts installed in Windows "
+                "work too, and \"My fonts...\" on the Layout tab builds a family from any font files.")
+
+        head(10, "Fonts included with BookForge")
+        hint(11, f"{len(bf_fonts.included_families())} font families under the SIL Open Font License 1.1. "
+                 "Their licences ship with the program.")
+        ttk.Button(fr, text="Fonts & licences...", style=self.S("TButton"), command=self.licences_window).grid(
+            row=12, column=0, sticky="w", pady=(4, 0))
+        ttk.Button(fr, text="Close", style=self.S("TButton"), command=w.destroy).grid(row=13, column=2, sticky="e",
+                                                                                     pady=(14, 0))
+
+    def licences_window(self):
+        w = tk.Toplevel(self)
+        w.title("Fonts & licences")
+        w.geometry("860x600")
+        w.configure(background=th.PAPER)
+        w.transient(self)
+        left = ttk.Frame(w, padding=10, style="Paper.TFrame")
+        left.pack(side="left", fill="y")
+        ttk.Label(left, text="Included fonts", style="Paper.TLabel", font=("Segoe UI Semibold", 11)).pack(anchor="w")
+        lb = tk.Listbox(left, width=24, font=("Segoe UI", 10), activestyle="none", exportselection=False)
+        th.style_text(lb, self.k)
+        lb.pack(fill="y", expand=True, pady=6)
+        names = bf_fonts.included_families()
+        for n in names:
+            lb.insert("end", n)
+        lb.insert("end", "\u2014 not included \u2014")
+        txt = tk.Text(w, wrap="word", font=("Consolas", 9), padx=12, pady=10)
+        th.style_text(txt, self.k)
+        txt.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=10)
+
+        def show(_e=None):
+            sel = lb.curselection()
+            txt.configure(state="normal")
+            txt.delete("1.0", "end")
+            if sel and sel[0] < len(names):
+                n = names[sel[0]]
+                lic = bf_fonts.licence_text(n)
+                folder = bf_fonts.INCLUDED[n][0]
+                txt.insert("end", f"{n}  -  fonts/{folder}/OFL.txt\n\n")
+                txt.insert("end", lic if lic else "Licence file missing from this copy of BookForge.")
+            else:
+                txt.insert("end", "These fonts are commercial or come with Windows / Microsoft Office, so they can't "
+                                  "be shipped with BookForge:\n\n  " + "\n  ".join(bf_fonts.NOT_INCLUDED) +
+                                  "\n\nIf they are installed on your PC (or put in your fonts folder) they appear in "
+                                  "the font lists automatically.")
+            txt.configure(state="disabled")
+        lb.bind("<<ListboxSelect>>", show)
+        lb.selection_set(0)
+        show()
+
+    def about_window(self):
+        w = tk.Toplevel(self)
+        w.title(f"About {APP_NAME}")
+        w.configure(background=th.CARD)
+        w.transient(self)
+        fr = ttk.Frame(w, padding=18, style=self.S("Card.TFrame"))
+        fr.pack(fill="both", expand=True)
+        ttk.Label(fr, text=f"{APP_NAME} {APP_VERSION}", style=self.S("Card.TLabel"),
+                  font=("Georgia", 15, "bold")).pack(anchor="w")
+        ttk.Label(fr, text=f"Made by {APP_AUTHOR}.  Free and open source (MIT License).\n\n"
+                           "Turns EPUBs, text and Word files into print-ready books with page numbers, contents, "
+                           "imposition and covers.\n\n"
+                           f"Includes {len(bf_fonts.included_families())} font families licensed under the SIL "
+                           "Open Font License 1.1 (original files from Google Fonts). Each font's licence ships "
+                           "with the program.\n\nBookForge's own files are kept in:\n" + app_dir(),
+                  style=self.S("Card.TLabel"), wraplength=460, justify="left").pack(anchor="w", pady=(8, 12))
+        b = ttk.Frame(fr, style=self.S("Card.TFrame"))
+        b.pack(fill="x")
+        ttk.Button(b, text="Fonts & licences...", style=self.S("TButton"), command=self.licences_window).pack(side="left")
+        ttk.Button(b, text="Open that folder", style=self.S("TButton"),
+                   command=lambda: self._open_folder(app_dir())).pack(side="left", padx=6)
+        ttk.Button(b, text="Close", style=self.S("TButton"), command=w.destroy).pack(side="right")
+
+    def new_book(self):
+        """Clear everything that belongs to the current book; keep layout, fonts and output settings."""
+        if self.busy:
+            return
+        if self.edited and not messagebox.askyesno(
+                "New book", "Start a new book? Your chapter changes for the current book will be lost."):
+            return
+        for k in BOOK_KEYS:
+            if k in self.texts:
+                was = str(self.texts[k].cget("state"))
+                self.texts[k].configure(state="normal")
+                self.texts[k].delete("1.0", "end")
+                self.texts[k].configure(state=was)
+            else:
+                self.var(k).set("")
+        self.book, self.book_sig, self.edited, self.autofilled = None, None, False, {}
+        self.ctree.delete(*self.ctree.get_children())
+        self.show_preview()
+        self.chap_summary.configure(text="No chapters yet - pick a source on the Source tab.")
+        self.var("source_mode").set("file")
+        self._mode_changed()
+        self.shelf.select(0)
+        self.status.configure(text="New book. Pick a source, check the chapters, then click Build book.")
+
+    def on_close(self):
+        try:
+            if not getattr(self, "_no_save", False):
+                self.save_settings(os.path.join(app_dir(), "settings.json"))
         except Exception:
             pass
         try:
@@ -676,7 +922,7 @@ class App(tk.Tk):
         self.src_entry.configure(state="disabled" if paste else "normal")
         self.src_btn.configure(state="disabled" if paste else "normal")
         self.texts["paste_text"].configure(state="normal" if paste else "disabled",
-                                           background=th.CARD if paste else "#F1F3F6")
+                                           background=th.CARD if paste else th.P["FIELD_OFF"])
 
     def refresh_fonts(self, installed=None):
         names = bf_fonts.list_families(self.custom_fonts, installed=False)
@@ -1072,8 +1318,11 @@ class App(tk.Tk):
                     self.book, self.book_sig = item[1], item[2]
                     self.edited = False
                     for k in ("title", "author"):
-                        if not self.var(k).get().strip() and getattr(self.book, k):
-                            self.var(k).set(getattr(self.book, k))
+                        cur = self.var(k).get().strip()
+                        new = (getattr(self.book, k) or "").strip()
+                        if not cur or cur == self.autofilled.get(k):
+                            self.var(k).set(new)
+                            self.autofilled[k] = new
                     self.fill_list()
                     if self.mode == "scan":
                         self._stop(f"Found {len(self.book.chapters)} chapters. Check the list, then click Build book.")

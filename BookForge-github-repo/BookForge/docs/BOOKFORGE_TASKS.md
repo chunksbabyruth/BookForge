@@ -168,3 +168,55 @@ OPEN / NOT VERIFIED (carry forward):
 - Pasted text taken from AO3's WEB PAGE (tested with text derived from the HTML download only).
 - Small layouts: marks drawn by BookForge (reference doesn't support marks there) - not compared.
 - Reference "Preview" button: not implemented (BookForge opens the output folder instead).
+
+## v1.5 batch (requested after v1.4)
+- [x] T6.1 Don't restore book-specific fields at startup (source, pasted text, title, subtitle, author, credit,
+       dedication, extra page, back-cover text); keep layout/font/binding/output settings
+- [x] T6.2 Auto-fill fix: a new source replaces an auto-filled title/author, never one the user typed
+- [x] T6.3 File > New book (clears the book-specific fields, chapters and preview)
+- [x] T6.4 Full regression PASS: test_chapters 16/16, test_impose 37/37, test_build 21/21, gui_test6 14/14 (new
+       behaviour), gui_test5 chapters workflow unchanged, Grimms+Gregory 0 word differences. (BookForge.py only changed.)
+- [!] T6.5 App icon: 5 options drawn (generator /home/claude/icons/make_icons.py; A Midnight Grimoire, B Teal
+       Bookcloth, C Spines on a Shelf, D Ember Forge, E Binder's Needle). WAITING for user's pick -> then replace
+       bookforge.ico (+ window icon uses it), bump to v1.5, rebuild repo zip.
+
+## v1.4 (final) batch — user: "this is just going to be v1.4 again"
+- [x] T7.1 Version back to 1.4 (APP_VERSION + version_info); icon A kept
+- [x] T7.2 All 14 OFL.txt fetched (HTTP 200) from the exact URLs; 12 byte-identical to bundled; Baskervville +
+       Gelasio added (fonts + OFL). RFN declared by: Libre Baskerville, Lora, Playfair Display (NOT Source Serif 4).
+- [x] T7.3 Help > Fonts & licences viewer (each OFL.txt verbatim), About window + Settings & storage link to it
+- [x] T7.4 Static files preferred; generated instances get neutral names 'BFInst<hash>' (never an RFN)
+- [x] T7.5 Settings & storage: app data path (open, clear settings, clear prepared fonts); fonts folder
+       (default Documents/BookForge Fonts, Change..., Open) scanned like Windows Fonts; setting 'fonts_dir'
+- [x] T7.6 Dark mode (default ON), header button 'Light mode'/'Dark mode' + Settings window; switch rebuilds
+       the window keeping all input, chapters, edits and tab; remembered in settings ('dark_mode'). gui_test7 12/12
+- [x] T7.7 'Fonts not in the app': in every build I tested they are in the font lists; likely the user ran an
+       older .exe or the fonts/ folder wasn't uploaded/committed. Now also visible in Help > Fonts & licences.
+- [x] T7.8 Full regression PASS: test_chapters 16/16, test_impose 37/37, test_build 22/22 (font check now verifies
+       the exact prepared fonts + no Reserved Font Name), gui_test5 OK, gui_test6 14/14, gui_test7 12/12,
+       Grimms/Gregory 0 word differences. Packaging check (Wine, not delivered): 14 OFL.txt inside the program,
+       byte-identical to official; Gelasio/Baskervville/Playfair embedded by the built program. Repo zip built.
+
+## User's Google Drive fonts (folder 1yIdCAM3pyPnAZknCo41KztqYLOLXNkh0) — checked, NOT copied
+- 14 family folders (Google Fonts website downloads): variable files + static/ folder + OFL.txt + README.txt each.
+- All 14 have an OFL.txt. Same text as bundled (CRLF): Lora, Cormorant Garamond, Baskervville, EB Garamond,
+  Gelasio, Libre Baskerville, Playfair Display. Differ: IM Fell English, Libre Caslon Text, Source Serif 4
+  (website copy has NO copyright line - fails OFL condition 2; bundled GitHub copy is correct), others unmatched.
+- Their variable files are a different release (e.g. Lora 210,884 vs bundled 212,196 bytes).
+- Binary fonts cannot be pulled through the Drive connector (content passes through the chat as text; ~50 files
+  of 100-700 KB is far too large). Static files can be added on the user's PC with add_static_fonts.ps1
+  (-Fonts = local copy of that folder) or in a Claude Code / Cowork session with folder access.
+- No repo files changed this session -> previous full regression + BookForge-github-repo.zip remain current.
+
+## User's font zip added (Alegreya_..._etc.zip)
+- [x] 49 original static files (Regular/Italic/Bold/Bold Italic) for 13 families copied unchanged into fonts/<font>/;
+      all verified genuine (weight 400/700, italic flags, not variable). Literata + Source Serif 4: default text size.
+      IM Fell English: user's files are a different release -> kept the bundled originals. Libre Caslon Text has no
+      Bold Italic static -> still generated (neutral name). Cinzel: no italic (none exists).
+- [x] Licences: 10 download licences differ from the repo copies -> shipped verbatim as OFL-static-files.txt beside
+      OFL.txt (viewer shows both); 3 identical apart from line endings. Source Serif 4 download licence lacks a copyright
+      line; notice is embedded in the font files (Adobe, RFN 'Source') and the bundled OFL.txt has one.
+- [x] Full regression PASS: chapters 16/16, impose 37/37, build 22/22 (reserved-name test now checks only fonts
+      BookForge generates), gui_test5 OK, gui_test6 14/14, gui_test7 12/12, classics 0 word differences.
+      Packaging check: program contains 76 font files + 14 OFL.txt + 10 OFL-static-files.txt, identical to repo;
+      built program embeds original Lora / Playfair / Cinzel with no font preparation.

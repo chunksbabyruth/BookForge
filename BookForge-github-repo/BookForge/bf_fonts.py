@@ -42,6 +42,8 @@ INCLUDED = {   # name: (folder, upright file, italic file or None, use)
                           "book"),
     "Libre Caslon Text": ("librecaslontext", "LibreCaslonText[wght].ttf", "LibreCaslonText-Italic[wght].ttf",
                           "book"),
+    "Baskervville": ("baskervville", "Baskervville[wght].ttf", "Baskervville-Italic[wght].ttf", "book"),
+    "Gelasio": ("gelasio", "Gelasio[wght].ttf", "Gelasio-Italic[wght].ttf", "book"),
     "Literata": ("literata", "Literata[opsz,wght].ttf", "Literata-Italic[opsz,wght].ttf", "book"),
     "Lora": ("lora", "Lora[wght].ttf", "Lora-Italic[wght].ttf", "book"),
     "Alegreya": ("alegreya", "Alegreya[wght].ttf", "Alegreya-Italic[wght].ttf", "book"),
@@ -58,6 +60,21 @@ NOT_INCLUDED = ["Garamond", "Palatino Linotype", "Book Antiqua", "Georgia", "Bas
                 "Minion Pro", "Bembo", "Sabon"]
 
 
+def licence_text(name):
+    """The font's own OFL.txt, exactly as shipped (None if missing)."""
+    d = os.path.join(included_dir(), INCLUDED[name][0])
+    parts = []
+    for fn, head in (("OFL.txt", ""), ("OFL-static-files.txt",
+                                       "\n\n==== Licence supplied with this font's static files "
+                                       "(OFL-static-files.txt) ====\n\n")):
+        try:
+            with open(os.path.join(d, fn), encoding="utf-8", errors="replace") as f:
+                parts.append(head + f.read())
+        except OSError:
+            pass
+    return "".join(parts) or None
+
+
 def included_dir():
     import sys
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -67,18 +84,22 @@ def included_dir():
 def included_families():
     """Included families whose files are present (book fonts first, then title/display fonts)."""
     d = included_dir()
-    names = [n for n, v in INCLUDED.items() if os.path.exists(os.path.join(d, v[0], v[1]))]
+    names = [n for n, v in INCLUDED.items()
+             if os.path.exists(os.path.join(d, v[0], v[1])) or _static_files(os.path.join(d, v[0])).get("R")]
     return sorted(names, key=lambda n: (INCLUDED[n][3] != "book", n.lower()))
 
 
-def _set_style_names(ft, italic, weight):
-    """Give a generated instance its own style names; fonts that share a PostScript name get merged
-    into one in a PDF, which would silently turn Bold back into Regular."""
+def _set_style_names(ft, italic, weight, tag):
+    """Give a generated instance its own, NEUTRAL names.
+
+    Fonts sharing a PostScript name get merged in a PDF (Bold would print as Regular), and an
+    instance is a modified version of the font, so under the OFL it must not carry a Reserved
+    Font Name (Libre Baskerville, Lora, Playfair Display). "BFInst<tag>" is used instead."""
     name = ft["name"]
-    fam = name.getDebugName(16) or name.getDebugName(1) or "Font"
+    fam = f"BFInst{tag}"
     sub = {(False, 400): "Regular", (False, 700): "Bold", (True, 400): "Italic", (True, 700): "Bold Italic"}[
         (italic, weight)]
-    ps_base = re.sub(r"[^A-Za-z0-9]", "", fam)
+    ps_base = fam
     for rec in list(name.names):
         if rec.nameID in (1, 16):
             rec.string = fam
@@ -103,7 +124,7 @@ def _static(path, weight, italic=False):
     st = os.stat(path)
     # keyed on the font file itself (name + size), not its location: the single-file program
     # unpacks to a new temporary folder every time it starts
-    key = hashlib.sha1(f"v3|{os.path.basename(path)}|{weight}|{italic}|{st.st_size}".encode()).hexdigest()[:12]
+    key = hashlib.sha1(f"v4|{os.path.basename(path)}|{weight}|{italic}|{st.st_size}".encode()).hexdigest()[:12]
     cdir = os.path.join(appdata_dir(), "fontcache")
     os.makedirs(cdir, exist_ok=True)
     out = os.path.join(cdir, f"inc_{key}.ttf")
@@ -111,18 +132,40 @@ def _static(path, weight, italic=False):
         from fontTools.varLib import instancer
         loc = {tag: (weight if tag == "wght" else dflt) for tag, (_mn, dflt, _mx) in axes.items()}
         inst = instancer.instantiateVariableFont(FT(path), loc)
-        _set_style_names(inst, italic, weight)
+        _set_style_names(inst, italic, weight, key[:6])
         inst.save(out)
     return out
 
 
+def _static_files(d):
+    """Original static files in a font folder (e.g. from a Google Fonts download): {"R": path, ...}."""
+    found = {}
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not f.lower().endswith((".ttf", ".otf")) or "[" in f:
+            continue
+        try:
+            for _fam, sub, _i, _r in read_faces(os.path.join(d, f)):
+                sty = _style_of(sub)
+                if sty:
+                    found.setdefault(sty, os.path.join(d, f))
+        except Exception:
+            continue
+    return found
+
+
 def included_files(name):
-    """{"R": (path, 0), ...} with only the styles this family genuinely has."""
+    """{"R": (path, 0), ...} with only the styles this family genuinely has.
+
+    Original static files in the folder are used as they are; a variable font is only
+    turned into a (neutrally named) static instance for styles that have no static file."""
     folder, up, it, _use = INCLUDED[name]
     d = os.path.join(included_dir(), folder)
-    files = {}
+    static = _static_files(d)
+    files = {k: (p, 0) for k, p in static.items()}
     for sty, fname, w in (("R", up, 400), ("B", up, 700), ("I", it, 400), ("BI", it, 700)):
-        if fname and os.path.exists(os.path.join(d, fname)):
+        if sty in files:
+            continue
+        if fname and "[" in fname and os.path.exists(os.path.join(d, fname)):
             p = _static(os.path.join(d, fname), w, italic=sty in ("I", "BI"))
             if p:
                 files[sty] = (p, 0)
@@ -135,8 +178,26 @@ def appdata_dir():
     return d
 
 
+USER_FONTS_DIR = None        # set by the program from the "Fonts folder" setting
+
+
+def default_user_fonts_dir():
+    docs = os.path.join(os.path.expanduser("~"), "Documents")
+    return os.path.join(docs if os.path.isdir(docs) else os.path.expanduser("~"), "BookForge Fonts")
+
+
+def set_user_fonts_dir(path):
+    """Use `path` (or the default) as the extra fonts folder; re-scan if it changed."""
+    global USER_FONTS_DIR, _FAMILIES
+    path = path or default_user_fonts_dir()
+    if path != USER_FONTS_DIR:
+        USER_FONTS_DIR = path
+        _FAMILIES = None
+    return path
+
+
 def font_dirs():
-    dirs = []
+    dirs = [USER_FONTS_DIR] if USER_FONTS_DIR else []
     win = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows"
     dirs.append(os.path.join(win, "Fonts"))
     la = os.environ.get("LOCALAPPDATA")
@@ -380,6 +441,7 @@ def migrate(s):
 
 def resolve(display, s, log=print):
     """Turn a family name from the dropdown into reportlab font names."""
+    set_user_fonts_dir(s.get("fonts_dir"))
     if display in BUILTIN:
         return BUILTIN[display]
     custom = {c.get("name"): c for c in s.get("custom_fonts") or []}
