@@ -29,11 +29,7 @@ steps:
   - name: Verify project files and fonts
     shell: pwsh
     run: |
-      $requiredFiles = @(
-        "BookForge.py",
-        "bookforge.ico",
-        "version_info.txt"
-      )
+      $requiredFiles = @("BookForge.py", "bookforge.ico", "version_info.txt")
 
       foreach ($file in $requiredFiles) {
         if (-not (Test-Path $file -PathType Leaf)) {
@@ -45,11 +41,10 @@ steps:
         $rootFonts = Join-Path $env:GITHUB_WORKSPACE "fonts"
 
         if (Test-Path $rootFonts -PathType Container) {
-          Write-Host "Copying fonts from repository root into the project folder."
           Copy-Item $rootFonts "fonts" -Recurse
         }
         else {
-          throw "The fonts folder is missing from both the project folder and repository root. Commit the fonts folder and all 14 font-family folders to GitHub."
+          throw "The fonts folder is missing from the project folder and repository root."
         }
       }
 
@@ -57,40 +52,28 @@ steps:
       $ttf = @(Get-ChildItem "fonts" -Recurse -File -Filter "*.ttf").Count
       $ofl = @(Get-ChildItem "fonts" -Recurse -File -Filter "OFL.txt").Count
 
-      Write-Host "Font family folders: $($fontFolders.Count)"
+      Write-Host "Font folders: $($fontFolders.Count)"
       Write-Host "TTF files: $ttf"
       Write-Host "OFL licenses: $ofl"
 
-      foreach ($folder in $fontFolders) {
-        $count = @(Get-ChildItem $folder.FullName -Recurse -File -Filter "*.ttf").Count
-        $license = Test-Path (Join-Path $folder.FullName "OFL.txt")
-        Write-Host "$($folder.Name): $count TTF files; OFL license: $license"
-      }
-
       if ($fontFolders.Count -lt 14 -or $ttf -lt 76 -or $ofl -lt 14) {
-        throw "Font validation failed. Expected at least 14 font folders, 76 TTF files, and 14 OFL.txt licenses."
+        throw "Font validation failed. Check that all 14 font families, TTF files, and OFL licenses are committed."
       }
 
   - name: Install application dependencies
     shell: pwsh
     run: |
       python -m pip install --upgrade pip
+      if ($LASTEXITCODE -ne 0) { throw "Failed to upgrade pip." }
+
       python -m pip install reportlab pypdf beautifulsoup4 pillow python-docx pyphen fonttools
+      if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 
-  - name: Install PyInstaller with compiled bootloader
+  - name: Install PyInstaller
     shell: pwsh
-    env:
-      PYINSTALLER_COMPILE_BOOTLOADER: "1"
     run: |
-      python -m pip install --no-binary pyinstaller pyinstaller
-
-      if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Compiled bootloader installation failed. Trying the standard PyInstaller package."
-        python -m pip install pyinstaller
-        if ($LASTEXITCODE -ne 0) {
-          throw "PyInstaller installation failed."
-        }
-      }
+      python -m pip install pyinstaller
+      if ($LASTEXITCODE -ne 0) { throw "PyInstaller installation failed." }
 
   - name: Build folder version
     shell: pwsh
@@ -101,7 +84,7 @@ steps:
         throw "The folder build failed."
       }
 
-  - name: Verify bundled fonts and licenses
+  - name: Verify bundled fonts
     shell: pwsh
     run: |
       $fontPath = "dist/BookForge/_internal/fonts"
@@ -111,17 +94,14 @@ steps:
       }
 
       if (-not (Test-Path $fontPath -PathType Container)) {
-        throw "Bundled fonts were not found in the PyInstaller output."
+        throw "Bundled fonts were not found in the build output."
       }
 
       $ttf = @(Get-ChildItem $fontPath -Recurse -File -Filter "*.ttf").Count
       $ofl = @(Get-ChildItem $fontPath -Recurse -File -Filter "OFL.txt").Count
 
-      Write-Host "Bundled TTF files: $ttf"
-      Write-Host "Bundled OFL licenses: $ofl"
-
       if ($ttf -lt 76 -or $ofl -lt 14) {
-        throw "The built application is missing font files or licenses."
+        throw "The build is missing font files or OFL licenses."
       }
 
   - name: Package folder version
