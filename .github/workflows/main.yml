@@ -3,7 +3,7 @@ name: Build BookForge for Windows
 "on":
   push:
     tags:
-      - "v1.4.3*"
+      - "v1.4.4*"
   workflow_dispatch:
 
 permissions:
