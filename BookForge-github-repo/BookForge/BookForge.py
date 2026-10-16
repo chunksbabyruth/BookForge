@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -18,7 +19,7 @@ import bf_fonts
 from bf_fonts import SAME_BODY, SAME_HEAD
 from bf_pdf import HYPH_LANGS
 from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE, FOLD_SIDES, UNITS
-from bf_build import run_build, default_out_dir
+from bf_build import run_build, default_out_dir, build_preview
 import bf_theme as th
 
 TEXT_KEYS = ("paste_text", "dedication", "note_text", "blurb", "hyph_words")
@@ -39,7 +40,10 @@ HELP = """HOW TO USE BOOKFORGE
    EPUB's own details are used).
 3. LAYOUT / FRONT & BACK: page size, fonts, margins, chapter style, page
    numbers, contents page, bookplate, dedication and so on.
-4. OUTPUT: tick the formats you want and click BUILD BOOK. Everything is saved
+4. PREVIEW BOOK shows the book exactly as it will print (and, with imposition on,
+   the printing sheets). Nothing is saved. Change settings and click Update
+   preview as often as you like.
+5. OUTPUT: tick the formats you want and click GENERATE PRINTING FILES. Everything is saved
    in one folder, together with a "READ ME - printing notes.txt" file.
 
 TEXT IS KEPT WORD FOR WORD. Only spacing used for line-wrapping in the source
@@ -83,6 +87,189 @@ TIPS
   return-arrows after e-book footnotes are left out; note numbers are printed
   as superscripts. The words themselves are never changed.
 """
+
+
+class PreviewWindow:
+    """Shows the preview: the book's pages and, when imposition is on, the printing sheets."""
+
+    ZOOMS = ["Fit page", "Fit width", "Actual size"]
+
+    def __init__(self, app, result):
+        self.app, self.result, self.docs, self.i, self.mode = app, None, {}, 0, "pages"
+        self.w = w = tk.Toplevel(app)
+        w.title("Preview")
+        w.geometry("1000x920")
+        w.configure(background=th.PAPER)
+        w.protocol("WM_DELETE_WINDOW", self.close)
+        top = ttk.Frame(w, padding=(10, 8, 10, 2), style="Paper.TFrame")
+        top.pack(fill="x")
+        self.modes = ttk.Frame(top, style="Paper.TFrame")
+        self.modes.pack(side="left")
+        self.zoom = tk.StringVar(value=self.ZOOMS[0])
+        z = ttk.Combobox(top, textvariable=self.zoom, values=self.ZOOMS, state="readonly", width=11,
+                         style=app.S("TCombobox"))
+        z.pack(side="right")
+        z.bind("<<ComboboxSelected>>", lambda e: self.render())
+        ttk.Label(top, text="Zoom", style="Paper.TLabel").pack(side="right", padx=(0, 6))
+        navrow = ttk.Frame(w, padding=(10, 2, 10, 8), style="Paper.TFrame")
+        navrow.pack(fill="x")
+        nav = ttk.Frame(navrow, style="Paper.TFrame")
+        nav.pack()
+        for txt, fn in (("\u23EE", lambda: self.go(0)), ("\u25C0  Previous", lambda: self.go(self.i - 1))):
+            ttk.Button(nav, text=txt, style="Header.TButton", command=fn).pack(side="left", padx=2)
+        self.page_var = tk.StringVar()
+        ent = ttk.Entry(nav, textvariable=self.page_var, width=5, justify="center", style=app.S("TEntry"))
+        ent.pack(side="left", padx=(8, 4))
+        ent.bind("<Return>", lambda e: self._jump())
+        self.of = ttk.Label(nav, style="Paper.TLabel")
+        self.of.pack(side="left", padx=(0, 8))
+        for txt, fn in (("Next  \u25B6", lambda: self.go(self.i + 1)), ("\u23ED", lambda: self.go(len(self.items) - 1))):
+            ttk.Button(nav, text=txt, style="Header.TButton", command=fn).pack(side="left", padx=2)
+        bot = ttk.Frame(w, padding=(10, 8), style="Paper.TFrame")
+        bot.pack(side="bottom", fill="x")
+        self.info = ttk.Label(bot, style="PaperHint.TLabel", wraplength=520, justify="left")
+        self.info.pack(side="left", fill="x", expand=True)
+        ttk.Button(bot, text="Generate printing files  \u25B6", style="Build.TButton",
+                   command=self.generate).pack(side="right")
+        ttk.Button(bot, text="\u21BB  Update preview", style="Header.TButton",
+                   command=app.preview_book).pack(side="right", padx=8, ipady=5)
+        ttk.Button(bot, text="\u25C0  Back to settings", style="Header.TButton",
+                   command=self.close).pack(side="right", ipady=5)
+        body = tk.Frame(w, background=th.PAPER)
+        body.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(body, background=th.TROUGH, highlightthickness=0)
+        vs = ttk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self.render())
+        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+        for key, d in (("<Left>", -1), ("<Right>", 1), ("<Prior>", -1), ("<Next>", 1)):
+            w.bind(key, lambda e, d=d: self.go(self.i + d))
+        w.bind("<Home>", lambda e: self.go(0))
+        w.bind("<End>", lambda e: self.go(len(self.items) - 1))
+        self.load(result)
+
+    # ---- data
+    def alive(self):
+        try:
+            return bool(self.w.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _doc(self, path):
+        import pypdfium2 as pdfium
+        if path not in self.docs:
+            self.docs[path] = pdfium.PdfDocument(path)
+        return self.docs[path]
+
+    def _release(self):
+        for d in self.docs.values():
+            try:
+                d.close()
+            except Exception:
+                pass
+        self.docs = {}
+        if self.result:
+            shutil.rmtree(self.result["dir"], ignore_errors=True)
+
+    def load(self, result):
+        keep = self.i
+        self._release()
+        self.result = result
+        self.pages = [(result["pdf"], k, f"page {k + 1} of the book") for k in range(len(self._doc(result["pdf"])))]
+        self.sheets = []
+        for f in result["sheets"]:
+            n = len(self._doc(f))
+            for k in range(n):
+                if result["duplex"]:
+                    lab = f"sheet {k // 2 + 1}, {'first' if k % 2 == 0 else 'second'} side"
+                else:
+                    lab = f"sheet {k + 1}, {'front (print first)' if 'fronts' in f else 'back (print second)'}"
+                self.sheets.append((f, k, lab))
+        if not self.sheets:
+            self.mode = "pages"
+        self._mode_buttons()
+        import time
+        self.info.configure(text=f"\u201c{result['title']}\u201d typeset with your current settings at "
+                                 f"{time.strftime('%H:%M')} \u2014 exactly as the printing files will be. "
+                                 "Nothing has been saved yet." +
+                                 (" Printing sheets show how pages are arranged and folded." if self.sheets else ""))
+        self.i = min(keep, len(self.items) - 1)
+        self.w.title(f"Preview \u2014 {result['title']}")
+        self.w.lift()
+        self.render()
+
+    @property
+    def items(self):
+        return self.sheets if self.mode == "sheets" else self.pages
+
+    def _mode_buttons(self):
+        for c in self.modes.winfo_children():
+            c.destroy()
+        if not self.sheets:
+            ttk.Label(self.modes, text=f"Book pages ({len(self.pages)})", style="Paper.TLabel",
+                      font=("Segoe UI Semibold", 11)).pack(side="left")
+            return
+        for key, txt in (("pages", f"Book pages ({len(self.pages)})"),
+                         ("sheets", f"Printing sheets ({len(self.sheets)} sides)")):
+            ttk.Button(self.modes, text=("\u25CF  " if self.mode == key else "") + txt, style="Header.TButton",
+                       command=lambda k=key: self.set_mode(k)).pack(side="left", padx=(0, 6))
+
+    def set_mode(self, m):
+        self.mode, self.i = m, 0
+        self._mode_buttons()
+        self.render()
+
+    # ---- drawing
+    def go(self, i):
+        if self.items:
+            self.i = max(0, min(i, len(self.items) - 1))
+            self.render()
+
+    def _jump(self):
+        try:
+            self.go(int(self.page_var.get()) - 1)
+        except ValueError:
+            self.render()
+
+    def render(self):
+        if not self.alive() or not self.items:
+            return
+        from PIL import ImageTk
+        path, idx, label = self.items[self.i]
+        page = self._doc(path)[idx]
+        pw, ph = page.get_size()
+        rotation = page.get_rotation()
+        if rotation in (90, 270):
+            pw, ph = ph, pw
+        cw, ch = max(200, self.canvas.winfo_width() - 30), max(200, self.canvas.winfo_height() - 30)
+        z = self.zoom.get()
+        k = min(cw / pw, ch / ph) if z == "Fit page" else (cw / pw if z == "Fit width" else 96 / 72)
+        img = page.render(scale=k, may_draw_forms=False).to_pil()
+        self.photo = ImageTk.PhotoImage(img)
+        c = self.canvas
+        c.delete("all")
+        x = max(15, (c.winfo_width() - img.width) // 2)
+        c.create_rectangle(x + 4, 19, x + img.width + 4, 19 + img.height, fill="#000000", outline="", stipple="gray25")
+        c.create_image(x, 15, anchor="nw", image=self.photo)
+        c.configure(scrollregion=(0, 0, max(c.winfo_width(), img.width + 30), img.height + 30))
+        self.page_var.set(str(self.i + 1))
+        self.of.configure(text=f"of {len(self.items)}   \u2014   {label}")
+
+    # ---- buttons
+    def generate(self):
+        self.close()
+        self.app.build()
+
+    def close(self):
+        self._release()
+        try:
+            self.w.destroy()
+        except tk.TclError:
+            pass
+        if getattr(self.app, "preview_win", None) is self:
+            self.app.preview_win = None
 
 
 def app_dir():
@@ -262,12 +449,15 @@ class App(tk.Tk):
         self.bind_all("<Control-Tab>", lambda e: self.shelf.select((self.shelf.current + 1) % len(th.TABS)))
         self.show_tab(0)
 
-        self.build_btn = ttk.Button(bar, text="\u25B6  Build book", style="Build.TButton",
+        self.preview_btn = ttk.Button(bar, text="Preview book", style="Header.TButton",
+                                      command=self.preview_book)
+        self.preview_btn.pack(side="left", pady=(8, 0), padx=(0, 8), ipady=5)
+        self.build_btn = ttk.Button(bar, text="\u25B6  Generate printing files", style="Build.TButton",
                                     command=self.build)
         self.build_btn.pack(side="left", pady=(8, 0))
         right = ttk.Frame(bar, style="Paper.TFrame")
         right.pack(side="left", fill="both", expand=True, padx=(14, 0), pady=(8, 0))
-        self.status = ttk.Label(right, text="Ready. Pick a source, check the chapters, then click Build book.",
+        self.status = ttk.Label(right, text="Ready. Pick a source, check the chapters, then click Preview book.",
                                 style="Paper.TLabel")
         self.status.pack(anchor="w")
         self.prog = ttk.Progressbar(right, mode="indeterminate", style="Build.Horizontal.TProgressbar")
@@ -697,6 +887,8 @@ class App(tk.Tk):
         """Rebuild the window in the other palette, keeping everything the user has entered."""
         if self.busy:
             return
+        if getattr(self, "preview_win", None) is not None:
+            self.preview_win.close()
         state = self.collect()
         tab = self.shelf.current
         sel = self._sel()
@@ -932,9 +1124,11 @@ class App(tk.Tk):
         self.var("source_mode").set("file")
         self._mode_changed()
         self.shelf.select(0)
-        self.status.configure(text="New book. Pick a source, check the chapters, then click Build book.")
+        self.status.configure(text="New book. Pick a source, check the chapters, then click Preview book.")
 
     def on_close(self):
+        if getattr(self, "preview_win", None) is not None:
+            self.preview_win.close()
         try:
             if not getattr(self, "_no_save", False):
                 self.save_settings(os.path.join(app_dir(), "settings.json"))
@@ -978,6 +1172,21 @@ class App(tk.Tk):
             extra = {"body": [], "head": [SAME_BODY] + display, "drop": [SAME_HEAD, SAME_BODY] + display}[role]
             cb.configure(values=extra + [n for n in names if n not in extra])
 
+    def add_custom_family(self, entry):
+        """Check and add a "My fonts" family. Returns a plain error message, or None when it worked."""
+        for k in ("R", "I", "B", "BI"):
+            if entry.get(k):
+                _fam, _sty, problem = bf_fonts.font_file_info(entry[k])
+                if problem:
+                    return f"The {dict(R='Regular', I='Italic', B='Bold', BI='Bold Italic')[k]} file can't be used: {problem}."
+        try:
+            bf_fonts.register_family(entry["name"], {k: (entry[k], 0) for k in ("R", "I", "B", "BI") if entry.get(k)})
+        except Exception as e:
+            return f"That font can't be used ({type(e).__name__}: {e})."
+        self.custom_fonts = [c for c in self.custom_fonts if c["name"] != entry["name"]] + [dict(entry)]
+        self.refresh_fonts()
+        return None
+
     def font_manager(self):
         w = tk.Toplevel(self)
         w.title("My fonts")
@@ -987,7 +1196,8 @@ class App(tk.Tk):
         fr = ttk.Frame(w, padding=14, style=self.S("Card.TFrame"))
         fr.pack(fill="both", expand=True)
         fr.columnconfigure(1, weight=1)
-        ttk.Label(fr, text="Make a font family from any font files (.ttf, .otf, .ttc, .woff). Only Regular is "
+        ttk.Label(fr, text="Make a font family from any font files (.ttf, .otf, .ttc, .woff). Choose one file and "
+                           "BookForge fills in the family's other styles from the same folder. Only Regular is "
                            "required.\nTip: to use Medium weights, pick Medium as Regular and Medium Italic as "
                            "Italic.\n\nIncluded with BookForge (free licence): " +
                            ", ".join(bf_fonts.included_families()) + ".\nCommercial fonts can't be included: " +
@@ -1009,11 +1219,27 @@ class App(tk.Tk):
         def pick(key):
             p = filedialog.askopenfilename(parent=w, title="Choose a font file", filetypes=[
                 ("Font files", "*.ttf *.otf *.ttc *.otc *.woff *.woff2"), ("All files", "*.*")])
-            if p:
-                vals[key].set(p)
-                if key == "R" and not vals["name"].get():
-                    base = os.path.splitext(os.path.basename(p))[0]
-                    vals["name"].set(base.replace("-Regular", "").replace("_Regular", "").replace("-", " "))
+            if not p:
+                return
+            fam, sty, problem = bf_fonts.font_file_info(p)
+            if problem:
+                messagebox.showerror("My fonts", f"That file can't be used: {problem}.", parent=w)
+                return
+            names = {"R": "Regular", "I": "Italic", "B": "Bold", "BI": "Bold Italic"}
+            if sty != key and not messagebox.askyesno(
+                    "My fonts", f"This file is the {names.get(sty, sty)} style of \"{fam}\", but you chose it "
+                                f"for {names[key]}. Use it for {names[key]} anyway?", parent=w):
+                return
+            vals[key].set(p)
+            if not vals["name"].get().strip():
+                vals["name"].set(fam)
+            try:                                  # fill in the family's other styles from the same folder
+                _f, found = bf_fonts.family_from_file(p)
+            except ValueError:
+                found = {}
+            for k, fp in found.items():
+                if k != key and not vals[k].get().strip():
+                    vals[k].set(fp)
 
         def on_select(_e=None):
             sel = lb.curselection()
@@ -1043,14 +1269,10 @@ class App(tk.Tk):
             for k in ("R", "I", "B", "BI"):
                 if vals[k].get().strip():
                     entry[k] = vals[k].get().strip()
-            files = {k: (entry[k], 0) for k in ("R", "I", "B", "BI") if k in entry}
-            try:
-                bf_fonts.register_family(name, files)
-            except Exception as e:
-                messagebox.showerror("My fonts", f"That font can't be used:\n{e}", parent=w)
+            err = self.add_custom_family(entry)
+            if err:
+                messagebox.showerror("My fonts", err, parent=w)
                 return
-            self.custom_fonts = [c for c in self.custom_fonts if c["name"] != name] + [entry]
-            self.refresh_fonts()
             fill()
 
         def remove():
@@ -1102,12 +1324,14 @@ class App(tk.Tk):
     def _start(self, label, mode="build"):
         self.busy, self.mode = True, mode
         self.build_btn.configure(state="disabled")
+        self.preview_btn.configure(state="disabled")
         self.status.configure(text=label)
         self.prog.start(12)
 
     def _stop(self, label):
         self.busy = False
         self.build_btn.configure(state="normal")
+        self.preview_btn.configure(state="normal")
         self.status.configure(text=label)
         self.prog.stop()
 
@@ -1303,6 +1527,44 @@ class App(tk.Tk):
             self.book = None
             self.scan(force=True)
 
+    def _choose_book(self, s):
+        """The book to typeset: the scanned (and possibly edited) chapters, or None to read the source again."""
+        sig = self.source_sig(s)
+        cached = self.book if (self.book is not None and sig == self.book_sig) else None
+        if cached is None and self.book is not None and self.edited:
+            if messagebox.askyesno("Keep your chapter changes?",
+                                   "The source or chapter settings changed after you edited the chapters.\n\n"
+                                   "Yes = use your edited chapters\nNo = find the chapters again "
+                                   "(your edits will be lost)"):
+                cached = self.book
+        return cached, sig
+
+    def preview_book(self):
+        """Typeset the book with the current settings and show it - nothing is saved to the output folder."""
+        if self.busy:
+            return
+        s = self.collect()
+        cached, sig = self._choose_book(s)
+        self.logbox.configure(state="normal")
+        self.logbox.delete("1.0", "end")
+        self.logbox.configure(state="disabled")
+        self._start("Making the preview...", mode="preview")
+
+        def work():
+            try:
+                if cached is not None:
+                    book = copy.copy(cached)
+                else:
+                    self.log("Reading the source...")
+                    book = load_book(s, s.get("paste_text", ""))
+                    self.q.put(("scanned", book, sig))
+                    book = copy.copy(book)
+                apply_info(book, s)
+                self.q.put(("preview", build_preview(book, s, self.log)))
+            except Exception as e:
+                self.q.put(("error", str(e), traceback.format_exc()))
+        threading.Thread(target=work, daemon=True).start()
+
     def build(self):
         if self.busy:
             return
@@ -1315,14 +1577,7 @@ class App(tk.Tk):
             self.save_settings(os.path.join(app_dir(), "settings.json"))
         except Exception:
             pass
-        sig = self.source_sig(s)
-        cached = self.book if (self.book is not None and sig == self.book_sig) else None
-        if cached is None and self.book is not None and self.edited:
-            if messagebox.askyesno("Keep your chapter changes?",
-                                   "The source or chapter settings changed after you edited the chapters.\n\n"
-                                   "Yes = build with your edited chapters\nNo = find the chapters again "
-                                   "(your edits will be lost)"):
-                cached = self.book
+        cached, sig = self._choose_book(s)
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
         self.logbox.configure(state="disabled")
@@ -1368,7 +1623,14 @@ class App(tk.Tk):
                             self.autofilled[k] = new
                     self.fill_list()
                     if self.mode == "scan":
-                        self._stop(f"Found {len(self.book.chapters)} chapters. Check the list, then click Build book.")
+                        self._stop(f"Found {len(self.book.chapters)} chapters. Check the list, then click Preview book.")
+                elif kind == "preview":
+                    res = item[1]
+                    self._stop(f"Preview ready: {res['pages']} pages. Nothing has been saved yet.")
+                    if getattr(self, "preview_win", None) is not None and self.preview_win.alive():
+                        self.preview_win.load(res)
+                    else:
+                        self.preview_win = PreviewWindow(self, res)
                 elif kind == "done":
                     folder, made = item[1], item[2]
                     self._stop(f"Finished! {len(made)} file(s) saved in {folder}")
@@ -1442,6 +1704,17 @@ def main():
         bf_fonts.scan_installed(force=True)
         with open(sys.argv[2], "w", encoding="utf-8") as f:
             f.write(bf_fonts.font_report() + "\n")
+        sys.exit(0)
+    if len(sys.argv) >= 4 and sys.argv[1] == "--preview-check":
+        # BookForge.exe --preview-check SOURCE OUT.png : makes a preview and draws its first page
+        s = dict(DEFAULTS)
+        s.update(source_mode="file", source_path=sys.argv[2])
+        res = build_preview(apply_info(load_book(s), s), s, log=lambda m: None)
+        import pypdfium2 as pdfium
+        doc = pdfium.PdfDocument(res["pdf"])
+        doc[0].render(scale=1).to_pil().save(sys.argv[3])
+        doc.close()
+        shutil.rmtree(res["dir"], ignore_errors=True)
         sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == "--cli":
         sys.exit(cli(sys.argv[2:]))

@@ -270,6 +270,43 @@ def read_faces(path):
     return faces
 
 
+def font_file_info(path):
+    """(family, style, problem) for one font file. style is R/I/B/BI or None; problem is a plain message."""
+    if not os.path.isfile(path):
+        return None, None, "the file doesn't exist"
+    if not path.lower().endswith(FONT_EXT):
+        return None, None, "it isn't a font file (.ttf, .otf, .ttc or .woff)"
+    try:
+        faces = read_faces(path)
+    except Exception:
+        faces = []
+    if not faces:
+        return None, None, "it isn't a font file BookForge can read (it may be damaged)"
+    fam, sub, _idx, restricted = faces[0]
+    if restricted:
+        return fam, _style_of(sub), "the font's licence doesn't allow it to be embedded in PDFs"
+    return fam, _style_of(sub) or "R", None
+
+
+def family_from_file(path):
+    """From one chosen file, find its family name and the other styles of that family in the same folder.
+
+    Returns (family, {"R": path, "I": ..., "B": ..., "BI": ...}); raises ValueError with a plain message."""
+    fam, sty, problem = font_file_info(path)
+    if problem:
+        raise ValueError(problem)
+    files = {sty: path}
+    folder = os.path.dirname(path)
+    for f in sorted(os.listdir(folder)):
+        p = os.path.join(folder, f)
+        if p == path or not f.lower().endswith(FONT_EXT):
+            continue
+        fam2, sty2, problem2 = font_file_info(p)
+        if not problem2 and fam2 == fam and sty2 and sty2 not in files:
+            files[sty2] = p
+    return fam, files
+
+
 _FAMILIES = None
 SCAN_REPORT = {"folders": [], "files": 0, "read": 0, "errors": []}
 
@@ -496,6 +533,12 @@ def resolve(display, s, log=print):
         if "R" not in files:
             log(f'WARNING: the regular file for your font "{display}" is missing, so Times was used.')
             return BUILTIN["Times (built-in)"]
+        gone = [lab for k, lab in (("I", "italic"), ("B", "bold"), ("BI", "bold italic")) if c.get(k) and k not in files]
+        if gone:
+            log(f'WARNING: the {", ".join(gone)} file(s) of your font "{display}" can\'t be found any more.')
+        missing = [lab for k, lab in (("B", "bold"), ("I", "italic"), ("BI", "bold italic")) if k not in files]
+        if missing:
+            log(f'Note: your font "{display}" has no {", ".join(missing)} style; the nearest real style is used.')
     else:
         files = scan_installed().get(display)
         if not files:

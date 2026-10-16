@@ -18,8 +18,9 @@ BookForge is built with PyInstaller, and some antivirus programs wrongly flag Py
 
 - **Keeps the text word for word.** Italics, bold, strikethrough, underline, lists, poetry line breaks and footnote numbers carry over; only invisible typesetting characters are tidied.
 - **Finds chapters automatically** from EPUB headings (checked against the book's own contents list), "Chapter 1" lines, Markdown `#` headings, ALL-CAPS lines or your own pattern. The **Chapters** step shows every chapter, how it starts and its word count. You can rename, skip, reorder or merge wrongly split chapters before building, and your edits are never thrown away without asking.
+- **Preview before printing:** **Preview book** shows every page exactly as it will print, typeset by the same code as the final files, plus the folded printing sheets when imposition is on. Nothing is saved until you click **Generate printing files**.
 - **Builds the whole book:** title page, "This Book Belongs To" bookplate, dedication, an extra intro page, a contents page with real page numbers, chapter headings, "THE END" and lined notes pages.
-- **Typography:** 14 free book and title fonts included (see *Fonts* below), any installed font, or your own font files (Regular / Italic / Bold / Bold Italic, OpenType included), with separate fonts for body text, headings and drop caps. Hyphenation in 20 languages with your own dictionary for invented words, and no widows, orphans or one-word last lines.
+- **Typography:** 14 free book and title fonts included (see *Fonts* below), any installed font, or your own font files (**My fonts…**: choose one file and BookForge finds the family's Regular, Italic, Bold and Bold Italic in the same folder) (Regular / Italic / Bold / Bold Italic, OpenType included), with separate fonts for body text, headings and drop caps. Hyphenation in 20 languages with your own dictionary for invented words, and no widows, orphans or one-word last lines.
 - **Page layout:** 9 page sizes plus custom, mirrored margins, drop caps 2–5 lines tall with rules for opening quotation marks, ornaments, running headers, and several page-numbering styles.
 - **Section breaks:** recognises the markers your text uses (`***`, `~`, `o0o`…) and centres them.
 - **Fanfiction downloads (AO3, FanFicFare):** optional work-info and summary pages, and author's notes set apart, kept as written, or left out.
@@ -95,11 +96,10 @@ build_exe.bat                    # or build the program folder (appears in dist\
 | `bf_impose.py` | imposition: layouts, signatures, marks |
 | `bf_fonts.py` | font discovery, custom families, OpenType conversion |
 | `bf_theme.py` | the colour theme |
-| `tests/` | regression tests: `python tests/test_impose.py`, `test_chapters.py`, `test_build.py` (put test books in `tests/inputs/`) |
-| `docs/BOOKFORGE_TASKS.md` | development task tracker and notes |
+| `tests/` | regression tests: `python tests/test_impose.py`, `test_preview.py`, `test_chapters.py`, `test_build.py`. The book tests use files you put in `tests/inputs/` (never committed); the rest need nothing extra |
 
 ## License
 
-MIT © 2026 ChunksBabyRuth. See [LICENSE](LICENSE). Built with ReportLab, pypdf, Beautiful Soup, Pillow, python-docx and PyInstaller, each under its own license.
+MIT © 2026 ChunksBabyRuth. See [LICENSE](LICENSE). Built with ReportLab, pypdf, Beautiful Soup, Pillow, python-docx, pyphen, fontTools, pypdfium2 (preview; BSD-3-Clause / Apache-2.0) and PyInstaller, each under its own license.
 
 Please only print books you're free to reproduce, such as public-domain works, openly licensed works, or your own writing.

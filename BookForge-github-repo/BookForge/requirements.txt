@@ -5,4 +5,5 @@ pillow
 python-docx
 pyphen
 fonttools
+pypdfium2
 pyinstaller

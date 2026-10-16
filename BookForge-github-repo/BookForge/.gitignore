@@ -1,7 +1,15 @@
+# Python / build output
 __pycache__/
 *.pyc
 build/
 dist/
+dist_onefile/
+build_onefile/
 *.spec
 *.exe
+BookForge-Windows.zip
+
+# Test books and fonts you are not allowed to share (keep them local only)
 tests/inputs/
+private/
+*.local.*

@@ -162,6 +162,7 @@ FALLBACKS = [
     ("Cambria", "cambria.ttc", "cambriab.ttf", "cambriai.ttf", "cambriaz.ttf"),
     ("Segoe UI", "segoeui.ttf", "segoeuib.ttf", "segoeuii.ttf", "segoeuiz.ttf"),
     ("Segoe UI Symbol", "seguisym.ttf", "", "", ""),
+    ("Segoe UI Emoji", "seguiemj.ttf", "", "", ""),       # emoji drawn as plain (one-colour) shapes
     ("Segoe UI Historic", "seguihis.ttf", "", "", ""),
     ("Nirmala UI", "nirmala.ttf", "nirmalab.ttf", "", ""),
     ("Ebrima", "ebrima.ttf", "ebrimabd.ttf", "", ""),

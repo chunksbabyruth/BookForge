@@ -13,6 +13,25 @@ def default_out_dir():
     return os.path.join(docs if os.path.isdir(docs) else os.path.expanduser("~"), "BookForge Books")
 
 
+def build_preview(book, s, log=print):
+    """Typeset the book exactly as run_build does, but into a temporary folder.
+
+    Uses the same build_pdf (and, when "Imposed PDF for binding" is ticked, the same imposition)
+    so the preview IS the final layout. Nothing is written to the output folder."""
+    s = dict(s)
+    tmp = tempfile.mkdtemp(prefix="BookForge preview ")
+    pdf = os.path.join(tmp, "preview.pdf")
+    n = build_pdf(book, s, pdf, log)
+    sheets, duplex = [], True
+    if s.get("fmt_impose"):
+        if int(s.get("sig_sheets") or 0) <= 0 and s.get("sig_format", "").startswith("Standard"):
+            s["sig_format"] = "Booklet (one signature)"       # same rule as run_build
+        s["imp_files"] = "Aggregated file only"                # same sheets; just one file to show
+        info = bf_impose.impose(pdf, tmp, "preview", s, log)
+        sheets, duplex = info["files"], info["duplex"]
+    return {"dir": tmp, "pdf": pdf, "pages": n, "sheets": sheets, "duplex": duplex, "title": book.title}
+
+
 def run_build(book, s, log=print):
     root = s.get("out_dir") or default_out_dir()
     folder = os.path.join(root, safe_name(book.title))
