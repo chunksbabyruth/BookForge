@@ -6,7 +6,7 @@ import html
 import unicodedata
 
 from reportlab.lib.colors import black, HexColor
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
@@ -373,6 +373,7 @@ class Anchor(Marker):
         if self.opener:
             doc.bf["opener"][p] = True
             doc.bf["cur"] = self.title
+        doc.bf.setdefault("anchors", {})[self.key] = p      # where each chapter starts (for the preview)
         canv.bookmarkPage(self.key)
         canv.addOutlineEntry(self.outline, self.key, level=self.olevel, closed=True)
 
@@ -600,8 +601,49 @@ def build_pdf(book, s, out_path, log=print):
     runts = bool(s.get("avoid_runts", True))
     body_styles = ("body", "flush", "quote", "item", "anote")
 
+    inline_fonts = {}
+    fmt_now = [None]                      # the block being typeset (its editor formatting)
+    styled = {}
+
+    def fix_fonts(markup):
+        """Fonts chosen in the editor are stored by name ("EB Garamond"); turn them into PDF fonts."""
+        if '<font face="' not in markup:
+            return markup
+
+        def rep(m):
+            fam = html.unescape(m.group(1))
+            if fam not in inline_fonts:
+                if fam in pdfmetrics.getRegisteredFontNames():
+                    inline_fonts[fam] = fam
+                else:
+                    try:
+                        inline_fonts[fam] = resolve(fam, s, log)[0]
+                    except Exception:
+                        inline_fonts[fam] = R
+            return f'<font face="{inline_fonts[fam]}"'
+        return re.sub(r'<font face="([^"]+)"', rep, markup)
+
+    def with_format(style):
+        b = fmt_now[0]
+        if b is None or not (b.align or b.indent or b.space):
+            return style
+        key = (style.name, b.align, b.indent, b.space)
+        if key not in styled:
+            al = {"left": TA_LEFT, "center": TA_CENTER, "right": TA_RIGHT, "justify": TA_JUSTIFY}
+            kw = {}
+            if b.align in al:
+                kw["alignment"] = al[b.align]
+            if b.indent:
+                kw["leftIndent"] = style.leftIndent + 0.25 * inch * max(0, min(int(b.indent), 8))
+            if b.space:
+                kw["spaceBefore"] = style.spaceBefore + max(0, min(int(b.space), 72))
+            styled[key] = ParagraphStyle(f"{style.name}_f{len(styled)}", parent=style, **kw)
+        return styled[key]
+
     def P(markup, style, **kw):
-        if runts and style.name in body_styles and len(markup) > 60:
+        markup = fix_fonts(markup)
+        style = with_format(style)
+        if runts and style.name.split("_f")[0] in body_styles and len(markup) > 60:
             markup = no_runt(markup)
         c = cov_for(style.fontName)
         try:
@@ -799,6 +841,7 @@ def build_pdf(book, s, out_path, log=print):
         cap_pending = bool(s["drop_cap"])
         prev_label, in_note = None, False
         for b in blocks:
+            fmt_now[0] = b
             if b.kind != "anote" and in_note:
                 in_note, prev_label = False, None
                 if not an_mode.startswith("Keep"):
@@ -957,4 +1000,6 @@ def build_pdf(book, s, out_path, log=print):
     if hyph is not None:
         log(f"Hyphenation: {s.get('hyph_lang')}" + (" + your word list" if (s.get("hyph_words") or "").strip()
                                                     else ""))
+    anchors = doc.bf.get("anchors", {})
+    book._chapter_pages = [(id(ch), anchors.get(f"ch{ci}")) for ci, ch in enumerate(chapters)]
     return doc.page

@@ -13,3 +13,6 @@ BookForge-Windows.zip
 tests/inputs/
 private/
 *.local.*
+
+# BookForge projects you save while editing
+*.bookforge

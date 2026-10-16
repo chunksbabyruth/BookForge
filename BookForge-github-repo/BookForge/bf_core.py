@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.4"
+APP_VERSION = "1.5.0"
 BUILD_DATE = "2026-10-16"     # shown next to the version so different builds can be told apart
 APP_AUTHOR = "ChunksBabyRuth"
 
@@ -103,6 +103,9 @@ class Block:
     bullet: str = ""     # list items: "\u2022", "1." ...
     depth: int = 0       # list nesting level
     label: str = ""      # author's notes: "Notes", "Chapter End Notes", "Summary" ...
+    align: str = ""      # set in the editor: "" (style default) | left | center | right | justify
+    indent: int = 0      # set in the editor: extra left indent, in steps of 0.25 in
+    space: int = 0       # set in the editor: extra space above the paragraph, in points
 
 
 @dataclass

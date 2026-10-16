@@ -29,7 +29,8 @@ def build_preview(book, s, log=print):
         s["imp_files"] = "Aggregated file only"                # same sheets; just one file to show
         info = bf_impose.impose(pdf, tmp, "preview", s, log)
         sheets, duplex = info["files"], info["duplex"]
-    return {"dir": tmp, "pdf": pdf, "pages": n, "sheets": sheets, "duplex": duplex, "title": book.title}
+    return {"dir": tmp, "pdf": pdf, "pages": n, "sheets": sheets, "duplex": duplex, "title": book.title,
+            "chapter_pages": list(getattr(book, "_chapter_pages", []))}
 
 
 def run_build(book, s, log=print):

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -14,12 +15,13 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, APP_NAME, APP_VERSION, APP_AUTHOR, BUILD_DATE,
-                     load_book, apply_info, plain, esc, Block)
+                     load_book, apply_info, plain, esc, Block, Chapter)
 import bf_fonts
 from bf_fonts import SAME_BODY, SAME_HEAD
 from bf_pdf import HYPH_LANGS
 from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE, FOLD_SIDES, UNITS
 from bf_build import run_build, default_out_dir, build_preview
+import bf_edit
 import bf_theme as th
 
 TEXT_KEYS = ("paste_text", "dedication", "note_text", "blurb", "hyph_words")
@@ -89,6 +91,677 @@ TIPS
 """
 
 
+class BookEditor:
+    """The Edit step: chapters on the left, a Word-style editor on the right.
+
+    The text box holds one chapter. Paragraph styles, alignment etc. are tags on whole lines; bold, italic,
+    fonts, sizes and colours are tags on characters. bf_edit converts to and from the book model, which the
+    preview and every output are made from, so edits always appear exactly as they will print."""
+
+    SIZES = ["(default)"] + [str(n) for n in (8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60)]
+    SPACES = ["0", "6", "12", "18", "24", "36"]
+    STYLE_SIZE = {"head": 16, "subtitle": 13, "anote": 10, "image": 11}
+
+    def __init__(self, app, parent):
+        self.app, self.cur, self.cur_obj = app, None, None
+        self.loading, self.dirty, self.title_dirty = False, False, False
+        self.images, self.fontcache, self.undo_stack, self.redo_stack = {}, {}, [], []
+        self.last_snap = 0.0
+        S = app.S
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(0, weight=1)
+        left = ttk.LabelFrame(parent, text="Chapters", padding=8, style=S("TLabelframe"))
+        left.grid(row=0, column=0, sticky="nsw", padx=6, pady=5)
+        left.rowconfigure(0, weight=1)
+        self.lst = tk.Listbox(left, width=30, exportselection=False, activestyle="none", font=("Segoe UI", 10))
+        th.style_text(self.lst, app.k)
+        self.lst.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        self.lst.bind("<<ListboxSelect>>", lambda e: self._picked())
+        ttk.Label(left, text="Chapter title", style=S("Card.TLabel")).grid(row=1, column=0, columnspan=2,
+                                                                          sticky="w", pady=(8, 0))
+        self.title_var = tk.StringVar()
+        ttk.Entry(left, textvariable=self.title_var, style=S("TEntry")).grid(row=2, column=0, columnspan=2,
+                                                                            sticky="we")
+        self.title_var.trace_add("write", lambda *a: self._title_changed())
+        for n, (txt, fn) in enumerate((("Add chapter", self.add_chapter), ("Delete chapter", self.delete_chapter),
+                                       ("Move up", lambda: self.move_chapter(-1)),
+                                       ("Move down", lambda: self.move_chapter(1)))):
+            ttk.Button(left, text=txt, style=S("TButton"), command=fn).grid(row=3 + n // 2, column=n % 2,
+                                                                          sticky="we", padx=1, pady=(6 if n < 2 else 2, 0))
+        right = ttk.Frame(parent, style=S("Page.TFrame"))
+        right.grid(row=0, column=1, sticky="nsew", padx=6, pady=5)
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(3, weight=1)
+        bar1 = ttk.Frame(right, style=S("Page.TFrame"))
+        bar1.grid(row=0, column=0, sticky="we")
+        self.style_var, self.font_var, self.size_var, self.space_var = (tk.StringVar() for _ in range(4))
+        names = [lab for _k, lab in bf_edit.STYLES]
+        cb = ttk.Combobox(bar1, textvariable=self.style_var, values=names, state="readonly", width=15, style=S("TCombobox"))
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>", lambda e: self.set_style(dict((v, k) for k, v in bf_edit.STYLES)[self.style_var.get()]))
+        self.font_cb = ttk.Combobox(bar1, textvariable=self.font_var, state="readonly", width=22, style=S("TCombobox"))
+        self.font_cb.pack(side="left", padx=(6, 0))
+        self.font_cb.bind("<<ComboboxSelected>>", lambda e: self.set_value("ff|", "" if self.font_var.get().startswith("(") else self.font_var.get()))
+        sz = ttk.Combobox(bar1, textvariable=self.size_var, values=self.SIZES, state="readonly", width=8, style=S("TCombobox"))
+        sz.pack(side="left", padx=(6, 0))
+        sz.bind("<<ComboboxSelected>>", lambda e: self.set_value("fs|", "" if self.size_var.get().startswith("(") else self.size_var.get()))
+        ttk.Label(bar1, text="  paragraph style, font, size", style=S("PageHint.TLabel")).pack(side="left", padx=(6, 0))
+        barf = ttk.Frame(right, style=S("Page.TFrame"))
+        barf.grid(row=1, column=0, sticky="we", pady=(4, 0))
+        for txt, tip, fn in (("B", "Bold (Ctrl+B)", lambda: self.toggle("b")), ("I", "Italic (Ctrl+I)", lambda: self.toggle("i")),
+                             ("U", "Underline (Ctrl+U)", lambda: self.toggle("u")), ("S", "Strikethrough", lambda: self.toggle("s")),
+                             ("x\u00b2", "Superscript", lambda: self.toggle("sup")), ("x\u2082", "Subscript", lambda: self.toggle("sub")),
+                             ("Colour", "Text colour", self.pick_color), ("Clear", "Clear character formatting", self.clear_format)):
+            b = ttk.Button(barf, text=txt, style="Tool.TButton", command=fn)
+            b.pack(side="left", padx=(0 if txt == "B" else 1, 0))
+        ttk.Label(barf, text="  Align", style=S("PageHint.TLabel")).pack(side="left", padx=(8, 2))
+        for txt, al in (("Left", "left"), ("Centre", "center"), ("Right", "right"), ("Justify", "justify"), ("Auto", "")):
+            ttk.Button(barf, text=txt, style="Tool.TButton",
+                       command=lambda a=al: self.set_line("al|", a)).pack(side="left", padx=1)
+        bar2 = ttk.Frame(right, style=S("Page.TFrame"))
+        bar2.grid(row=2, column=0, sticky="we", pady=(4, 4))
+        ttk.Button(bar2, text="Indent \u2212", style="Tool.TButton", command=lambda: self.indent(-1)).pack(side="left", padx=(0, 1))
+        ttk.Button(bar2, text="Indent +", style="Tool.TButton", command=lambda: self.indent(1)).pack(side="left", padx=1)
+        ttk.Label(bar2, text="Space above", style=S("PageHint.TLabel")).pack(side="left", padx=(8, 2))
+        sp = ttk.Combobox(bar2, textvariable=self.space_var, values=self.SPACES, state="readonly", width=4, style=S("TCombobox"))
+        sp.pack(side="left")
+        sp.bind("<<ComboboxSelected>>", lambda e: self.set_line("sp|", "" if self.space_var.get() == "0" else self.space_var.get()))
+        for txt, fn in (("Undo", self.undo), ("Redo", self.redo), ("Find & replace", self.find_window),
+                        ("Section break", self.insert_break), ("Line break", self.insert_linebreak)):
+            ttk.Button(bar2, text=txt, style="Tool.TButton", command=fn).pack(side="left", padx=(8 if txt == "Undo" else 1, 0))
+        box = ttk.Frame(right, style=S("Card.TFrame"))
+        box.grid(row=3, column=0, sticky="nsew")
+        self.txt = tk.Text(box, wrap="word", undo=False, padx=16, pady=12, spacing3=6, height=20)
+        th.style_text(self.txt, app.k)
+        vs = ttk.Scrollbar(box, command=self.txt.yview)
+        self.txt.configure(yscrollcommand=vs.set)
+        self.txt.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        self.status = ttk.Label(right, style=S("PageHint.TLabel"), text="Pick a source on the Source tab, then edit its chapters here.")
+        self.status.grid(row=4, column=0, sticky="w", pady=(4, 0))
+        bot = ttk.Frame(right, style=S("Page.TFrame"))
+        bot.grid(row=5, column=0, sticky="we", pady=(6, 0))
+        ttk.Button(bot, text="Preview this chapter", style=S("TButton"), command=self.preview_here).pack(side="left")
+        ttk.Button(bot, text="Save project...", style=S("TButton"), command=app.save_project_dialog).pack(side="left", padx=6)
+        ttk.Button(bot, text="Open project...", style=S("TButton"), command=app.open_project_dialog).pack(side="left")
+        t = self.txt
+        for seq, fn in (("<Control-b>", lambda: self.toggle("b")), ("<Control-i>", lambda: self.toggle("i")),
+                        ("<Control-u>", lambda: self.toggle("u")), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
+                        ("<Control-f>", self.find_window), ("<Control-h>", self.find_window)):
+            t.bind(seq, lambda e, fn=fn: (fn(), "break")[1])
+        t.bind("<KeyPress>", self._keypress, add="+")
+        t.bind("<KeyRelease>", lambda e: self._update_toolbar(), add="+")
+        t.bind("<ButtonRelease-1>", lambda e: self._update_toolbar(), add="+")
+        t.bind("<<Paste>>", lambda e: self._snap(force=True), add="+")
+        muted = th.MUTED
+        t.tag_configure("f_u", underline=True)
+        t.tag_configure("f_s", overstrike=True)
+        t.tag_configure("f_sup", offset=5)
+        t.tag_configure("f_sub", offset=-3)
+        t.tag_configure("st|quote", lmargin1=36, lmargin2=36, rmargin=36)
+        t.tag_configure("st|item", lmargin1=18, lmargin2=34)
+        t.tag_configure("st|verse", lmargin1=30, lmargin2=30)
+        t.tag_configure("st|head", spacing1=12)
+        t.tag_configure("st|subtitle", justify="center")
+        t.tag_configure("st|anote", lmargin1=24, lmargin2=24, foreground=muted)
+        t.tag_configure("st|scene", justify="center", foreground=muted)
+        t.tag_configure("st|image", justify="center", foreground=muted)
+        t.tag_configure("al|left", justify="left")
+        t.tag_configure("al|center", justify="center")
+        t.tag_configure("al|right", justify="right")
+        t.tag_configure("al|justify", justify="left")
+        for n in range(1, 9):
+            t.tag_configure(f"in|{n}", lmargin1=24 * n, lmargin2=24 * n)
+        for v in self.SPACES[1:]:
+            t.tag_configure(f"sp|{v}", spacing1=int(v))
+        for tg in ("al|left", "al|center", "al|right", "al|justify"):
+            t.tag_raise(tg)
+        import tkinter.font as tkfont
+        self.families = {f.lower() for f in tkfont.families()}
+        self.fallback = next((f for f in ("Georgia", "Times New Roman", "DejaVu Serif", "Liberation Serif")
+                              if f.lower() in self.families), "TkDefaultFont")
+        self.update_fonts(app.fonts if hasattr(app, "fonts") else [])
+
+    # ------------------------------------------------------------ chapters
+    def chapters(self):
+        return self.app.book.chapters if self.app.book is not None else []
+
+    def refresh_list(self):
+        self.lst.delete(0, "end")
+        for ch in self.chapters():
+            self.lst.insert("end", ch.display() + ("" if ch.include else "   (left out)"))
+        if self.cur is not None and self.cur < self.lst.size():
+            self.lst.selection_clear(0, "end")
+            self.lst.selection_set(self.cur)
+            self.lst.see(self.cur)
+
+    def on_show(self):
+        """The Edit tab was opened: show the book (it may have changed on other tabs)."""
+        paths = []
+        for root, _d, files in os.walk(bf_fonts.included_dir()):
+            paths += [os.path.join(root, f) for f in files if f.lower().endswith((".ttf", ".otf"))]
+        for c in self.app.custom_fonts:
+            paths += [c[k] for k in ("R", "I", "B", "BI") if c.get(k)]
+        if bf_edit.load_fonts_for_editor(paths):
+            import tkinter.font as tkfont
+            self.families = {f.lower() for f in tkfont.families()}
+        chs = self.chapters()
+        self.refresh_list()
+        if not chs:
+            return
+        idx = next((i for i, c in enumerate(chs) if c is self.cur_obj), None)
+        if idx is None:
+            self.cur = None
+            self.select(0)
+        elif idx != self.cur:
+            self.cur = idx
+            self.refresh_list()
+
+    def reset(self):
+        """The book was replaced (scanned again, new book, project opened)."""
+        self.cur, self.cur_obj = None, None
+        self.undo_stack, self.redo_stack = [], []
+        self.txt.delete("1.0", "end")
+        self.refresh_list()
+        if self.app.book is not None and th.TABS[self.app.cur_page][0] == "edit":
+            self.select(0)
+
+    def _picked(self):
+        sel = self.lst.curselection()
+        if sel and sel[0] != self.cur:
+            self.select(sel[0])
+
+    def select(self, i):
+        if not self.chapters():
+            return
+        self.commit()
+        i = max(0, min(i, len(self.chapters()) - 1))
+        self.cur, self.cur_obj = i, self.chapters()[i]
+        self.undo_stack, self.redo_stack = [], []
+        self._load(bf_edit.blocks_to_paras(self.cur_obj.blocks))
+        self.loading = True
+        self.title_var.set(self.cur_obj.title)
+        self.loading = False
+        self.title_dirty = False
+        self.refresh_list()
+        self.txt.mark_set("insert", "1.0")
+        self.txt.see("1.0")
+        self._status()
+        self._update_toolbar()
+
+    def _title_changed(self):
+        if self.loading or self.cur_obj is None:
+            return
+        self.cur_obj.title = self.title_var.get()
+        self.title_dirty = True
+        self.app.unsaved = True
+        self.lst.delete(self.cur)
+        self.lst.insert(self.cur, self.cur_obj.display() + ("" if self.cur_obj.include else "   (left out)"))
+        self.lst.selection_set(self.cur)
+
+    def add_chapter(self):
+        if self.app.book is None:
+            return
+        self.commit()
+        ch = Chapter(title="New chapter", blocks=[Block("para", text="Type the new chapter here.")])
+        at = (self.cur + 1) if self.cur is not None else len(self.chapters())
+        self.chapters().insert(at, ch)
+        self._structure_changed()
+        self.cur = None
+        self.select(at)
+
+    def delete_chapter(self):
+        if self.cur_obj is None:
+            return
+        if not messagebox.askyesno("Delete chapter", f"Delete \u201c{self.cur_obj.display()}\u201d and all its text from "
+                                                     "this book?\n\n(Your source file is not changed.)"):
+            return
+        i = self.cur
+        del self.chapters()[i]
+        self.cur, self.cur_obj = None, None
+        self._structure_changed()
+        if self.chapters():
+            self.select(min(i, len(self.chapters()) - 1))
+        else:
+            self.txt.delete("1.0", "end")
+            self.refresh_list()
+
+    def move_chapter(self, d):
+        if self.cur is None:
+            return
+        self.commit()
+        chs, i, j = self.chapters(), self.cur, self.cur + d
+        if 0 <= j < len(chs):
+            chs[i], chs[j] = chs[j], chs[i]
+            self.cur = j
+            self._structure_changed()
+            self.refresh_list()
+
+    def _structure_changed(self):
+        self.app.edited = True
+        self.app.unsaved = True
+        self.app.fill_list()
+
+    # ------------------------------------------------------------ text box <-> paragraphs
+    def _line_tags(self, p, n):
+        tags = [f"st|{p.style}"]
+        if p.align:
+            tags.append(f"al|{p.align}")
+        if p.indent:
+            tags.append(f"in|{max(1, min(int(p.indent), 8))}")
+        if p.space:
+            tags.append(f"sp|{p.space}")
+        if p.label:
+            tags.append(f"lb|{p.label}")
+        if p.style == "item":
+            tags.append(f"bl|{p.bullet}|{p.depth}")
+        if p.style == "verse":
+            tags.append(f"vg|{p.group}")
+        if p.style in ("image", "scene") and p.block is not None:
+            self.images[n] = p.block
+            tags.append(f"ob|{n}")
+        return tags
+
+    def _color_tag(self, color):
+        tag = f"fc|{color}"
+        try:
+            self.txt.tag_configure(tag, foreground=color)
+        except tk.TclError:
+            pass
+        return tag
+
+    def _load(self, paras):
+        self.loading = True
+        t = self.txt
+        t.delete("1.0", "end")
+        self.images = {}
+        for n, p in enumerate(paras):
+            start = t.index("end-1c")
+            for text, f in p.runs:
+                tags = [f"f_{k}" for k in bf_edit.FLAGS if f.get(k)]
+                if f.get("font"):
+                    tags.append("ff|" + f["font"])
+                if f.get("size"):
+                    tags.append("fs|" + str(f["size"]))
+                if f.get("color"):
+                    tags.append(self._color_tag(f["color"]))
+                t.insert("end", text, tuple(tags))
+            t.insert("end", "\n")
+            for tg in self._line_tags(p, n):
+                t.tag_add(tg, start, "end-1c")
+        self.refresh()
+        t.edit_modified(False)
+        self.dirty = False
+        self.loading = False
+
+    def _runs(self, s, e):
+        t = self.txt
+        cuts = {t.index(s), t.index(e)}
+        for _kind, _val, idx in t.dump(s, e, tag=True):
+            cuts.add(t.index(idx))
+        cuts = sorted(cuts, key=lambda x: tuple(int(v) for v in x.split(".")))
+        runs = []
+        for a, b in zip(cuts, cuts[1:]):
+            text = t.get(a, b)
+            if not text:
+                continue
+            f = {}
+            for tg in t.tag_names(a):
+                if tg.startswith("f_") and tg[2:] in bf_edit.FLAGS:
+                    f[tg[2:]] = True
+                elif tg.startswith("ff|"):
+                    f["font"] = tg[3:]
+                elif tg.startswith("fs|"):
+                    f["size"] = tg[3:]
+                elif tg.startswith("fc|"):
+                    f["color"] = tg[3:]
+            runs.append((text, f))
+        return bf_edit.merge(runs)
+
+    def read(self):
+        """The text box as editor paragraphs."""
+        t, paras, used = self.txt, [], set()
+        last = int(t.index("end-1c").split(".")[0])
+        for ln in range(1, last + 1):
+            s, e = f"{ln}.0", f"{ln}.end"
+            text = t.get(s, e)
+            tags = set(t.tag_names(e) if t.compare(e, "<", "end-1c") else t.tag_names(s))
+            val = {tg.split("|", 1)[0]: tg.split("|", 1)[1] for tg in tags if "|" in tg and not tg.startswith(("ff|", "fs|", "fc|", "df|"))}
+            style = val.get("st", "para")
+            ob = val.get("ob")
+            block = self.images.get(int(ob)) if ob is not None and ob.isdigit() else None
+            if style in ("image", "scene"):
+                if block is None or ob in used or (style == "image" and not text.startswith("[picture")):
+                    style, block = "para", None             # a copy made by pressing Enter: ordinary text
+                else:
+                    used.add(ob)
+            if not text and style not in ("scene",):
+                continue
+            bullet, depth = "", 0
+            if "bl" in val:
+                bullet, _, d = val["bl"].rpartition("|")
+                depth = int(d) if d.isdigit() else 0
+            paras.append(bf_edit.Para(style, self._runs(s, e), align=val.get("al", ""),
+                                      indent=int(val.get("in", 0) or 0), space=int(val.get("sp", 0) or 0),
+                                      label=val.get("lb", ""), bullet=bullet, depth=depth,
+                                      group=val.get("vg"), block=block))
+        return paras
+
+    def commit(self):
+        """Write the text box back into the book (only if something changed)."""
+        if self.cur_obj is None or self.loading:
+            return True
+        changed = self.dirty or self.txt.edit_modified()
+        if changed:
+            try:
+                self.cur_obj.blocks = bf_edit.paras_to_blocks(self.read())
+            except Exception as e:
+                messagebox.showerror("Edit", f"Your edits to this chapter couldn't be applied ({e}).\n\n"
+                                             "They are still in the editor - nothing has been lost.")
+                return False
+            self.txt.edit_modified(False)
+            self.dirty = False
+        if changed or self.title_dirty:
+            self.title_dirty = False
+            self.app.edited = True
+            self.app.unsaved = True
+            self.app.fill_list()
+        return True
+
+    # ------------------------------------------------------------ display
+    def update_fonts(self, names):
+        vals = ["(default font)"] + [n for n in names if n not in (SAME_BODY, SAME_HEAD)]
+        self.font_cb.configure(values=vals)
+
+    def _tk_family(self, fam):
+        fam = fam or self.app.var("font_family").get()
+        fam = {"Times (built-in)": "Times New Roman", "Helvetica (built-in)": "Arial",
+               "Courier (built-in)": "Courier New"}.get(fam, fam)
+        return fam if fam.lower() in self.families else self.fallback
+
+    def refresh(self, start="1.0", end="end"):
+        t = self.txt
+        for name in self.fontcache.values():
+            t.tag_remove(name, start, end)
+        cuts = {t.index(start), t.index(end)}
+        for _k, _v, idx in t.dump(start, end, tag=True):
+            cuts.add(t.index(idx))
+        cuts = sorted(cuts, key=lambda x: tuple(int(v) for v in x.split(".")))
+        for a, b in zip(cuts, cuts[1:]):
+            tags = set(t.tag_names(a))
+            style = next((x[3:] for x in tags if x.startswith("st|")), "para")
+            fam = next((x[3:] for x in tags if x.startswith("ff|")), "")
+            size = next((x[3:] for x in tags if x.startswith("fs|")), "")
+            try:
+                size = float(size) if size else self.STYLE_SIZE.get(style, 12)
+            except ValueError:
+                size = 12
+            if "f_sup" in tags or "f_sub" in tags:
+                size *= 0.7
+            bold = "f_b" in tags or style == "head"
+            italic = "f_i" in tags or style in ("subtitle", "anote", "image")
+            key = (self._tk_family(fam), int(round(size)), bold, italic)
+            if key not in self.fontcache:
+                name = "df|%s|%d|%d|%d" % key
+                t.tag_configure(name, font=(key[0], key[1], ("bold " if bold else "") + ("italic" if italic else "")))
+                self.fontcache[key] = name
+                t.tag_lower(name)
+            t.tag_add(self.fontcache[key], a, b)
+
+    def _status(self, msg=None):
+        if msg:
+            self.status.configure(text=msg)
+            return
+        if self.cur_obj is None:
+            return
+        words = len(self.txt.get("1.0", "end").split())
+        self.status.configure(text=f"Chapter {self.cur + 1} of {len(self.chapters())}  \u00b7  {words:,} words  \u00b7  "
+                                   "Fonts show in their printed shape in the preview")
+
+    def _update_toolbar(self):
+        t = self.txt
+        tags = set(t.tag_names("insert-1c" if t.compare("insert", ">", "insert linestart") else "insert"))
+        line = set(t.tag_names("insert lineend"))
+        style = next((x[3:] for x in line if x.startswith("st|")), "para")
+        self.style_var.set(bf_edit.STYLE_NAMES.get(style, "Normal text"))
+        self.font_var.set(next((x[3:] for x in tags if x.startswith("ff|")), "(default font)"))
+        self.size_var.set(next((x[3:] for x in tags if x.startswith("fs|")), "(default)"))
+        self.space_var.set(next((x[3:] for x in line if x.startswith("sp|")), "0"))
+
+    # ------------------------------------------------------------ undo / redo (covers formatting too)
+    def _state(self):
+        return (self.read(), self.txt.index("insert"))
+
+    def _snap(self, force=False):
+        import time
+        now = time.time()
+        if not force and now - self.last_snap < 1.2:
+            self.last_snap = now
+            return
+        self.last_snap = now
+        self.undo_stack.append(self._state())
+        del self.undo_stack[:-100]
+        self.redo_stack.clear()
+
+    def _keypress(self, e):
+        if e.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Left", "Right", "Up",
+                        "Down", "Home", "End", "Prior", "Next"):
+            return
+        self._snap()
+
+    def _restore(self, state):
+        paras, ins = state
+        self._load(paras)
+        self.dirty = True
+        self.txt.mark_set("insert", ins)
+        self.txt.see(ins)
+
+    def undo(self):
+        if self.undo_stack:
+            self.redo_stack.append(self._state())
+            self._restore(self.undo_stack.pop())
+            self.last_snap = 0
+
+    def redo(self):
+        if self.redo_stack:
+            self.undo_stack.append(self._state())
+            self._restore(self.redo_stack.pop())
+            self.last_snap = 0
+
+    # ------------------------------------------------------------ formatting
+    def _sel(self):
+        try:
+            return self.txt.index("sel.first"), self.txt.index("sel.last")
+        except tk.TclError:
+            self._status("Select some text first, then choose the formatting.")
+            return None
+
+    def _lines(self):
+        try:
+            a, b = self.txt.index("sel.first"), self.txt.index("sel.last")
+        except tk.TclError:
+            a = b = self.txt.index("insert")
+        return range(int(a.split(".")[0]), int(b.split(".")[0]) + 1)
+
+    def _after_format(self, a, b):
+        self.dirty = True
+        self.refresh(a, b)
+        self.app.unsaved = True
+        self._update_toolbar()
+
+    def toggle(self, flag):
+        r = self._sel()
+        if not r:
+            return
+        self._snap(force=True)
+        tag = f"f_{flag}"
+        on = all(f.get(flag) for _t, f in self._runs(*r))
+        (self.txt.tag_remove if on else self.txt.tag_add)(tag, *r)
+        if flag in ("sup", "sub") and not on:
+            self.txt.tag_remove("f_sub" if flag == "sup" else "f_sup", *r)
+        self._after_format(*r)
+
+    def set_value(self, prefix, value):
+        r = self._sel()
+        if not r:
+            return
+        self._snap(force=True)
+        for tg in self.txt.tag_names():
+            if tg.startswith(prefix):
+                self.txt.tag_remove(tg, *r)
+        if value:
+            tag = self._color_tag(value) if prefix == "fc|" else prefix + value
+            self.txt.tag_add(tag, *r)
+        self._after_format(*r)
+
+    def pick_color(self):
+        from tkinter import colorchooser
+        if not self._sel():
+            return
+        c = colorchooser.askcolor(title="Text colour", parent=self.txt)
+        if c and c[1]:
+            self.set_value("fc|", c[1].lower())
+
+    def clear_format(self):
+        r = self._sel()
+        if not r:
+            return
+        self._snap(force=True)
+        for tg in self.txt.tag_names():
+            if tg.startswith(("f_", "ff|", "fs|", "fc|")):
+                self.txt.tag_remove(tg, *r)
+        self._after_format(*r)
+
+    def set_line(self, prefix, value):
+        lines = self._lines()
+        self._snap(force=True)
+        for ln in lines:
+            a, b = f"{ln}.0", f"{ln}.end+1c"
+            for tg in self.txt.tag_names():
+                if tg.startswith(prefix):
+                    self.txt.tag_remove(tg, a, b)
+            if value:
+                self.txt.tag_add(prefix + value, a, b)
+        self._after_format(f"{lines[0]}.0", f"{lines[-1]}.end+1c")
+
+    def set_style(self, style):
+        if style == "image":
+            self._status("Pictures come from your source file; they can be moved or deleted but not added here.")
+            self._update_toolbar()
+            return
+        self.set_line("st|", style)
+        if style == "item":
+            for ln in self._lines():
+                if not any(tg.startswith("bl|") for tg in self.txt.tag_names(f"{ln}.end")):
+                    self.txt.tag_add("bl|\u2022|0", f"{ln}.0", f"{ln}.end+1c")
+
+    def indent(self, d):
+        cur = next((int(x[3:]) for x in self.txt.tag_names("insert lineend") if x.startswith("in|")), 0)
+        n = max(0, min(cur + d, 8))
+        self.set_line("in|", str(n) if n else "")
+
+    def insert_break(self):
+        self._snap(force=True)
+        ln = int(self.txt.index("insert").split(".")[0])
+        self.txt.insert(f"{ln}.end", "\n* * *")
+        a, b = f"{ln + 1}.0", f"{ln + 1}.end+1c"
+        for tg in self.txt.tag_names(a):
+            self.txt.tag_remove(tg, a, b)
+        self.txt.tag_add("st|scene", a, b)
+        self._after_format(f"{ln}.0", b)
+
+    def insert_linebreak(self):
+        self._snap(force=True)
+        self.txt.insert("insert", bf_edit.BR, self.txt.tag_names("insert-1c"))
+        self._after_format("insert linestart", "insert lineend")
+
+    # ------------------------------------------------------------ find & replace
+    def find_window(self):
+        w = tk.Toplevel(self.txt)
+        w.title("Find & replace")
+        w.configure(background=th.CARD)
+        w.transient(self.txt.winfo_toplevel())
+        fr = ttk.Frame(w, padding=12, style=self.app.S("Card.TFrame"))
+        fr.pack(fill="both", expand=True)
+        fv, rv, case = tk.StringVar(), tk.StringVar(), tk.BooleanVar(value=False)
+        for r, (lab, var) in enumerate((("Find", fv), ("Replace with", rv))):
+            ttk.Label(fr, text=lab, style=self.app.S("Card.TLabel")).grid(row=r, column=0, sticky="w", pady=2)
+            e = ttk.Entry(fr, textvariable=var, width=36, style=self.app.S("TEntry"))
+            e.grid(row=r, column=1, columnspan=3, sticky="we", pady=2)
+            if r == 0:
+                e.focus_set()
+        ttk.Checkbutton(fr, text="Match capitals", variable=case, style=self.app.S("Card.TCheckbutton")).grid(
+            row=2, column=1, sticky="w")
+        msg = ttk.Label(fr, style=self.app.S("CardHint.TLabel"))
+        msg.grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        t = self.txt
+
+        def find(start=None):
+            pat = fv.get()
+            if not pat:
+                return None
+            pos = t.search(pat, start or "insert", stopindex="end", nocase=not case.get())
+            if not pos:
+                pos = t.search(pat, "1.0", stopindex="end", nocase=not case.get())
+            if not pos:
+                msg.configure(text="Not found in this chapter.")
+                return None
+            end = f"{pos}+{len(pat)}c"
+            t.tag_remove("sel", "1.0", "end")
+            t.tag_add("sel", pos, end)
+            t.mark_set("insert", end)
+            t.see(pos)
+            msg.configure(text="")
+            return pos
+
+        def replace():
+            try:
+                a, b = t.index("sel.first"), t.index("sel.last")
+            except tk.TclError:
+                find()
+                return
+            if t.get(a, b).lower() != fv.get().lower() and fv.get():
+                find()
+                return
+            self._snap(force=True)
+            tags = tuple(x for x in t.tag_names(a) if x != "sel")
+            t.delete(a, b)
+            t.insert(a, rv.get(), tags)
+            self._after_format(f"{a} linestart", f"{a} lineend+1c")
+            find()
+
+        def replace_all():
+            if not fv.get():
+                return
+            self._snap(force=True)
+            n, pos = 0, "1.0"
+            while True:
+                pos = t.search(fv.get(), pos, stopindex="end", nocase=not case.get())
+                if not pos:
+                    break
+                tags = tuple(x for x in t.tag_names(pos) if x != "sel")
+                t.delete(pos, f"{pos}+{len(fv.get())}c")
+                t.insert(pos, rv.get(), tags)
+                pos = f"{pos}+{len(rv.get())}c"
+                n += 1
+            self._after_format("1.0", "end")
+            msg.configure(text=f"Replaced {n} time(s) in this chapter.")
+        for c, (lab, fn) in enumerate((("Find next", find), ("Replace", replace), ("Replace all", replace_all))):
+            ttk.Button(fr, text=lab, style=self.app.S("TButton"), command=fn).grid(row=3, column=c + 1, sticky="we",
+                                                                                  padx=1, pady=(8, 0))
+        self.find_win = w
+        self.find_funcs = (fv, rv, find, replace, replace_all)
+
+    # ------------------------------------------------------------ preview link
+    def preview_here(self):
+        if self.cur_obj is None:
+            return
+        if not self.commit():
+            return
+        self.app._preview_target = id(self.cur_obj)
+        self.app.preview_book()
+
+
 class PreviewWindow:
     """Shows the preview: the book's pages and, when imposition is on, the printing sheets."""
 
@@ -135,6 +808,8 @@ class PreviewWindow:
                    command=app.preview_book).pack(side="right", padx=8, ipady=5)
         ttk.Button(bot, text="\u25C0  Back to settings", style="Header.TButton",
                    command=self.close).pack(side="right", ipady=5)
+        ttk.Button(bot, text="\u270E  Edit this chapter", style="Header.TButton",
+                   command=self.edit_here).pack(side="right", padx=(0, 8), ipady=5)
         body = tk.Frame(w, background=th.PAPER)
         body.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(body, background=th.TROUGH, highlightthickness=0)
@@ -258,6 +933,21 @@ class PreviewWindow:
         self.of.configure(text=f"of {len(self.items)}   \u2014   {label}")
 
     # ---- buttons
+    def chapter_at_page(self):
+        """Id of the chapter shown on the current page (the last chapter starting on or before it)."""
+        page = self.i + 1 if self.mode == "pages" else 1
+        starts = sorted((pg, cid) for cid, pg in self.result.get("chapter_pages", []) if pg)
+        cid = None
+        for pg, c in starts:
+            if pg <= page:
+                cid = c
+        return cid if cid is not None else (starts[0][1] if starts else None)
+
+    def edit_here(self):
+        cid = self.chapter_at_page()
+        self.close()
+        self.app.edit_chapter(cid)
+
     def generate(self):
         self.close()
         self.app.build()
@@ -300,6 +990,8 @@ class App(tk.Tk):
         self.vars, self.texts = {}, {}
         self.book, self.book_sig, self.busy, self.mode = None, None, False, ""
         self.edited = False
+        self.unsaved = False          # edits not yet saved in a project file
+        self._preview_target = None   # chapter to show when the next preview opens
         self.autofilled = {}          # title/author values BookForge filled in itself from a source
         self.q = queue.Queue()
         self.custom_fonts = []
@@ -388,6 +1080,9 @@ class App(tk.Tk):
         m = tk.Menu(self)
         f = tk.Menu(m, tearoff=0)
         f.add_command(label="New book", command=self.new_book)
+        f.add_command(label="Open project...", command=self.open_project_dialog)
+        f.add_command(label="Save project...", command=self.save_project_dialog, accelerator="Ctrl+S")
+        self.bind_all("<Control-s>", lambda e: self.save_project_dialog())
         f.add_command(label="Open source file...", command=self.browse_source)
         f.add_separator()
         f.add_command(label="Save settings as preset...", command=self.save_preset)
@@ -431,7 +1126,7 @@ class App(tk.Tk):
         holder.rowconfigure(0, weight=1)
         holder.columnconfigure(0, weight=1)
         self.pages = []
-        builders = (self._tab_source, self._tab_chapters, self._tab_info, self._tab_layout, self._tab_front,
+        builders = (self._tab_source, self._tab_chapters, self._tab_edit, self._tab_info, self._tab_layout, self._tab_front,
                     self._tab_output)
         for (key, _label, _c), build in zip(th.TABS, builders):
             self.k = key
@@ -468,10 +1163,15 @@ class App(tk.Tk):
         self.logbox.pack(fill="x")
 
     def show_tab(self, i):
+        prev = getattr(self, "cur_page", None)
+        if prev is not None and prev != i and th.TABS[prev][0] == "edit":
+            self._commit_editor()
         self.cur_page = i
         self.pages[i].tkraise()
-        if th.TABS[i][0] == "chap" and not self.busy:
+        if th.TABS[i][0] in ("chap", "edit") and not self.busy:
             self.after(50, self.auto_scan)
+        if th.TABS[i][0] == "edit" and getattr(self, "editor", None) is not None:
+            self.editor.on_show()
 
     def _wheel(self, e):
         w = e.widget
@@ -618,6 +1318,75 @@ class App(tk.Tk):
         ttk.Label(pv, text="Wrong split? Select the chapter that shouldn't exist and click \"Merge into "
                            "previous\". Missing chapters? Change \"How are chapters marked\" above.",
                   style=self.S("CardHint.TLabel"), wraplength=280).grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+    def _tab_edit(self, t):
+        t.rowconfigure(0, weight=1)
+        t.columnconfigure(0, weight=1)
+        holder = ttk.Frame(t, style=self.S("Page.TFrame"))
+        holder.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        self.editor = BookEditor(self, holder)
+
+    def edit_tab(self):
+        return [k for k, _l, _c in th.TABS].index("edit")
+
+    def _commit_editor(self):
+        ed = getattr(self, "editor", None)
+        return ed.commit() if ed is not None else True
+
+    def edit_chapter(self, cid):
+        """Open the Edit step at the chapter with this id (from the preview's Edit this chapter)."""
+        if self.book is None:
+            return
+        idx = next((i for i, c in enumerate(self.book.chapters) if id(c) == cid), 0)
+        self.shelf.select(self.edit_tab())
+        self.editor.select(idx)
+
+    def save_project_dialog(self):
+        if not self._commit_editor():
+            return False
+        if self.book is None:
+            messagebox.showinfo("Save project", "There's no book to save yet - pick a source first.")
+            return False
+        base = re.sub(r'[\\/:*?"<>|]+', " ", self.book.title or "My book").strip() or "My book"
+        p = filedialog.asksaveasfilename(title="Save project", defaultextension=".bookforge", initialfile=base + ".bookforge",
+                                         filetypes=[("BookForge project", "*.bookforge")])
+        if not p:
+            return False
+        try:
+            bf_edit.save_project(p, self.book, self.collect(), APP_VERSION)
+        except Exception as e:
+            messagebox.showerror("Save project", f"The project couldn't be saved ({e}).\n\nYour edits are still open "
+                                                 "in BookForge - try saving somewhere else.")
+            return False
+        self.unsaved = False
+        self.status.configure(text=f"Project saved: {os.path.basename(p)}")
+        return True
+
+    def open_project_dialog(self):
+        if self.busy:
+            return
+        self._commit_editor()
+        if getattr(self, "unsaved", False) and not messagebox.askyesno(
+                "Open project", "Open another project? Unsaved edits to the current book will be lost."):
+            return
+        p = filedialog.askopenfilename(title="Open project", filetypes=[("BookForge project", "*.bookforge"),
+                                                                        ("All files", "*.*")])
+        if not p:
+            return
+        try:
+            book, settings = bf_edit.load_project(p)
+        except ValueError as e:
+            messagebox.showerror("Open project", f"That project can't be opened: {e}.")
+            return
+        settings.pop("dark_mode", None)
+        self.apply(settings)
+        self._mode_changed()
+        self.book, self.edited, self.unsaved = book, True, False
+        self.book_sig = self.source_sig(self.collect())
+        self.fill_list()
+        self.editor.reset()
+        self.shelf.select(self.edit_tab())
+        self.status.configure(text=f"Opened project {os.path.basename(p)} - {len(book.chapters)} chapters.")
 
     def _tab_info(self, t):
         g = self.group(t, "Title page details (leave blank to use the source's own)", row=0, column=0,
@@ -889,6 +1658,8 @@ class App(tk.Tk):
             return
         if getattr(self, "preview_win", None) is not None:
             self.preview_win.close()
+        self._commit_editor()
+        editing = getattr(getattr(self, "editor", None), "cur_obj", None)
         state = self.collect()
         tab = self.shelf.current
         sel = self._sel()
@@ -909,6 +1680,7 @@ class App(tk.Tk):
             for i in sel:
                 if self.ctree.exists(str(i)):
                     self.ctree.selection_add(str(i))
+        self.editor.cur_obj = editing
         self.shelf.select(tab)
         try:
             self.save_settings(os.path.join(app_dir(), "settings.json"))
@@ -1118,6 +1890,8 @@ class App(tk.Tk):
             else:
                 self.var(k).set("")
         self.book, self.book_sig, self.edited, self.autofilled = None, None, False, {}
+        self.unsaved = False
+        self.editor.reset()
         self.ctree.delete(*self.ctree.get_children())
         self.show_preview()
         self.chap_summary.configure(text="No chapters yet - pick a source on the Source tab.")
@@ -1127,6 +1901,13 @@ class App(tk.Tk):
         self.status.configure(text="New book. Pick a source, check the chapters, then click Preview book.")
 
     def on_close(self):
+        if getattr(self, "unsaved", False) and self.book is not None and not getattr(self, "_closing", False):
+            self._commit_editor()
+            ans = messagebox.askyesnocancel(
+                "Save your edits?", "You've edited this book. Save your edits as a BookForge project before closing?\n\n"
+                                    "Yes = save   No = close without saving   Cancel = keep working")
+            if ans is None or (ans and not self.save_project_dialog()):
+                return
         if getattr(self, "preview_win", None) is not None:
             self.preview_win.close()
         try:
@@ -1171,6 +1952,8 @@ class App(tk.Tk):
         for cb, role in self.font_combos:
             extra = {"body": [], "head": [SAME_BODY] + display, "drop": [SAME_HEAD, SAME_BODY] + display}[role]
             cb.configure(values=extra + [n for n in names if n not in extra])
+        if getattr(self, "editor", None) is not None:
+            self.editor.update_fonts(names)
 
     def add_custom_family(self, entry):
         """Check and add a "My fonts" family. Returns a plain error message, or None when it worked."""
@@ -1458,6 +2241,7 @@ class App(tk.Tk):
 
     def _changed(self):
         self.edited = True
+        self.unsaved = True
         self.fill_list()
         self.show_preview()
 
@@ -1541,7 +2325,7 @@ class App(tk.Tk):
 
     def preview_book(self):
         """Typeset the book with the current settings and show it - nothing is saved to the output folder."""
-        if self.busy:
+        if self.busy or not self._commit_editor():
             return
         s = self.collect()
         cached, sig = self._choose_book(s)
@@ -1566,7 +2350,7 @@ class App(tk.Tk):
         threading.Thread(target=work, daemon=True).start()
 
     def build(self):
-        if self.busy:
+        if self.busy or not self._commit_editor():
             return
         s = self.collect()
         if not any(s[k] for k in ("fmt_pdf", "fmt_impose", "fmt_cover", "fmt_epub", "fmt_docx",
@@ -1615,6 +2399,9 @@ class App(tk.Tk):
                 elif kind == "scanned":
                     self.book, self.book_sig = item[1], item[2]
                     self.edited = False
+                    self.unsaved = False
+                    if getattr(self, "editor", None) is not None:
+                        self.editor.reset()
                     for k in ("title", "author"):
                         cur = self.var(k).get().strip()
                         new = (getattr(self.book, k) or "").strip()
@@ -1631,6 +2418,12 @@ class App(tk.Tk):
                         self.preview_win.load(res)
                     else:
                         self.preview_win = PreviewWindow(self, res)
+                    target, self._preview_target = self._preview_target, None
+                    page = dict(res.get("chapter_pages", [])).get(target) if target else None
+                    if page:
+                        self.preview_win.mode = "pages"
+                        self.preview_win._mode_buttons()
+                        self.preview_win.go(page - 1)
                 elif kind == "done":
                     folder, made = item[1], item[2]
                     self._stop(f"Finished! {len(made)} file(s) saved in {folder}")

@@ -195,10 +195,34 @@ def scene_text(b, s):
     return sb
 
 
+def _font_span(m):
+    a = dict(re.findall(r'(\w+)="([^"]*)"', m.group(0)))
+    css = []
+    if a.get("face"):
+        css.append(f"font-family:'{a['face']}'")
+    if a.get("size"):
+        css.append(f"font-size:{a['size']}pt")
+    if a.get("color"):
+        css.append(f"color:{a['color']}")
+    return f'<span style="{";".join(css)}">' if css else "<span>"
+
+
+def para_style(b):
+    """CSS for formatting set in the editor (alignment, indent, space above)."""
+    css = []
+    if getattr(b, "align", ""):
+        css.append(f"text-align:{b.align}")
+    if getattr(b, "indent", 0):
+        css.append(f"margin-left:{0.25 * int(b.indent):g}in")
+    if getattr(b, "space", 0):
+        css.append(f"margin-top:{int(b.space)}pt")
+    return f' style="{";".join(css)}"' if css else ""
+
+
 def to_xhtml(markup):
     m = markup.replace("<super>", "<sup>").replace("</super>", "</sup>").replace("<br/>", "<br />")
     m = m.replace("<strike>", "<s>").replace("</strike>", "</s>")
-    m = re.sub(r"</?font[^>]*>", "", m)
+    m = re.sub(r"<font\b[^>]*>", _font_span, m).replace("</font>", "</span>")
     return m.replace("&nbsp;", "&#160;")
 
 
@@ -252,23 +276,23 @@ def blocks_html(blocks, imgmap, s=None):
             keep = an_mode(s).startswith("Keep")
             if b.label and b.label != prev_label:
                 out.append(f'<p class="{"quote" if keep else "anlabel"}">{esc(b.label)}</p>')
-            out.append(f'<p class="{"quote" if keep else "anote"}">{to_xhtml(b.text)}</p>')
+            out.append(f'<p class="{"quote" if keep else "anote"}"{para_style(b)}>{to_xhtml(b.text)}</p>')
             prev_label = b.label
         elif b.kind == "item":
             ind = 1.5 * (b.depth + 1)
             bullet = esc(b.bullet) + "&#160;" if b.bullet else ""
             out.append(f'<p class="item" style="margin-left:{ind}em">{bullet}{to_xhtml(b.text)}</p>')
         elif b.kind == "para":
-            out.append(f"<p>{to_xhtml(b.text)}</p>")
+            out.append(f"<p{para_style(b)}>{to_xhtml(b.text)}</p>")
         elif b.kind == "quote":
-            out.append(f'<p class="quote">{to_xhtml(b.text)}</p>')
+            out.append(f'<p class="quote"{para_style(b)}>{to_xhtml(b.text)}</p>')
         elif b.kind == "subtitle":
-            out.append(f'<p class="subtitle">{to_xhtml(b.text)}</p>')
+            out.append(f'<p class="subtitle"{para_style(b)}>{to_xhtml(b.text)}</p>')
         elif b.kind == "verse":
             out.append('<p class="verse">' + "<br />".join(to_xhtml(l) if l else "&#160;"
                                                           for l in b.lines) + "</p>")
         elif b.kind == "head":
-            out.append(f"<h3>{to_xhtml(b.text)}</h3>")
+            out.append(f"<h3{para_style(b)}>{to_xhtml(b.text)}</h3>")
         elif b.kind == "scene":
             out.append(f'<p class="scene">{esc(scene_text(b, s)) or "&#160;"}</p>')
         elif b.kind == "image" and id(b) in imgmap:
@@ -461,8 +485,20 @@ def build_docx(book, s, out_path):
             r.font.size = Pt(sz)
         return p
 
+    def fmt_para(p, b):
+        """Alignment / indent / space above set in the editor."""
+        al = {"left": WD_ALIGN_PARAGRAPH.LEFT, "center": WD_ALIGN_PARAGRAPH.CENTER,
+              "right": WD_ALIGN_PARAGRAPH.RIGHT, "justify": WD_ALIGN_PARAGRAPH.JUSTIFY}
+        if getattr(b, "align", "") in al:
+            p.alignment = al[b.align]
+        if getattr(b, "indent", 0):
+            p.paragraph_format.left_indent = Inches(0.25 * int(b.indent))
+        if getattr(b, "space", 0):
+            p.paragraph_format.space_before = Pt(int(b.space))
+
     def add_markup(p, markup, base_italic=False):
         fl = {"i": 0, "b": 0, "super": 0, "sub": 0, "strike": 0, "u": 0}
+        fonts = []                                    # editor fonts: (face, size, colour) stack
         for tok in re.split(r"(<[^>]+>)", markup):
             if not tok:
                 continue
@@ -473,8 +509,24 @@ def build_docx(book, s, out_path):
                     p.add_run().add_break()
                 elif name in fl:
                     fl[name] += -1 if tok.startswith("</") else 1
+                elif name == "font":
+                    if tok.startswith("</"):
+                        if fonts:
+                            fonts.pop()
+                    else:
+                        fonts.append(dict(re.findall(r'(\w+)="([^"]*)"', tok)))
                 continue
             r = p.add_run(html.unescape(tok))
+            for f in fonts:
+                if f.get("face"):
+                    r.font.name = html.unescape(f["face"]).replace(" (built-in)", "")
+                if f.get("size"):
+                    try:
+                        r.font.size = Pt(float(f["size"]))
+                    except ValueError:
+                        pass
+                if f.get("color", "").startswith("#") and len(f["color"]) == 7:
+                    r.font.color.rgb = RGBColor.from_string(f["color"][1:].upper())
             r.italic = bool(fl["i"]) != base_italic
             r.bold = bool(fl["b"])
             if fl["strike"]:
@@ -574,6 +626,7 @@ def build_docx(book, s, out_path):
                 p.paragraph_format.left_indent = p.paragraph_format.right_indent = Inches(0.35 if not keep else 0.4)
                 p.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 add_markup(p, b.text)
+                fmt_para(p, b)
                 if not keep:
                     for r in p.runs:
                         r.font.size = Pt(size * 0.88)
@@ -584,16 +637,21 @@ def build_docx(book, s, out_path):
                 p.paragraph_format.first_line_indent = Inches(-0.25 if b.bullet else 0)
                 p.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 add_markup(p, (esc(b.bullet) + "\t" if b.bullet else "") + b.text)
+                fmt_para(p, b)
             elif b.kind == "para":
-                add_markup(d.add_paragraph(), b.text)
+                p = d.add_paragraph()
+                add_markup(p, b.text)
+                fmt_para(p, b)
             elif b.kind == "subtitle":
                 p = center("", after=14)
                 add_markup(p, b.text, base_italic=True)
+                fmt_para(p, b)
             elif b.kind == "quote":
                 p = d.add_paragraph()
                 p.paragraph_format.left_indent = p.paragraph_format.right_indent = Inches(0.4)
                 p.paragraph_format.first_line_indent = Inches(0)
                 add_markup(p, b.text)
+                fmt_para(p, b)
             elif b.kind == "verse":
                 p = d.add_paragraph()
                 p.paragraph_format.first_line_indent = Inches(0)
@@ -607,6 +665,7 @@ def build_docx(book, s, out_path):
             elif b.kind == "head":
                 p = center("", bold=True, before=12, after=8)
                 add_markup(p, f"<b>{b.text}</b>")
+                fmt_para(p, b)
             elif b.kind == "scene":
                 center(scene_text(b, s))
             elif b.kind == "image" and b.image:

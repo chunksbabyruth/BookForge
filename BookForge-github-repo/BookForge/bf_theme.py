@@ -32,6 +32,7 @@ BUILD_DOWN = "#175553"
 TABS = [
     ("src", "Source", "#4A6FA5"),        # slate blue
     ("chap", "Chapters", "#3F7F86"),     # sea green
+    ("edit", "Edit", "#6A79C2"),         # periwinkle
     ("info", "Book info", "#7D5A8E"),    # dusty plum
     ("lay", "Layout", "#5E7F3A"),        # moss green
     ("front", "Front & back", "#94691F"),  # ochre
@@ -111,6 +112,9 @@ def apply(root):
     st.configure("Header.TButton", background=TROUGH, foreground=INK, bordercolor=LINE, lightcolor=TROUGH,
                  darkcolor=TROUGH, font=UI_SEMI, padding=(10, 4))
     st.map("Header.TButton", background=[("active", P["SCROLL"]), ("pressed", P["SCROLL_ACT"])])
+    st.configure("Tool.TButton", background=TROUGH, foreground=INK, bordercolor=LINE, lightcolor=TROUGH,
+                 darkcolor=TROUGH, font=(UI, 9), padding=(5, 2), width=-1)
+    st.map("Tool.TButton", background=[("active", P["SCROLL"]), ("pressed", P["SCROLL_ACT"])])
     st.configure("Build.TButton", background=BUILD, foreground="#FFFFFF", bordercolor=BUILD,
                  lightcolor=BUILD, darkcolor=BUILD, font=(UI, 12, "bold"), padding=(22, 9))
     st.map("Build.TButton",

@@ -65,8 +65,8 @@ def toc_and_outline_agree(pdf_path, book):
 
 
 # ---------------------------------------------------------------- classic: Grimms, every format
-if os.path.exists(os.path.join(INPUTS, "pg2591-images-3.epub")):
-    book, folder, made, log, s = build("pg2591-images-3.epub", tag="grimms")
+if os.path.exists(os.path.join(INPUTS, "gutenberg.epub")):
+    book, folder, made, log, s = build("gutenberg.epub", tag="grimms")
     exts = sorted(os.path.splitext(m)[1] for m in made)
     check(exts.count(".pdf") == 3 and all(e in exts for e in (".epub", ".docx", ".html", ".txt")),
           f"Grimms: all formats made ({len(made)} files)")
@@ -97,35 +97,40 @@ if os.path.exists(os.path.join(INPUTS, "pg2591-images-3.epub")):
           f"Cover width {trim_w:.3f} in = 2 x 5.50 trim + spine {spine:.3f} in")
 
 # ---------------------------------------------------------------- AO3: notes / work info / summary settings
-EOTL = "End_of_the_Line.epub"
-if os.path.exists(os.path.join(INPUTS, EOTL)):
-    probe_note = "cookie clicker"           # text of chapter 1's end note
+AO3 = "ao3_story.epub"
+if os.path.exists(os.path.join(INPUTS, AO3)):
+    _s = dict(DEFAULTS)
+    _s["source_path"] = os.path.join(INPUTS, AO3)
+    _bk = load_book(_s)                       # probe texts come from the book itself (nothing quoted here)
+    _note = next(b for c in _bk.active() for b in c.blocks if b.kind == "anote" and len(plain(b.text)) > 30)
+    probe_note = " ".join(plain(_note.text).split()[:4])
+    probe_summary = " ".join(plain(_bk.fic_summary[0].text).split()[:3])
     for mode, expect in (("Set apart (smaller, indented)", True), ("Keep as written", True), ("Leave out", False)):
-        book, folder, made, log, s = build(EOTL, tag="eotl_" + mode.split()[0], an_mode=mode,
+        book, folder, made, log, s = build(AO3, tag="ao3_" + mode.split()[0], an_mode=mode,
                                            fic_info="Add a work info page", fmt_impose=False,
                                            fmt_epub=False, fmt_docx=False, fmt_html=False, fmt_txt=True,
                                            fmt_cover=False)
         pdf = [m for m in made if m.endswith("Print.pdf")][0]
         text = "\n".join(pdf_text_pages(pdf))
-        check((probe_note in text) == expect, f"EotL, author's notes = {mode}: note text present = {expect}")
+        check((probe_note in text) == expect, f"AO3, author's notes = {mode}: note text present = {expect}")
         txt = open([m for m in made if m.endswith(".txt")][0], encoding="utf-8").read()
-        check((probe_note in txt) == expect, f"EotL TXT export follows author's notes = {mode}")
+        check((probe_note in txt) == expect, f"AO3 TXT export follows author's notes = {mode}")
         if mode.startswith("Set"):
-            check("Work Info" in text and "Rating:" in text, "EotL: work info page present when chosen")
-            check("Derek lost." in text, "EotL: summary page present")
-            check("Please drop by the Archive" not in text, "EotL: AO3 'Please drop by' line removed")
+            check("Work Info" in text and "Rating:" in text, "AO3: work info page present when chosen")
+            check(probe_summary in text, "AO3: summary page present")
+            check("Please drop by the Archive" not in text, "AO3: AO3 'Please drop by' line removed")
             bad = toc_and_outline_agree(pdf, book)
-            check(not bad, f"EotL: bookmarks match chapter pages ({len(book.active())} chapters) {bad[:2]}")
-    book, folder, made, log, s = build(EOTL, tag="eotl_noinfo", fic_info="Leave out", fic_summary="Leave out",
+            check(not bad, f"AO3: bookmarks match chapter pages ({len(book.active())} chapters) {bad[:2]}")
+    book, folder, made, log, s = build(AO3, tag="ao3_noinfo", fic_info="Leave out", fic_summary="Leave out",
                                        fmt_impose=False, fmt_epub=False, fmt_docx=False, fmt_html=False,
                                        fmt_txt=False, fmt_cover=False)
     text = "\n".join(pdf_text_pages([m for m in made if m.endswith("Print.pdf")][0]))
-    check("Work Info" not in text and "Derek lost." not in text, "EotL: work info and summary left out on request")
+    check("Work Info" not in text and probe_summary not in text, "AO3: work info and summary left out on request")
 
 # ---------------------------------------------------------------- included fonts in a real book
-ULMO = "Of_the_Tales_of_Ulmos.html"
-if os.path.exists(os.path.join(INPUTS, ULMO)):
-    book, folder, made, log, s = build(ULMO, tag="ulmo_fonts", font_family="EB Garamond",
+ONESHOT = "ao3_oneshot.html"
+if os.path.exists(os.path.join(INPUTS, ONESHOT)):
+    book, folder, made, log, s = build(ONESHOT, tag="oneshot_fonts", font_family="EB Garamond",
                                        heading_font="Cinzel", dropcap_font="Playfair Display", drop_cap=True,
                                        fmt_epub=False, fmt_docx=False, fmt_html=False, fmt_txt=False)
     pdf = [m for m in made if m.endswith("Print.pdf")][0]
@@ -140,7 +145,7 @@ if os.path.exists(os.path.join(INPUTS, ULMO)):
         return TTFont(bf_fonts.included_files(family)[style][0], lazy=True)["name"].getDebugName(6)
     want = {ps("EB Garamond", "R"), ps("Cinzel", "B"), ps("Playfair Display", "R")}
     check(want <= names and not any(n.startswith("Times") for n in names),
-          f"Ulmo: the chosen included fonts are the ones embedded {sorted(want)}")
+          f"AO3 one-shot: the chosen included fonts are the ones embedded {sorted(want)}")
     originals = set()                       # PostScript names of the unmodified static files shipped
     for root, _d, files in os.walk(bf_fonts.included_dir()):
         for f in files:
@@ -149,9 +154,9 @@ if os.path.exists(os.path.join(INPUTS, ULMO)):
     generated = [n for n in names if n not in originals and n != "Helvetica"]
     check(not any(x in n for n in generated for x in ("Lora", "PlayfairDisplay", "LibreBaskerville", "Source")),
           f"fonts BookForge generated itself never carry a Reserved Font Name {generated}")
-    check(not any("WARNING" in l for l in log), f"Ulmo: no font warnings ({[l for l in log if 'WARN' in l]})")
+    check(not any("WARNING" in l for l in log), f"AO3 one-shot: no font warnings ({[l for l in log if 'WARN' in l]})")
     check(len(book.active()) == 22 and any(m.endswith("Imposed for binding.pdf") for m in made),
-          "Ulmo: 22 chapters, imposed PDF made")
+          "AO3 one-shot: 22 chapters, imposed PDF made")
 
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

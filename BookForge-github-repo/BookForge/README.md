@@ -18,6 +18,8 @@ BookForge is built with PyInstaller, and some antivirus programs wrongly flag Py
 
 - **Keeps the text word for word.** Italics, bold, strikethrough, underline, lists, poetry line breaks and footnote numbers carry over; only invisible typesetting characters are tidied.
 - **Finds chapters automatically** from EPUB headings (checked against the book's own contents list), "Chapter 1" lines, Markdown `#` headings, ALL-CAPS lines or your own pattern. The **Chapters** step shows every chapter, how it starts and its word count. You can rename, skip, reorder or merge wrongly split chapters before building, and your edits are never thrown away without asking.
+- **Edit your book like a word processor:** the **Edit** step lists your chapters (add, rename, delete, reorder) next to a Word-style editor: type and delete text, bold, italic, underline, strikethrough, superscript/subscript, any font (included, installed or your own), size, colour, paragraph styles (heading, quotation, list, poetry, section break, author's note), alignment, indent and spacing, undo/redo, find & replace. **Preview this chapter** shows it on the page; the preview's **Edit this chapter** jumps back. Your source file is never changed.
+- **Save your work:** **File → Save project** keeps the book with every edit, picture and setting in a `.bookforge` file; **Open project** brings it all back. BookForge asks before closing with unsaved edits.
 - **Preview before printing:** **Preview book** shows every page exactly as it will print, typeset by the same code as the final files, plus the folded printing sheets when imposition is on. Nothing is saved until you click **Generate printing files**.
 - **Builds the whole book:** title page, "This Book Belongs To" bookplate, dedication, an extra intro page, a contents page with real page numbers, chapter headings, "THE END" and lined notes pages.
 - **Typography:** 14 free book and title fonts included (see *Fonts* below), any installed font, or your own font files (**My fonts…**: choose one file and BookForge finds the family's Regular, Italic, Bold and Bold Italic in the same folder) (Regular / Italic / Bold / Bold Italic, OpenType included), with separate fonts for body text, headings and drop caps. Hyphenation in 20 languages with your own dictionary for invented words, and no widows, orphans or one-word last lines.
@@ -70,6 +72,17 @@ Alegreya, Baskervville, Crimson Pro, EB Garamond, Gelasio, Libre Baskerville, Li
 - **Books you make:** `Documents\BookForge Books`, unless you choose another folder on the Output tab.
 - **Your extra fonts:** `Documents\BookForge Fonts`, unless you choose another folder in Settings & storage.
 
+## Versions and releases
+
+Versions go up by 0.1 for each minor update (1.5.0, 1.6.0, 1.7.0 ...). To publish one, set `APP_VERSION` in `bf_core.py` (and the numbers in `version_info.txt`), commit, then push a matching tag:
+
+```
+git tag v1.5.0
+git push origin v1.5.0
+```
+
+GitHub then runs the tests, builds the program, checks that the fonts, their licences and the preview engine are inside it, and attaches `BookForge-Windows.zip` and `BookForge.exe` to the v1.5.0 release. The build stops if the tag and `APP_VERSION` don't match. **Run workflow** on the Actions tab makes a test build you can download from that run, without touching any release.
+
 ## Command line
 
 ```
@@ -92,11 +105,12 @@ build_exe.bat                    # or build the program folder (appears in dist\
 | `bf_core.py` | reads source files, detects chapters, keeps text verbatim |
 | `bf_pdf.py` | typesetting: fonts, margins, page numbers, contents, font fallback |
 | `bf_export.py` | cover, EPUB, DOCX, HTML, TXT |
+| `bf_edit.py` | the editing model: paragraphs ⇄ formatted text, project files |
 | `bf_build.py` | the one-click build pipeline |
 | `bf_impose.py` | imposition: layouts, signatures, marks |
 | `bf_fonts.py` | font discovery, custom families, OpenType conversion |
 | `bf_theme.py` | the colour theme |
-| `tests/` | regression tests: `python tests/test_impose.py`, `test_preview.py`, `test_chapters.py`, `test_build.py`. The book tests use files you put in `tests/inputs/` (never committed); the rest need nothing extra |
+| `tests/` | regression tests: `python tests/test_impose.py`, `test_preview.py`, `test_editor.py`, `test_chapters.py`, `test_build.py`. Tests that need real books look for your own copies in `tests/inputs/` (never committed) named `ao3_story.epub`, `ao3_oneshot.html`, `gutenberg.epub` and `standard_ebooks.epub`, and skip themselves when they're missing |
 
 ## License
 

@@ -1,11 +1,11 @@
 """Chapter detection / text preservation tests (plain Python - run:  python tests/test_chapters.py).
 
-Book files are NOT stored in the repo (they belong to their authors). Put your own copies in
-tests/inputs/ - any that are missing are skipped:
-  End_of_the_Line.epub            AO3 work 84070831 (28 chapters)
-  Of_the_Tales_of_Ulmos.html      AO3 work 85682851, HTML download (22 chapters in the text)
-  pg2591-images-3.epub            Grimms' Fairy Tales, Project Gutenberg (62)
-  gregory-of-nyssa_on-the-making-of-man_william-moore-henry-austin-wilson.epub  Standard Ebooks (33)
+Book files are NOT stored in the repo (they belong to their authors). Put your own test books in
+tests/inputs/ under these names - any that are missing are skipped (expected chapter counts in CASES):
+  ao3_story.epub          an AO3 EPUB download with several chapters
+  ao3_oneshot.html        an AO3 HTML download whose chapters are "Chapter N." lines in the text
+  gutenberg.epub          a Project Gutenberg EPUB
+  standard_ebooks.epub    a Standard Ebooks EPUB
 """
 import collections
 import os
@@ -71,8 +71,8 @@ b = parse_text("# Chapter One\n\nText.\n\n# Chapter Two\n\nMore.", S, is_md=True
 check([c.title for c in b.chapters] == ["Chapter One", "Chapter Two"], "Markdown headings")
 
 # ---------------------------------------------------------------- real books (skipped if absent)
-CASES = [("End_of_the_Line.epub", 28), ("Of_the_Tales_of_Ulmos.html", 22), ("pg2591-images-3.epub", 62),
-         ("gregory-of-nyssa_on-the-making-of-man_william-moore-henry-austin-wilson.epub", 33)]
+CASES = [("ao3_story.epub", 28), ("ao3_oneshot.html", 22), ("gutenberg.epub", 62),
+         ("standard_ebooks.epub", 33)]
 for name, n in CASES:
     if not os.path.exists(os.path.join(INPUTS, name)):
         print(f"SKIP  {name} (not in {INPUTS})")
@@ -80,7 +80,7 @@ for name, n in CASES:
     bk = from_file(name)
     got = len(chapters(bk))
     check(got == n, f"{name}: {got} chapters (expected {n})")
-    if name.startswith(("End_of", "Of_the")):
+    if name.startswith("ao3_"):
         check(len(bk.fic_meta) >= 3 and bk.fic_summary,
               f"{name}: work info ({len(bk.fic_meta)} lines) and summary found")
         check(not any(c.title.strip().lower() in ("preface", "afterword") for c in chapters(bk)),
@@ -90,9 +90,9 @@ for name, n in CASES:
             pasted = parse_text(browser_copy(raw), dict(DEFAULTS))
             check(len(chapters(pasted)) == n, f"{name} pasted as text: {len(chapters(pasted))} chapters")
 
-ulmo = os.path.join(INPUTS, "Of_the_Tales_of_Ulmos.html")
-if os.path.exists(ulmo):
-    soup = BeautifulSoup(open(ulmo, "rb").read(), "html.parser")
+oneshot = os.path.join(INPUTS, "ao3_oneshot.html")
+if os.path.exists(oneshot):
+    soup = BeautifulSoup(open(oneshot, "rb").read(), "html.parser")
     body = soup.find("div", id="chapters")
     for br in body.find_all("br"):
         br.replace_with(" ")
@@ -101,12 +101,12 @@ if os.path.exists(ulmo):
         if not el.find(["p", "h2"]) and el.name != "h2":
             src += clean_chars(el.get_text("")).split()
     out = []
-    for c in chapters(from_file("Of_the_Tales_of_Ulmos.html")):
+    for c in chapters(from_file("ao3_oneshot.html")):
         out += c.title.split()
         for x in c.blocks:
             if x.kind != "anote":
                 out += plain(x.text).split()
-    check(src == out, f"Ulmo story text word-for-word and in order ({len(src)} words)")
+    check(src == out, f"AO3 one-shot story text word-for-word and in order ({len(src)} words)")
 
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
