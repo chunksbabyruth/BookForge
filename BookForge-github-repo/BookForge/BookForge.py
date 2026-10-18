@@ -1694,7 +1694,10 @@ class App(tk.Tk):
             os.startfile(path)
         except Exception:
             try:
-                subprocess.Popen(["xdg-open", path])
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", path])
+                else:
+                    subprocess.Popen(["xdg-open", path])
             except Exception:
                 messagebox.showinfo("Folder", path)
 
@@ -2432,7 +2435,10 @@ class App(tk.Tk):
                             os.startfile(folder)
                         except Exception:
                             try:
-                                subprocess.Popen(["xdg-open", folder])
+                                if sys.platform == "darwin":
+                                    subprocess.Popen(["open", folder])
+                                else:
+                                    subprocess.Popen(["xdg-open", folder])
                             except Exception:
                                 pass
                     messagebox.showinfo("Book finished", "Saved to:\n" + folder + "\n\n" +

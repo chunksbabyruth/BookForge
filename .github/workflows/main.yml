@@ -3,13 +3,13 @@ name: Build BookForge for Windows
 on:
   push:
     tags:
-      - "v1.4.5*"
+      - "v*"
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "GitHub release tag to publish (use v1.4.5 for this updated build)"
+        description: "Existing or new release tag to publish (current release: v1.5)"
         required: true
-        default: "v1.4.5"
+        default: "v1.5"
         type: string
 
 permissions:

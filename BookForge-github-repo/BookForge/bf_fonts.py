@@ -204,7 +204,20 @@ def font_dirs():
     if la:
         dirs.append(os.path.join(la, "Microsoft", "Windows", "Fonts"))
     if os.name != "nt":
-        dirs += ["/usr/share/fonts", "/usr/local/share/fonts", os.path.expanduser("~/.fonts")]
+        import sys
+        if sys.platform == "darwin":
+            dirs += [
+                "/System/Library/Fonts",
+                "/Library/Fonts",
+                os.path.expanduser("~/Library/Fonts"),
+            ]
+        else:
+            dirs += [
+                "/usr/share/fonts",
+                "/usr/local/share/fonts",
+                os.path.expanduser("~/.local/share/fonts"),
+                os.path.expanduser("~/.fonts"),
+            ]
     return [d for d in dirs if os.path.isdir(d)]
 
 

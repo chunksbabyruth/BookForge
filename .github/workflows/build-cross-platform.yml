@@ -1,0 +1,223 @@
+name: Build BookForge for macOS and Linux
+
+on:
+  push:
+    branches: [main, feature/cross-platform-builds]
+    tags:
+      - "v1.5"
+      - "v1.5.*"
+    paths:
+      - "BookForge-github-repo/BookForge/**"
+      - ".github/workflows/build-cross-platform.yml"
+  pull_request:
+    paths:
+      - "BookForge-github-repo/BookForge/**"
+      - ".github/workflows/build-cross-platform.yml"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional existing release tag to attach packages to (for example v1.5)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - macos-15-intel
+    defaults:
+      run:
+        working-directory: BookForge-github-repo/BookForge
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: BookForge-github-repo/BookForge/requirements.txt
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip
+
+      - name: Verify project layout and bundled fonts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in BookForge.py bf_core.py bf_fonts.py bf_build.py bf_pdf.py requirements.txt; do
+            test -f "$file" || { echo "::error::Required file missing: $file"; exit 1; }
+          done
+          test -d fonts || { echo "::error::fonts folder is missing"; exit 1; }
+          ttf_count="$(find fonts -type f -iname '*.ttf' | wc -l | tr -d ' ')"
+          ofl_count="$(find fonts -type f -name 'OFL.txt' | wc -l | tr -d ' ')"
+          echo "TTF files: $ttf_count"
+          echo "OFL license files: $ofl_count"
+          test "$ttf_count" -ge 76 || { echo "::error::Expected at least 76 TTF files"; exit 1; }
+          test "$ofl_count" -ge 14 || { echo "::error::Expected at least 14 OFL licenses"; exit 1; }
+
+      - name: Install application and test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pdfplumber pytest
+          python -c "import pypdfium2; print('pypdfium2 preview engine installed')"
+
+      - name: Run regression scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d tests || { echo "::error::tests folder is missing"; exit 1; }
+          shopt -s nullglob
+          tests=(tests/test_*.py)
+          (("${#tests[@]}" > 0)) || { echo "::error::No tests/test_*.py scripts found"; exit 1; }
+          export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+          for test_file in "${tests[@]}"; do
+            echo "Running $test_file..."
+            python "$test_file"
+          done
+
+      - name: Build application
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name BookForge \
+            --add-data "bookforge.ico:." \
+            --add-data "fonts:fonts" \
+            --collect-data docx \
+            --collect-data pyphen \
+            --collect-all pypdfium2 \
+            --collect-submodules reportlab.pdfbase \
+            --collect-submodules fontTools.ttLib.tables \
+            --collect-submodules fontTools.varLib \
+            BookForge.py
+
+      - name: Verify packaged resources and PDF preview engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d dist || { echo "::error::PyInstaller dist folder missing"; exit 1; }
+          ttf_count="$(find dist -type f -iname '*.ttf' | wc -l | tr -d ' ')"
+          ofl_count="$(find dist -type f -name 'OFL.txt' | wc -l | tr -d ' ')"
+          pdfium_count="$(find dist -type f -iname '*pdfium*' | wc -l | tr -d ' ')"
+          echo "Bundled TTF files: $ttf_count"
+          echo "Bundled OFL licenses: $ofl_count"
+          echo "Bundled PDFium-related files: $pdfium_count"
+          test "$ttf_count" -ge 76 || { echo "::error::Bundled fonts are missing"; exit 1; }
+          test "$ofl_count" -ge 14 || { echo "::error::Bundled font licenses are missing"; exit 1; }
+          test "$pdfium_count" -ge 1 || { echo "::error::PDF preview engine was not bundled"; exit 1; }
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            test -d "dist/BookForge.app" || { echo "::error::macOS app bundle missing"; exit 1; }
+          else
+            test -x "dist/BookForge/BookForge" || { echo "::error::Linux executable missing"; exit 1; }
+          fi
+
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          ditto -c -k --sequesterRsrc --keepParent "dist/BookForge.app" "BookForge-macOS-${arch}.zip"
+
+      - name: Package Linux application
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip -qr "BookForge-Linux-x86_64.zip" "dist/BookForge"
+
+      - name: Upload build package
+        uses: actions/upload-artifact@v4
+        with:
+          name: BookForge-${{ runner.os }}-${{ runner.arch }}
+          if-no-files-found: error
+          path: BookForge-github-repo/BookForge/BookForge-*.zip
+
+
+  publish-release:
+    name: Publish platform packages to GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v1.5') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all platform build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: BookForge-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify all three platform packages exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(release-assets/BookForge-*.zip)
+          printf 'Found %s platform package(s):\n' "${#packages[@]}"
+          printf '  %s\n' "${packages[@]}"
+          if (( ${#packages[@]} != 3 )); then echo "::error::Expected exactly three platform ZIP packages"; exit 1; fi
+
+      - name: Attach platform packages and update release notes
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          body: |
+            # BookForge v1.5.0 — Chapter Editing & Project Management
+
+            This release introduces a new editing workspace, improved navigation between chapters and previews, and project saving to make creating and editing books easier.
+
+            ## New editing workspace
+            - Added an Edit step with a chapter list alongside a Word-style text editor.
+            - Add, rename, delete, and reorder chapters.
+            - Edit chapter content directly within the application.
+
+            ## Chapter preview navigation
+            - Use **Preview this chapter** to jump from the editor to the selected chapter in the preview.
+            - Use **Edit this chapter** to return from the preview to the corresponding chapter in the editor.
+
+            ## Project management
+            - Added **Save Project** and **Open Project**.
+            - Projects preserve edits, pictures, and settings so you can continue working later.
+            - BookForge confirms before closing a project with unsaved changes.
+
+            ## Downloads
+
+            ### Windows
+            - **BookForge-Windows.zip** — recommended folder build.
+            - **BookForge.exe** — standalone executable.
+
+            ### macOS (experimental)
+            - **Apple Silicon (arm64):** `BookForge-macOS-arm64.zip`
+            - **Intel Mac (x86_64):** `BookForge-macOS-x86_64.zip`
+
+            Choose the package matching your Mac's processor. These packages are not signed or notarized, so macOS may show a Gatekeeper warning.
+
+            ### Linux (experimental)
+            - **Linux x86_64:** `BookForge-Linux-x86_64.zip`
+
+            Extract the ZIP and run the `BookForge` executable inside the packaged folder. Linux desktop dependencies may vary by distribution.
+
+            **macOS and Linux builds are experimental.** They passed the project's automated regression/build checks in GitHub Actions, but still need wider testing on real user systems. Please report any launch, font, preview, or export problems through GitHub Issues.
+
+            **Full changelog:** https://github.com/chunksbabyruth/BookForge/compare/v1.4.5...v1.5
+          files: release-assets/BookForge-*.zip
