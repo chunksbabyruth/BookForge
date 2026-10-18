@@ -150,12 +150,35 @@ jobs:
           if-no-files-found: error
           path: BookForge-github-repo/BookForge/BookForge-*.zip
 
-      - name: Publish macOS/Linux packages to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v1.5') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+
+  publish-release:
+    name: Publish platform packages to GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v1.5') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all platform build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: BookForge-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify all three platform packages exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(release-assets/BookForge-*.zip)
+          printf 'Found %s platform package(s):\\n' "${#packages[@]}"
+          printf '  %s\\n' "${packages[@]}"
+          (("${#packages[@]}" == 3)) || { echo "::error::Expected exactly three platform ZIP packages"; exit 1; }
+
+      - name: Attach all platform packages to the release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           overwrite_files: true
           fail_on_unmatched_files: true
-          files: BookForge-github-repo/BookForge/BookForge-*.zip
+          files: release-assets/BookForge-*.zip
