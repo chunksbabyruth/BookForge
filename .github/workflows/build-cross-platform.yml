@@ -54,20 +54,23 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y zip
+          sudo apt-get install -y zip xvfb
 
       - name: Verify project layout and bundled fonts
         shell: bash
         run: |
           set -euo pipefail
-          for file in BookForge.py bf_core.py bf_fonts.py bf_build.py bf_pdf.py requirements.txt; do
+          for file in BookForge.py bf_core.py bf_fonts.py bf_build.py bf_pdf.py bf_edit.py bf_export.py bf_impose.py bf_theme.py bookforge.ico README.md LICENSE requirements.txt; do
             test -f "$file" || { echo "::error::Required file missing: $file"; exit 1; }
           done
           test -d fonts || { echo "::error::fonts folder is missing"; exit 1; }
+          font_folder_count="$(find fonts -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
           ttf_count="$(find fonts -type f -iname '*.ttf' | wc -l | tr -d ' ')"
           ofl_count="$(find fonts -type f -name 'OFL.txt' | wc -l | tr -d ' ')"
+          echo "Font-family folders: $font_folder_count"
           echo "TTF files: $ttf_count"
           echo "OFL license files: $ofl_count"
+          test "$font_folder_count" -ge 14 || { echo "::error::Expected at least 14 font-family folders"; exit 1; }
           test "$ttf_count" -ge 76 || { echo "::error::Expected at least 76 TTF files"; exit 1; }
           test "$ofl_count" -ge 14 || { echo "::error::Expected at least 14 OFL licenses"; exit 1; }
 
@@ -103,6 +106,7 @@ jobs:
             --collect-data docx \
             --collect-data pyphen \
             --collect-all pypdfium2 \
+            --collect-all pypdfium2_raw \
             --collect-submodules reportlab.pdfbase \
             --collect-submodules fontTools.ttLib.tables \
             --collect-submodules fontTools.varLib \
@@ -137,13 +141,13 @@ jobs:
           test -d dist || { echo "::error::PyInstaller dist folder missing"; exit 1; }
           ttf_count="$(find dist -type f -iname '*.ttf' | wc -l | tr -d ' ')"
           ofl_count="$(find dist -type f -name 'OFL.txt' | wc -l | tr -d ' ')"
-          pdfium_count="$(find dist -type f -iname '*pdfium*' | wc -l | tr -d ' ')"
+          pdfium_count="$(find dist -type f \( -iname 'pdfium.dll' -o -iname '*pdfium*.so' -o -iname '*pdfium*.dylib' \) | wc -l | tr -d ' ')"
           echo "Bundled TTF files: $ttf_count"
           echo "Bundled OFL licenses: $ofl_count"
           echo "Bundled PDFium-related files: $pdfium_count"
           test "$ttf_count" -ge 76 || { echo "::error::Bundled fonts are missing"; exit 1; }
           test "$ofl_count" -ge 14 || { echo "::error::Bundled font licenses are missing"; exit 1; }
-          test "$pdfium_count" -ge 1 || { echo "::error::PDF preview engine was not bundled"; exit 1; }
+          test "$pdfium_count" -ge 1 || { echo "::error::Native PDFium library was not bundled"; exit 1; }
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             test -f "dist/BookForge.app/Contents/Resources/README.md" || { echo "::error::README was not included in the macOS app"; exit 1; }
             test -f "dist/BookForge.app/Contents/Resources/LICENSE" || { echo "::error::LICENSE was not included in the macOS app"; exit 1; }
@@ -168,6 +172,94 @@ jobs:
           fi
           test -x "$app_binary" || { echo "::error::Packaged BookForge binary not found: $app_binary"; exit 1; }
           python tools/smoke_test_packaged_preview.py "$app_binary"
+
+      - name: Smoke-test actual Tkinter preview window
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_script="$RUNNER_TEMP/bookforge-preview-window-smoke.py"
+          cat > "$smoke_script" <<'PY'
+          import os
+          import sys
+          import tempfile
+          import tkinter as tk
+
+          sys.path.insert(0, os.getcwd())
+
+          from BookForge import PreviewWindow
+          from bf_build import build_preview
+          from bf_core import DEFAULTS, apply_info, load_book
+
+          def main():
+              with tempfile.TemporaryDirectory(prefix="bookforge-preview-window-") as temp:
+                  source = os.path.join(temp, "preview-smoke.txt")
+                  with open(source, "w", encoding="utf-8") as handle:
+                      handle.write(
+                          "BookForge Preview Window Test\\n\\n"
+                          "Chapter 1: Preview\\n\\n"
+                          "This text verifies that the actual book-page preview "
+                          "can be typeset and shown in the Tkinter preview window.\\n"
+                      )
+
+                  settings = dict(DEFAULTS)
+                  settings.update(
+                      source_mode="file",
+                      source_path=source,
+                      title="BookForge Preview Smoke Test",
+                      author="CI",
+                      fmt_impose=False,
+                      fmt_pdf=True,
+                      custom_fonts=[],
+                      fonts_dir="",
+                  )
+                  result = build_preview(
+                      apply_info(load_book(settings), settings),
+                      settings,
+                      log=lambda message: None,
+                  )
+                  root = None
+                  try:
+                      root = tk.Tk()
+                      root.title("BookForge Preview Smoke Test")
+                      root.geometry("520x520")
+                      root.S = lambda style_name: style_name
+                      root.preview_book = lambda: None
+                      root.build = lambda: None
+                      root.edit_chapter = lambda chapter_id: None
+
+                      preview = PreviewWindow(root, result)
+                      root.update_idletasks()
+                      root.update()
+
+                      image = getattr(preview, "photo", None)
+                      if image is None or image.width() < 100 or image.height() < 100:
+                          raise RuntimeError("Preview did not render a page image.")
+                      if not preview.canvas.find_all():
+                          raise RuntimeError("Preview canvas contains no drawn page items.")
+
+                      width, height = image.width(), image.height()
+                      preview.close()
+                      print(
+                          "PASS: actual Tkinter preview window rendered "
+                          f"a {width}x{height} page image."
+                      )
+                  finally:
+                      if root is not None:
+                          try:
+                              root.destroy()
+                          except tk.TclError:
+                              pass
+                      import shutil
+                      shutil.rmtree(result["dir"], ignore_errors=True)
+
+          if __name__ == "__main__":
+              main()
+          PY
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a python "$smoke_script"
+          else
+            python "$smoke_script"
+          fi
 
       - name: Package macOS application
         if: runner.os == 'macOS'
