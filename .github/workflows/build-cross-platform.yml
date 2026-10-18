@@ -128,6 +128,18 @@ jobs:
             test -x "dist/BookForge/BookForge" || { echo "::error::Linux executable missing"; exit 1; }
           fi
 
+      - name: Smoke-test preview rendering in the packaged app
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            app_binary="dist/BookForge.app/Contents/MacOS/BookForge"
+          else
+            app_binary="dist/BookForge/BookForge"
+          fi
+          test -x "$app_binary" || { echo "::error::Packaged BookForge binary not found: $app_binary"; exit 1; }
+          python tests/test_packaged_preview.py "$app_binary"
+
       - name: Package macOS application
         if: runner.os == 'macOS'
         shell: bash
