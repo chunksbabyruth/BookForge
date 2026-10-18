@@ -30,6 +30,9 @@ from bf_fonts import BUILTIN_NAMES, SAME_BODY, SAME_HEAD, resolve, migrate
 
 
 def _font_index():
+    # Keep PDF fallback glyph discovery aligned with the font picker on each OS.
+    # Modern Linux systems commonly use ~/.local/share/fonts; macOS has system,
+    # shared, and per-user font directories.
     dirs = []
     win = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows"
     dirs.append(os.path.join(win, "Fonts"))
@@ -37,14 +40,28 @@ def _font_index():
     if la:
         dirs.append(os.path.join(la, "Microsoft", "Windows", "Fonts"))
     if os.name != "nt":
-        dirs += ["/usr/share/fonts", os.path.expanduser("~/.fonts")]
+        import sys
+        if sys.platform == "darwin":
+            dirs += [
+                "/System/Library/Fonts",
+                "/Library/Fonts",
+                os.path.expanduser("~/Library/Fonts"),
+            ]
+        else:
+            dirs += [
+                "/usr/share/fonts",
+                "/usr/local/share/fonts",
+                os.path.expanduser("~/.local/share/fonts"),
+                os.path.expanduser("~/.fonts"),
+            ]
     idx = {}
     for d in dirs:
+        if not os.path.isdir(d):
+            continue
         for root, _sub, files in os.walk(d):
             for f in files:
                 idx.setdefault(f.lower(), os.path.join(root, f))
     return idx
-
 
 _FONT_INDEX = None
 

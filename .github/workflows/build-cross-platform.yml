@@ -108,6 +108,20 @@ jobs:
             --collect-submodules fontTools.varLib \
             BookForge.py
 
+      - name: Include documentation and license in the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            app_resources="dist/BookForge.app/Contents/Resources"
+            test -d "$app_resources" || { echo "::error::macOS app resources folder missing"; exit 1; }
+            cp README.md "$app_resources/README.md"
+            cp LICENSE "$app_resources/LICENSE"
+          else
+            cp README.md dist/BookForge/README.md
+            cp LICENSE dist/BookForge/LICENSE
+          fi
+
       - name: Verify packaged resources and PDF preview engine
         shell: bash
         run: |
@@ -123,10 +137,29 @@ jobs:
           test "$ofl_count" -ge 14 || { echo "::error::Bundled font licenses are missing"; exit 1; }
           test "$pdfium_count" -ge 1 || { echo "::error::PDF preview engine was not bundled"; exit 1; }
           if [[ "$RUNNER_OS" == "macOS" ]]; then
+            test -f "dist/BookForge.app/Contents/Resources/README.md" || { echo "::error::README was not included in the macOS app"; exit 1; }
+            test -f "dist/BookForge.app/Contents/Resources/LICENSE" || { echo "::error::LICENSE was not included in the macOS app"; exit 1; }
+          else
+            test -f "dist/BookForge/README.md" || { echo "::error::README was not included in the Linux package"; exit 1; }
+            test -f "dist/BookForge/LICENSE" || { echo "::error::LICENSE was not included in the Linux package"; exit 1; }
+          fi
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
             test -d "dist/BookForge.app" || { echo "::error::macOS app bundle missing"; exit 1; }
           else
             test -x "dist/BookForge/BookForge" || { echo "::error::Linux executable missing"; exit 1; }
           fi
+
+      - name: Smoke-test preview rendering in the packaged app
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            app_binary="dist/BookForge.app/Contents/MacOS/BookForge"
+          else
+            app_binary="dist/BookForge/BookForge"
+          fi
+          test -x "$app_binary" || { echo "::error::Packaged BookForge binary not found: $app_binary"; exit 1; }
+          python tools/smoke_test_packaged_preview.py "$app_binary"
 
       - name: Package macOS application
         if: runner.os == 'macOS'
