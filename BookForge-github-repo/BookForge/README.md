@@ -2,13 +2,17 @@
 
 *Made by **ChunksBabyRuth***
 
-**One-click book maker for Windows.** Turn an EPUB, a text file, Markdown, HTML, a Word document, or text you paste in into a print-ready book, ready to print at home and perfect-bind.
+**One-click book maker for Windows, with experimental macOS and Linux builds in development.** Turn an EPUB, a text file, Markdown, HTML, a Word document, or text you paste in into a print-ready book, ready to print at home and perfect-bind.
 
 ## Download
 
 From the [Releases](../../releases) page, get **BookForge-Windows.zip** (recommended): unzip it anywhere and run `BookForge.exe` inside the folder. A single-file **BookForge.exe** is also there if you prefer, but antivirus programs are more suspicious of single-file Python apps.
 
 No install needed. Until the program is code-signed, Windows may say "Windows protected your PC": click **More info → Run anyway**.
+
+### macOS and Linux (experimental)
+
+Cross-platform build jobs are being added and are not yet considered stable releases. Test packages will be published as GitHub Actions artifacts; tagged releases may include macOS and Linux ZIPs. These builds must be tested on the target operating system before being treated as fully supported. The macOS package is architecture-specific (Apple Silicon or Intel), so download the matching package. On macOS, Gatekeeper may warn because the app is not yet signed and notarized. Linux desktop libraries and font availability can vary by distribution.
 
 ### About antivirus warnings
 
