@@ -170,9 +170,9 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           packages=(release-assets/BookForge-*.zip)
-          printf 'Found %s platform package(s):\\n' "${#packages[@]}"
-          printf '  %s\\n' "${packages[@]}"
-          (("${#packages[@]}" == 3)) || { echo "::error::Expected exactly three platform ZIP packages"; exit 1; }
+          printf 'Found %s platform package(s):\n' "${#packages[@]}"
+          printf '  %s\n' "${packages[@]}"
+          if (( ${"#packages[@]"} != 3 )); then echo "::error::Expected exactly three platform ZIP packages"; exit 1; fi
 
       - name: Attach all platform packages to the release
         uses: softprops/action-gh-release@v3
