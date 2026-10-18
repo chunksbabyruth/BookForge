@@ -174,11 +174,50 @@ jobs:
           printf '  %s\n' "${packages[@]}"
           if (( ${#packages[@]} != 3 )); then echo "::error::Expected exactly three platform ZIP packages"; exit 1; fi
 
-      - name: Attach all platform packages to the release
+      - name: Attach platform packages and update release notes
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           overwrite_files: true
           fail_on_unmatched_files: true
+          body: |
+            # BookForge v1.5.0 — Chapter Editing & Project Management
+
+            This release introduces a new editing workspace, improved navigation between chapters and previews, and project saving to make creating and editing books easier.
+
+            ## New editing workspace
+            - Added an Edit step with a chapter list alongside a Word-style text editor.
+            - Add, rename, delete, and reorder chapters.
+            - Edit chapter content directly within the application.
+
+            ## Chapter preview navigation
+            - Use **Preview this chapter** to jump from the editor to the selected chapter in the preview.
+            - Use **Edit this chapter** to return from the preview to the corresponding chapter in the editor.
+
+            ## Project management
+            - Added **Save Project** and **Open Project**.
+            - Projects preserve edits, pictures, and settings so you can continue working later.
+            - BookForge confirms before closing a project with unsaved changes.
+
+            ## Downloads
+
+            ### Windows
+            - **BookForge-Windows.zip** — recommended folder build.
+            - **BookForge.exe** — standalone executable.
+
+            ### macOS (experimental)
+            - **Apple Silicon (arm64):** `BookForge-macOS-arm64.zip`
+            - **Intel Mac (x86_64):** `BookForge-macOS-x86_64.zip`
+
+            Choose the package matching your Mac's processor. These packages are not signed or notarized, so macOS may show a Gatekeeper warning.
+
+            ### Linux (experimental)
+            - **Linux x86_64:** `BookForge-Linux-x86_64.zip`
+
+            Extract the ZIP and run the `BookForge` executable inside the packaged folder. Linux desktop dependencies may vary by distribution.
+
+            **macOS and Linux builds are experimental.** They passed the project's automated regression/build checks in GitHub Actions, but still need wider testing on real user systems. Please report any launch, font, preview, or export problems through GitHub Issues.
+
+            **Full changelog:** https://github.com/chunksbabyruth/BookForge/compare/v1.4.5...v1.5
           files: release-assets/BookForge-*.zip
