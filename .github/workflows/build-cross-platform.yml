@@ -2,7 +2,7 @@ name: Build BookForge for macOS and Linux
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/cross-platform-builds]
     tags:
       - "v1.5.*"
     paths:
