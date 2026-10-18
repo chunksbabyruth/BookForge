@@ -122,6 +122,14 @@ jobs:
             cp LICENSE dist/BookForge/LICENSE
           fi
 
+      - name: Ad-hoc sign and verify macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - "dist/BookForge.app"
+          codesign --verify --deep --strict --verbose=2 "dist/BookForge.app"
+
       - name: Verify packaged resources and PDF preview engine
         shell: bash
         run: |
@@ -167,7 +175,7 @@ jobs:
         run: |
           set -euo pipefail
           arch="$(uname -m)"
-          ditto -c -k --sequesterRsrc --keepParent "dist/BookForge.app" "BookForge-macOS-${arch}.zip"
+          ditto -c -k --keepParent "dist/BookForge.app" "BookForge-macOS-${arch}.zip"
 
       - name: Package Linux application
         if: runner.os == 'Linux'
@@ -243,7 +251,7 @@ jobs:
             - **Apple Silicon (arm64):** `BookForge-macOS-arm64.zip`
             - **Intel Mac (x86_64):** `BookForge-macOS-x86_64.zip`
 
-            Choose the package matching your Mac's processor. These packages are not signed or notarized, so macOS may show a Gatekeeper warning.
+            Choose the package matching your Mac's processor. The app bundle is ad-hoc signed to help preserve signature integrity, but it is not Developer ID signed or notarized. macOS may still block the first launch; see the README for troubleshooting.
 
             ### Linux (experimental)
             - **Linux x86_64:** `BookForge-Linux-x86_64.zip`
