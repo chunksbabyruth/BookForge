@@ -64,10 +64,13 @@ jobs:
             test -f "$file" || { echo "::error::Required file missing: $file"; exit 1; }
           done
           test -d fonts || { echo "::error::fonts folder is missing"; exit 1; }
+          font_folder_count="$(find fonts -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
           ttf_count="$(find fonts -type f -iname '*.ttf' | wc -l | tr -d ' ')"
           ofl_count="$(find fonts -type f -name 'OFL.txt' | wc -l | tr -d ' ')"
+          echo "Font-family folders: $font_folder_count"
           echo "TTF files: $ttf_count"
           echo "OFL license files: $ofl_count"
+          test "$font_folder_count" -ge 14 || { echo "::error::Expected at least 14 font-family folders"; exit 1; }
           test "$ttf_count" -ge 76 || { echo "::error::Expected at least 76 TTF files"; exit 1; }
           test "$ofl_count" -ge 14 || { echo "::error::Expected at least 14 OFL licenses"; exit 1; }
 
