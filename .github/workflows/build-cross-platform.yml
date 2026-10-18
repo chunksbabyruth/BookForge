@@ -159,7 +159,7 @@ jobs:
             app_binary="dist/BookForge/BookForge"
           fi
           test -x "$app_binary" || { echo "::error::Packaged BookForge binary not found: $app_binary"; exit 1; }
-          python tests/test_packaged_preview.py "$app_binary"
+          python tools/smoke_test_packaged_preview.py "$app_binary"
 
       - name: Package macOS application
         if: runner.os == 'macOS'
