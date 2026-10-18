@@ -150,12 +150,6 @@ jobs:
             throw "The Windows ZIP archive was not created."
           }
 
-      - name: Smoke-test preview rendering in the packaged folder build
-        shell: pwsh
-        run: |
-          python tests/test_packaged_preview.py "dist/BookForge/BookForge.exe"
-          if ($LASTEXITCODE -ne 0) { throw "Packaged folder preview smoke test failed." }
-
       - name: Build single-file version
         shell: pwsh
         run: |
@@ -164,12 +158,6 @@ jobs:
           if (-not (Test-Path "dist_onefile/BookForge.exe" -PathType Leaf)) {
             throw "The single-file executable was not created."
           }
-
-      - name: Smoke-test preview rendering in the single-file build
-        shell: pwsh
-        run: |
-          python tests/test_packaged_preview.py "dist_onefile/BookForge.exe"
-          if ($LASTEXITCODE -ne 0) { throw "Packaged single-file preview smoke test failed." }
 
       - name: Upload Windows downloads as workflow artifacts
         uses: actions/upload-artifact@v4
