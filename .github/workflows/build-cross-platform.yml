@@ -1,5 +1,9 @@
 name: Build BookForge for macOS and Linux
 
+# Mirrors the Windows workflow (main.yml) step for step: same project checks, same font checks, same
+# dependencies, same regression scripts and the same PyInstaller options, plus what macOS and Linux
+# need (code signing, the Pillow/Tk link module, a real preview-window check of the packaged app).
+
 on:
   push:
     branches: [main, feature/cross-platform-builds]
@@ -16,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Optional existing release tag to attach packages to (for example v1.5)"
+        description: "Optional existing release tag to attach packages to (for example v1.5.1)"
         required: false
         default: ""
         type: string
@@ -33,11 +37,20 @@ jobs:
       matrix:
         os:
           - ubuntu-24.04
-          - macos-15
-          - macos-15-intel
+          - macos-15          # Apple Silicon (arm64)
+          - macos-15-intel    # Intel (x86_64)
     defaults:
       run:
         working-directory: BookForge-github-repo/BookForge
+    env:
+      BUNDLE_ID: io.github.chunksbabyruth.bookforge
+      # Optional (Settings > Secrets and variables > Actions). Without them the Mac app is ad-hoc signed.
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
 
     steps:
       - name: Check out repository
@@ -50,17 +63,21 @@ jobs:
           cache: pip
           cache-dependency-path: BookForge-github-repo/BookForge/requirements.txt
 
-      - name: Install Linux packaging tools
+      - name: Install Linux packaging and display tools
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y zip xvfb
+          sudo apt-get install -y zip xvfb xauth
 
       - name: Verify project layout and bundled fonts
         shell: bash
         run: |
           set -euo pipefail
-          for file in BookForge.py bf_core.py bf_fonts.py bf_build.py bf_pdf.py bf_edit.py bf_export.py bf_impose.py bf_theme.py bookforge.ico README.md LICENSE requirements.txt; do
+          # same required files as the Windows build (version_info.txt included), plus every app module
+          for file in BookForge.py bf_core.py bf_fonts.py bf_build.py bf_pdf.py bf_edit.py bf_export.py bf_impose.py \
+                      bf_theme.py bookforge.ico version_info.txt README.md LICENSE requirements.txt \
+                      tools/smoke_test_packaged_preview.py tools/check_packaged_modules.py \
+                      tools/macos_sign_and_package.sh tools/macos_entitlements.plist; do
             test -f "$file" || { echo "::error::Required file missing: $file"; exit 1; }
           done
           test -d fonts || { echo "::error::fonts folder is missing"; exit 1; }
@@ -74,13 +91,24 @@ jobs:
           test "$ttf_count" -ge 76 || { echo "::error::Expected at least 76 TTF files"; exit 1; }
           test "$ofl_count" -ge 14 || { echo "::error::Expected at least 14 OFL licenses"; exit 1; }
 
+      - name: Read the BookForge version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python -c "import re; print(re.search(r'APP_VERSION = \"([^\"]+)\"', open('bf_core.py', encoding='utf-8').read()).group(1))")"
+          echo "BookForge version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Install application and test dependencies
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
+          # same command as the Windows build; requirements.txt includes pypdfium2 (the PDF preview engine)
           python -m pip install -r requirements.txt pdfplumber pytest
           python -c "import pypdfium2; print('pypdfium2 preview engine installed')"
+          python -c "import tkinter; from PIL import ImageTk, _tkinter_finder; print('Tk', tkinter.TkVersion, 'and Pillow ImageTk available')"
 
       - name: Run regression scripts
         shell: bash
@@ -93,24 +121,53 @@ jobs:
           export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
           for test_file in "${tests[@]}"; do
             echo "Running $test_file..."
-            python "$test_file"
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              xvfb-run -a python "$test_file"      # window checks need a display
+            else
+              python "$test_file"
+            fi
           done
 
-      - name: Build application
+      - name: Build application (folder version)
         shell: bash
         run: |
           set -euo pipefail
-          python -m PyInstaller --noconfirm --clean --onedir --windowed --name BookForge \
-            --add-data "bookforge.ico:." \
-            --add-data "fonts:fonts" \
-            --collect-data docx \
-            --collect-data pyphen \
-            --collect-all pypdfium2 \
-            --collect-all pypdfium2_raw \
-            --collect-submodules reportlab.pdfbase \
-            --collect-submodules fontTools.ttLib.tables \
+          # Identical to the Windows options (path separator ':' instead of ';'). Windows-only: --version-file
+          # (the macOS version goes into Info.plist below). macOS/Linux need PIL._tkinter_finder for the preview.
+          common=(--noconfirm --clean --onedir --windowed --name BookForge
+                  --add-data "bookforge.ico:." --add-data "fonts:fonts"
+                  --collect-data docx --collect-data pyphen
+                  --collect-all pypdfium2 --collect-all pypdfium2_raw
+                  --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables
+                  --collect-submodules fontTools.varLib
+                  --hidden-import PIL._tkinter_finder)
+          # python-docx opens its Word templates via "docx/parts/../templates/..."; macOS and Linux (unlike
+          # Windows) need the docx/parts folder to exist for that path to work, or Word export fails.
+          docx_parts="$(python -c 'import os, docx.parts; print(os.path.dirname(docx.parts.__file__))')"
+          common+=(--add-data "$docx_parts/__init__.py:docx/parts")
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            common+=(--icon bookforge.ico --osx-bundle-identifier "$BUNDLE_ID")
+          fi
+          python -m PyInstaller "${common[@]}" BookForge.py
+
+      - name: Build single-file version (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Linux counterpart of the Windows single-file BookForge.exe. (On macOS the .app bundle is the
+          # single item users download; PyInstaller does not support one-file .app bundles.)
+          docx_parts="$(python -c 'import os, docx.parts; print(os.path.dirname(docx.parts.__file__))')"
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name BookForge \
+            --add-data "bookforge.ico:." --add-data "fonts:fonts" \
+            --add-data "$docx_parts/__init__.py:docx/parts" \
+            --collect-data docx --collect-data pyphen \
+            --collect-all pypdfium2 --collect-all pypdfium2_raw \
+            --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables \
             --collect-submodules fontTools.varLib \
-            BookForge.py
+            --hidden-import PIL._tkinter_finder \
+            --distpath dist_onefile --workpath build_onefile BookForge.py
+          test -x dist_onefile/BookForge || { echo "::error::The single-file executable was not created"; exit 1; }
 
       - name: Include documentation and license in the package
         shell: bash
@@ -126,13 +183,24 @@ jobs:
             cp LICENSE dist/BookForge/LICENSE
           fi
 
-      - name: Ad-hoc sign and verify macOS app
+      - name: Set macOS app version and details
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          codesign --force --deep --sign - "dist/BookForge.app"
-          codesign --verify --deep --strict --verbose=2 "dist/BookForge.app"
+          plist="dist/BookForge.app/Contents/Info.plist"
+          set_key() {   # key type value
+            /usr/libexec/PlistBuddy -c "Set :$1 $3" "$plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$plist"
+          }
+          set_key CFBundleShortVersionString string "$APP_VERSION"
+          set_key CFBundleVersion string "$APP_VERSION"
+          set_key CFBundleDisplayName string BookForge
+          set_key NSHumanReadableCopyright string "Made by ChunksBabyRuth. MIT License."
+          set_key NSHighResolutionCapable bool true
+          plutil -lint "$plist"
+          /usr/libexec/PlistBuddy -c Print "$plist"
 
       - name: Verify packaged resources and PDF preview engine
         shell: bash
@@ -148,18 +216,35 @@ jobs:
           test "$ttf_count" -ge 76 || { echo "::error::Bundled fonts are missing"; exit 1; }
           test "$ofl_count" -ge 14 || { echo "::error::Bundled font licenses are missing"; exit 1; }
           test "$pdfium_count" -ge 1 || { echo "::error::Native PDFium library was not bundled"; exit 1; }
+          # every font file and licence in the repository must be in the package, byte for byte (as on Windows)
           if [[ "$RUNNER_OS" == "macOS" ]]; then
+            pkg_fonts="dist/BookForge.app/Contents/Resources/fonts"
+            app_binary="dist/BookForge.app/Contents/MacOS/BookForge"
             test -f "dist/BookForge.app/Contents/Resources/README.md" || { echo "::error::README was not included in the macOS app"; exit 1; }
             test -f "dist/BookForge.app/Contents/Resources/LICENSE" || { echo "::error::LICENSE was not included in the macOS app"; exit 1; }
           else
+            pkg_fonts="dist/BookForge/_internal/fonts"
+            app_binary="dist/BookForge/BookForge"
             test -f "dist/BookForge/README.md" || { echo "::error::README was not included in the Linux package"; exit 1; }
             test -f "dist/BookForge/LICENSE" || { echo "::error::LICENSE was not included in the Linux package"; exit 1; }
           fi
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            test -d "dist/BookForge.app" || { echo "::error::macOS app bundle missing"; exit 1; }
-          else
-            test -x "dist/BookForge/BookForge" || { echo "::error::Linux executable missing"; exit 1; }
+          test -x "$app_binary" || { echo "::error::Packaged executable missing: $app_binary"; exit 1; }
+          test -d "$pkg_fonts" || { echo "::error::fonts folder missing from the package"; exit 1; }
+          diff -r fonts "$pkg_fonts" || { echo "::error::Packaged fonts differ from the repository fonts"; exit 1; }
+          echo "Packaged fonts are identical to the repository fonts."
+          python tools/check_packaged_modules.py "$app_binary"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            python tools/check_packaged_modules.py dist_onefile/BookForge
           fi
+
+      - name: Sign macOS app and make the DMG and ZIP
+        if: runner.os == 'macOS'
+        id: macsign
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          bash tools/macos_sign_and_package.sh dist/BookForge.app "BookForge-macOS-${arch}"
 
       - name: Smoke-test preview rendering in the packaged app
         shell: bash
@@ -172,8 +257,84 @@ jobs:
           fi
           test -x "$app_binary" || { echo "::error::Packaged BookForge binary not found: $app_binary"; exit 1; }
           python tools/smoke_test_packaged_preview.py "$app_binary"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            python tools/smoke_test_packaged_preview.py dist_onefile/BookForge
+          fi
 
-      - name: Smoke-test actual Tkinter preview window
+      - name: Check the real preview window in the packaged app
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Opens BookForge's own preview window inside the PACKAGED program and checks that book pages and
+          # printing sheets are drawn (an empty preview window was the Linux bug).
+          sample="$RUNNER_TEMP/preview-window-sample.txt"
+          printf 'Preview Window Check\n\nChapter 1\n\n%s\n\nChapter 2\n\n%s\n' \
+            "$(printf 'This sentence fills the first chapter. %.0s' {1..60})" \
+            "$(printf 'This sentence fills the second chapter. %.0s' {1..60})" > "$sample"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            binaries=("dist/BookForge.app/Contents/MacOS/BookForge")
+          else
+            binaries=("dist/BookForge/BookForge" "dist_onefile/BookForge")
+          fi
+          for app_binary in "${binaries[@]}"; do
+            report="$RUNNER_TEMP/preview-window-report.txt"
+            rm -f "$report"
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              status=0; xvfb-run -a "$app_binary" --preview-window-check "$sample" "$report" || status=$?
+            else
+              status=0; "$app_binary" --preview-window-check "$sample" "$report" || status=$?
+            fi
+            cat "$report" 2>/dev/null || echo "(no report written)"
+            test "$status" -eq 0 || { echo "::error::The packaged app's preview window did not show the pages ($app_binary)"; exit 1; }
+          done
+
+      - name: Make a full book with the packaged app (every format, included fonts)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            binaries=("dist/BookForge.app/Contents/MacOS/BookForge")
+          else
+            binaries=("dist/BookForge/BookForge" "dist_onefile/BookForge")
+          fi
+          for app_binary in "${binaries[@]}"; do
+          echo "Making a book with $app_binary"
+          work="$RUNNER_TEMP/packaged-build"
+          rm -rf "$work"
+          mkdir -p "$work"
+          printf 'Packaged Build Check\n\nChapter 1\n\n%s\n\nChapter 2\n\n%s\n' \
+            "$(printf 'Words in the first chapter, with italics and caf\xc3\xa9. %.0s' {1..80})" \
+            "$(printf 'Words in the second chapter. %.0s' {1..80})" > "$work/book.txt"
+          cat > "$work/preset.json" <<'JSON'
+          {"fmt_pdf": true, "fmt_impose": true, "fmt_cover": true, "fmt_epub": true, "fmt_docx": true,
+           "fmt_html": true, "fmt_txt": true, "font_family": "EB Garamond", "heading_font": "Cinzel",
+           "drop_cap": true, "margin_inner": 1.25, "margin_outer": 0.75}
+          JSON
+          "$app_binary" --cli "$work/book.txt" "$work/out" "$work/preset.json" || { cat "$work/out/BookForge log.txt" || true; exit 1; }
+          cat "$work/out/BookForge log.txt"
+          python - "$work/out" <<'PY'
+          import os, sys
+          from pypdf import PdfReader
+          out = sys.argv[1]
+          files = [os.path.join(r, f) for r, _d, fs in os.walk(out) for f in fs]
+          names = [os.path.basename(f) for f in files]
+          need = [" - Print.pdf", " - Imposed for binding.pdf", " - Cover.pdf", ".epub", ".docx", ".html", "READ ME - printing notes.txt"]
+          missing = [n for n in need if not any(x.endswith(n) for x in names)]
+          if missing:
+              sys.exit(f"FAIL: the packaged app did not make: {missing}")
+          pdf = next(f for f in files if f.endswith(" - Print.pdf"))
+          fonts = set()
+          for p in PdfReader(pdf).pages:
+              for v in (p.get("/Resources", {}).get("/Font", {}) or {}).values():
+                  fonts.add(str(v.get_object()["/BaseFont"]).split("+")[-1])
+          print("Fonts embedded by the packaged app:", sorted(fonts))
+          if not any("EBGaramond" in f for f in fonts) or not any("Cinzel" in f for f in fonts):
+              sys.exit("FAIL: the included fonts were not used by the packaged app")
+          print(f"PASS: packaged app made all {len(need)} outputs with the included fonts")
+          PY
+          done
+
+      - name: Smoke-test the preview window from source
         shell: bash
         run: |
           set -euo pipefail
@@ -240,7 +401,7 @@ jobs:
                       width, height = image.width(), image.height()
                       preview.close()
                       print(
-                          "PASS: actual Tkinter preview window rendered "
+                          "PASS: Tkinter preview window (from source) rendered "
                           f"a {width}x{height} page image."
                       )
                   finally:
@@ -261,27 +422,27 @@ jobs:
             python "$smoke_script"
           fi
 
-      - name: Package macOS application
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          arch="$(uname -m)"
-          ditto -c -k --keepParent "dist/BookForge.app" "BookForge-macOS-${arch}.zip"
-
       - name: Package Linux application
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          zip -qr "BookForge-Linux-x86_64.zip" "dist/BookForge"
+          # folder version (like BookForge-Windows.zip); zip keeps the executable permission
+          (cd dist && zip -qry "../BookForge-Linux-x86_64.zip" BookForge)
+          # single-file version (like BookForge.exe); a .tar.gz keeps it executable after download
+          tar -C dist_onefile -czf BookForge-Linux-x86_64-single-file.tar.gz BookForge
+          unzip -l BookForge-Linux-x86_64.zip | tail -1
+          tar -tzvf BookForge-Linux-x86_64-single-file.tar.gz
 
       - name: Upload build package
         uses: actions/upload-artifact@v4
         with:
           name: BookForge-${{ runner.os }}-${{ runner.arch }}
           if-no-files-found: error
-          path: BookForge-github-repo/BookForge/BookForge-*.zip
+          path: |
+            BookForge-github-repo/BookForge/BookForge-*.zip
+            BookForge-github-repo/BookForge/BookForge-*.dmg
+            BookForge-github-repo/BookForge/BookForge-*.tar.gz
 
 
   publish-release:
@@ -289,6 +450,8 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v1.5') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: ubuntu-24.04
+    env:
+      HAVE_NOTARIZATION: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' && secrets.APPLE_ID != '' }}
     steps:
       - name: Download all platform build artifacts
         uses: actions/download-artifact@v4
@@ -297,15 +460,73 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Verify all three platform packages exist
+      - name: Verify every platform package exists
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          packages=(release-assets/BookForge-*.zip)
-          printf 'Found %s platform package(s):\n' "${#packages[@]}"
-          printf '  %s\n' "${packages[@]}"
-          if (( ${#packages[@]} != 3 )); then echo "::error::Expected exactly three platform ZIP packages"; exit 1; fi
+          expected=(BookForge-macOS-arm64.dmg BookForge-macOS-arm64.zip
+                    BookForge-macOS-x86_64.dmg BookForge-macOS-x86_64.zip
+                    BookForge-Linux-x86_64.zip BookForge-Linux-x86_64-single-file.tar.gz)
+          ls -la release-assets
+          for f in "${expected[@]}"; do
+            test -s "release-assets/$f" || { echo "::error::Missing platform package: $f"; exit 1; }
+          done
+          echo "All ${#expected[@]} macOS and Linux packages are present."
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$HAVE_NOTARIZATION" == "true" ]]; then
+            mac_note="The macOS app is signed with a Developer ID and notarized by Apple, so it opens normally."
+          else
+            mac_note="The macOS app is not yet signed with a paid Apple Developer ID, so the first time you open it macOS asks you to allow it: open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. If macOS says the app is \"damaged\", run \`xattr -dr com.apple.quarantine /Applications/BookForge.app\` in Terminal once. The DMG includes a *How to open BookForge* note with these steps."
+          fi
+          cat > release-notes.md <<EOF
+          # BookForge v1.5.1 — Binding fixes and bookbinder-js matching
+
+          A bug-fix update. The binding options now work like [bookbinder-js](https://github.com/momijizukamori/bookbinder-js), and Word import keeps everything in the document.
+
+          ## Binding (the Imposed PDF)
+          - Folio, quarto, octavo and sextodecimo print in the same order as bookbinder-js: each signature's innermost sheet first, inside face first. The folding notes explain how to nest the sheets.
+          - Octavo uses bookbinder-js's page layout. Fold 1 now brings the right edge over to the left edge.
+          - **Rotate back sides 180°** now also works with the single-sided printer options.
+          - Ledger (17 x 11), ID-1, ID-2, ID-3 and custom sizes that are wider than tall now lay out the way round they are listed, as in bookbinder-js.
+          - Small layouts: a short book now fills the sheet (empty rows on the first sheet are left out), as in bookbinder-js. Fronts and backs still line up.
+          - The one-sheet zine now warns, in the log and in the printing notes, when a book has more pages than fit on it.
+
+          ## Word import
+          - Tables are imported (each row becomes a line).
+          - Pictures are imported when **Include pictures** is on.
+          - Text in tracked insertions is kept (tracked deletions stay out), and so is text in smart tags and content controls.
+
+          ## Typesetting
+          - With **Contents case** set to UPPERCASE, the "Chapter N:" prefix and chapter labels are upper-cased too.
+          - The lined Notes pages at the end now say "Notes" in the running head instead of the last chapter's title.
+
+          ## Downloads
+
+          ### Windows
+          - **BookForge-Windows.zip** — recommended folder build.
+          - **BookForge.exe** — standalone executable.
+
+          ### macOS
+          - **Apple Silicon (M1, M2, M3, M4…):** \`BookForge-macOS-arm64.dmg\` (or \`.zip\`)
+          - **Intel Mac:** \`BookForge-macOS-x86_64.dmg\` (or \`.zip\`)
+
+          Open the DMG and drag BookForge to Applications. ${mac_note}
+
+          ### Linux (x86_64)
+          - **BookForge-Linux-x86_64.zip** — folder build (recommended): extract it and run \`BookForge/BookForge\`.
+          - **BookForge-Linux-x86_64-single-file.tar.gz** — single executable: extract it and run \`./BookForge\`.
+
+          Built on Ubuntu 24.04; needs a desktop Linux with glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13 or later).
+
+          macOS and Linux packages are built and checked automatically on GitHub (regression tests, the packaged app's preview window, and a full book made by the packaged app). Please report any launch, font, preview, or export problems through GitHub Issues.
+
+          **Full changelog:** https://github.com/chunksbabyruth/BookForge/compare/v1.5...v1.5.1
+          EOF
+          cat release-notes.md
 
       - name: Attach platform packages and update release notes
         uses: softprops/action-gh-release@v3
@@ -314,43 +535,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           overwrite_files: true
           fail_on_unmatched_files: true
-          body: |
-            # BookForge v1.5.0 — Chapter Editing & Project Management
-
-            This release introduces a new editing workspace, improved navigation between chapters and previews, and project saving to make creating and editing books easier.
-
-            ## New editing workspace
-            - Added an Edit step with a chapter list alongside a Word-style text editor.
-            - Add, rename, delete, and reorder chapters.
-            - Edit chapter content directly within the application.
-
-            ## Chapter preview navigation
-            - Use **Preview this chapter** to jump from the editor to the selected chapter in the preview.
-            - Use **Edit this chapter** to return from the preview to the corresponding chapter in the editor.
-
-            ## Project management
-            - Added **Save Project** and **Open Project**.
-            - Projects preserve edits, pictures, and settings so you can continue working later.
-            - BookForge confirms before closing a project with unsaved changes.
-
-            ## Downloads
-
-            ### Windows
-            - **BookForge-Windows.zip** — recommended folder build.
-            - **BookForge.exe** — standalone executable.
-
-            ### macOS (experimental)
-            - **Apple Silicon (arm64):** `BookForge-macOS-arm64.zip`
-            - **Intel Mac (x86_64):** `BookForge-macOS-x86_64.zip`
-
-            Choose the package matching your Mac's processor. The app bundle is ad-hoc signed to help preserve signature integrity, but it is not Developer ID signed or notarized. macOS may still block the first launch; see the README for troubleshooting.
-
-            ### Linux (experimental)
-            - **Linux x86_64:** `BookForge-Linux-x86_64.zip`
-
-            Extract the ZIP and run the `BookForge` executable inside the packaged folder. Linux desktop dependencies may vary by distribution.
-
-            **macOS and Linux builds are experimental.** They passed the project's automated regression/build checks in GitHub Actions, but still need wider testing on real user systems. Please report any launch, font, preview, or export problems through GitHub Issues.
-
-            **Full changelog:** https://github.com/chunksbabyruth/BookForge/compare/v1.4.5...v1.5
-          files: release-assets/BookForge-*.zip
+          body_path: release-notes.md
+          files: |
+            release-assets/BookForge-*.dmg
+            release-assets/BookForge-*.zip
+            release-assets/BookForge-*.tar.gz

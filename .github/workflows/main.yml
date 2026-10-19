@@ -2,8 +2,15 @@ name: Build BookForge for Windows
 
 on:
   push:
-    tags: ["v*"]          # pushing a version tag (e.g. v1.5.0) builds it and publishes that Release
-  workflow_dispatch:       # "Run workflow" builds and keeps the downloads as artifacts; no Release is changed
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing or new release tag to publish (current release: v1.5.1)"
+        required: true
+        default: "v1.5.1"
+        type: string
 
 permissions:
   contents: write
@@ -11,86 +18,164 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: BookForge-github-repo/BookForge
+
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: BookForge-github-repo/BookForge/requirements.txt
 
-      - name: Check the project files and fonts are in the repository
+      - name: Verify project layout and fonts
+        shell: pwsh
         run: |
-          foreach ($f in @("BookForge.py", "bf_build.py", "bf_core.py", "bf_edit.py", "bf_export.py", "bf_fonts.py", "bf_impose.py", "bf_pdf.py", "bf_theme.py", "bookforge.ico", "version_info.txt", "requirements.txt")) {
-            if (-not (Test-Path $f -PathType Leaf)) { throw "Missing from the repository: $f" }
-          }
-          if (-not (Test-Path fonts)) { throw "There is no 'fonts' folder next to BookForge.py." }
-          $ttf = (Get-ChildItem fonts -Recurse -Filter *.ttf).Count
-          $ofl = (Get-ChildItem fonts -Recurse -Filter OFL.txt).Count
-          Write-Host "In the repository: $ttf font files and $ofl licence files (expected 76 and 14)"
-          if ($ttf -lt 76 -or $ofl -lt 14) { throw "Some font files or licences are missing from the repository." }
+          $requiredFiles = @(
+            "BookForge.py",
+            "bf_core.py",
+            "bf_fonts.py",
+            "bf_build.py",
+            "bf_pdf.py",
+            "bookforge.ico",
+            "version_info.txt",
+            "requirements.txt"
+          )
 
-      - name: Check the version number matches the tag
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          $tag = "${{ github.ref_name }}".TrimStart("v")
-          $ver = (Select-String -Path bf_core.py -Pattern '^APP_VERSION = "([^"]+)"').Matches[0].Groups[1].Value
-          Write-Host "Tag: $tag    BookForge version in bf_core.py: $ver"
-          if ($tag -ne $ver) { throw "The tag ($tag) doesn't match APP_VERSION in bf_core.py ($ver). Update the version or use the matching tag." }
-
-      - name: Install libraries
-        run: pip install reportlab pypdf beautifulsoup4 pillow python-docx pyphen fonttools pypdfium2 pdfplumber
-
-      - name: Run the tests (the ones needing private test books skip themselves)
-        env:
-          PYTHONUTF8: "1"
-        run: |
-          foreach ($t in Get-ChildItem tests -Filter test_*.py | Sort-Object Name) {
-            Write-Host "== $($t.Name)"
-            python $t.FullName
-            if ($LASTEXITCODE -ne 0) { throw "Test failed: $($t.Name)" }
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path $file -PathType Leaf)) {
+              throw "Required BookForge file is missing: $file"
+            }
           }
 
-      # PyInstaller's stock launcher is shared by thousands of programs (including
-      # some malware), which is the main cause of antivirus false alarms. Compiling
-      # our own launcher gives BookForge a unique one. Falls back to the stock one
-      # if the compile ever fails, so the build never breaks.
-      - name: Install PyInstaller with a freshly compiled bootloader
-        env:
-          PYINSTALLER_COMPILE_BOOTLOADER: "1"
+          if (-not (Test-Path "fonts" -PathType Container)) {
+            throw "The fonts folder is missing beside BookForge.py."
+          }
+
+          $fontFolders = @(Get-ChildItem "fonts" -Directory)
+          $ttf = @(Get-ChildItem "fonts" -Recurse -File -Filter "*.ttf").Count
+          $ofl = @(Get-ChildItem "fonts" -Recurse -File -Filter "OFL.txt").Count
+
+          Write-Host "Font-family folders: $($fontFolders.Count)"
+          Write-Host "TTF files: $ttf"
+          Write-Host "OFL license files: $ofl"
+
+          if ($fontFolders.Count -lt 14 -or $ttf -lt 76 -or $ofl -lt 14) {
+            throw "Font validation failed. Expected at least 14 font folders, 76 TTF files, and 14 OFL.txt licenses."
+          }
+
+      - name: Install application and test dependencies
+        shell: pwsh
         run: |
-          pip install --no-binary pyinstaller pyinstaller
-          if ($LASTEXITCODE -ne 0) { pip install pyinstaller }
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "Failed to upgrade pip." }
 
-      - name: Build folder version (recommended download - fewest antivirus alarms)
-        run: pyinstaller --onedir --noconfirm --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --add-data "fonts;fonts" --version-file version_info.txt --collect-data docx --collect-data pyphen --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables --collect-submodules fontTools.varLib --collect-all pypdfium2 --collect-all pypdfium2_raw BookForge.py
+          # requirements.txt includes pypdfium2, required by the new PDF preview.
+          python -m pip install -r requirements.txt pdfplumber pytest
+          if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 
-      - name: Check the fonts, licences and preview engine are inside the program
+          python -c "import pypdfium2; print('pypdfium2 preview engine installed')"
+          if ($LASTEXITCODE -ne 0) { throw "pypdfium2 is not available to the build." }
+
+      - name: Run public regression scripts
+        shell: pwsh
         run: |
-          $f = "dist/BookForge/_internal/fonts"
-          if (-not (Test-Path $f)) { throw "The fonts folder is missing from the build." }
-          $ttf = (Get-ChildItem $f -Recurse -Filter *.ttf).Count
-          $ofl = (Get-ChildItem $f -Recurse -Filter OFL.txt).Count
-          Write-Host "Inside the program: $ttf font files and $ofl licence files"
-          if ($ttf -lt 76 -or $ofl -lt 14) { throw "Some fonts or licences are missing from the built program." }
-          if (-not (Test-Path "dist/BookForge/_internal/pypdfium2_raw/pdfium.dll")) { throw "The preview engine (pdfium.dll) is missing from the build." }
+          if (-not (Test-Path "tests" -PathType Container)) {
+            throw "The tests folder is missing."
+          }
 
-      - name: Zip the folder version
-        run: Compress-Archive -Path dist/BookForge -DestinationPath BookForge-Windows.zip
+          # Keep the project root importable even when Python runs a script from tests/.
+          $env:PYTHONPATH = "$((Get-Location).Path);$env:PYTHONPATH"
+
+          $testFiles = @(Get-ChildItem "tests" -File -Filter "test_*.py" | Sort-Object Name)
+          if ($testFiles.Count -eq 0) {
+            throw "No public tests matching tests/test_*.py were found."
+          }
+
+          foreach ($test in $testFiles) {
+            Write-Host "Running $($test.Name)..."
+            python $test.FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw "Regression test failed: $($test.Name)"
+            }
+          }
+
+      - name: Build folder version
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --version-file version_info.txt --add-data "fonts;fonts" --collect-data docx --collect-data pyphen --collect-all pypdfium2 --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables --collect-submodules fontTools.varLib BookForge.py
+          if ($LASTEXITCODE -ne 0) { throw "The folder build failed." }
+
+      - name: Verify bundled fonts and PDF preview engine
+        shell: pwsh
+        run: |
+          $distRoot = "dist/BookForge"
+          if (-not (Test-Path $distRoot -PathType Container)) {
+            throw "The folder build output is missing."
+          }
+
+          $fontPath = Join-Path $distRoot "_internal/fonts"
+          if (-not (Test-Path $fontPath -PathType Container)) {
+            $fontPath = Join-Path $distRoot "fonts"
+          }
+          if (-not (Test-Path $fontPath -PathType Container)) {
+            throw "Bundled fonts were not found in the PyInstaller output."
+          }
+
+          $ttf = @(Get-ChildItem $fontPath -Recurse -File -Filter "*.ttf").Count
+          $ofl = @(Get-ChildItem $fontPath -Recurse -File -Filter "OFL.txt").Count
+          $pdfiumFiles = @(Get-ChildItem $distRoot -Recurse -File | Where-Object { $_.Name -match "pdfium" }).Count
+
+          Write-Host "Bundled TTF files: $ttf"
+          Write-Host "Bundled OFL licenses: $ofl"
+          Write-Host "Bundled PDFium-related files: $pdfiumFiles"
+
+          if ($ttf -lt 76 -or $ofl -lt 14) {
+            throw "The built application is missing font files or OFL licenses."
+          }
+          if ($pdfiumFiles -lt 1) {
+            throw "The PDF preview engine was not found in the packaged application."
+          }
+
+      - name: Package folder version
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/BookForge" -DestinationPath "BookForge-Windows.zip" -Force
+          if (-not (Test-Path "BookForge-Windows.zip" -PathType Leaf)) {
+            throw "The Windows ZIP archive was not created."
+          }
 
       - name: Build single-file version
-        run: pyinstaller --onefile --noconfirm --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --add-data "fonts;fonts" --version-file version_info.txt --collect-data docx --collect-data pyphen --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables --collect-submodules fontTools.varLib --collect-all pypdfium2 --collect-all pypdfium2_raw --distpath dist_onefile --workpath build_onefile BookForge.py
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name BookForge --icon bookforge.ico --add-data "bookforge.ico;." --version-file version_info.txt --add-data "fonts;fonts" --collect-data docx --collect-data pyphen --collect-all pypdfium2 --collect-submodules reportlab.pdfbase --collect-submodules fontTools.ttLib.tables --collect-submodules fontTools.varLib --distpath dist_onefile --workpath build_onefile BookForge.py
+          if ($LASTEXITCODE -ne 0) { throw "The single-file build failed." }
+          if (-not (Test-Path "dist_onefile/BookForge.exe" -PathType Leaf)) {
+            throw "The single-file executable was not created."
+          }
 
-      - name: Keep the files as downloadable artifacts
+      - name: Upload Windows downloads as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BookForge
+          name: BookForge-Windows
+          if-no-files-found: error
           path: |
-            BookForge-Windows.zip
-            dist_onefile/BookForge.exe
+            BookForge-github-repo/BookForge/BookForge-Windows.zip
+            BookForge-github-repo/BookForge/dist_onefile/BookForge.exe
 
-      - name: Attach the files to the Release for this tag
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+      - name: Publish Windows downloads to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          overwrite_files: true
+          fail_on_unmatched_files: true
           files: |
-            BookForge-Windows.zip
-            dist_onefile/BookForge.exe
+            BookForge-github-repo/BookForge/BookForge-Windows.zip
+            BookForge-github-repo/BookForge/dist_onefile/BookForge.exe
