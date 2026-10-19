@@ -461,6 +461,11 @@ class DropLetter(Flowable):
     def _restrictSize(self, aw, ah):
         return self.width, self.height
 
+    def _unRestrictSize(self):
+        # ImageAndFlowables calls this when the paragraph is laid out again (e.g. moved to the next page);
+        # the letter never shrinks, so there is nothing to undo. Without it those books failed to build.
+        pass
+
     def draw(self):
         c = self.canv
         c.setFillColor(black)
@@ -509,6 +514,14 @@ class BookDoc(BaseDocTemplate):
     def beforeDocument(self):
         # Reset every pass; the body start is only trusted once reached in THIS pass.
         self.bf = {"body_start": None, "opener": {}, "content": {}, "nonum": {}, "cur": ""}
+
+    def handle_pageBegin(self):
+        # Odd (right-hand) pages use the "odd" frame, even pages the "even" one, so the inside margin is
+        # always on the spine side. (ReportLab's autoNextPageTemplate alone kept each template for two
+        # pages in a row, putting the wide inside margin on the outside of every other pair of pages.)
+        if len(self.pageTemplates) == 2:
+            self.pageTemplate = self.pageTemplates[0 if (self.page + 1) % 2 else 1]
+        BaseDocTemplate.handle_pageBegin(self)
 
     def page_label(self, p):
         mode = self.s.get("pn_mode", "")
@@ -821,41 +834,50 @@ def build_pdf(book, s, out_path, log=print):
             if s["ornament"]:
                 story.append(Rule(1.4 * inch, 0.8, 8, diamond=True))
             first = False
-            if cont:
-                story.append(PageBreak())
-            continue
-        chap_no += 1
-        lbl = ch.label
-        if not lbl and s["chapter_label"] not in ("None", "") and not LABELISH.match(ch.title + " "):
-            lbl = auto_label(s["chapter_label"], chap_no)
-        tn = s["toc_numbers"]
-        tt = apply_case(ch.title, s["toc_case"])
-        if ch.label:
-            toc_text = f"{ch.label} \u2014 {tt}" if tt else ch.label
-        elif tn == "Number (1.)":
-            toc_text = f"{chap_no}. {tt}"
-        elif tn == "Chapter N:":
-            toc_text = f"Chapter {chap_no}: {tt}"
+            if not ch.blocks:
+                if cont:
+                    story.append(PageBreak())
+                continue
+            # The part's own text (an epigraph, an introduction...) is printed under its title.
+            story.append(Spacer(1, 14))
+            blocks = list(ch.blocks)
+            fresh, cap_pending = True, False
         else:
-            toc_text = tt
-        lvl = 1 if (has_parts and seen_part) else 0
-        story.append(Anchor(f"ch{ci}", plain(toc_text), lvl, toc_text=cov.apply(esc(toc_text)), toc_level=lvl,
-                            title=plain(ch.title), opener=True, body_start=first))
-        first = False
-        if float(s["chapter_sink"]) > 0 and not cont:
-            story.append(Spacer(1, float(s["chapter_sink"]) * inch))
-        if lbl:
-            story.append(P(esc(lbl), st["label"]))
-        if title:
-            story.append(P(esc(title), st["ctitle"]))
-        blocks = list(ch.blocks)
-        while blocks and blocks[0].kind == "subtitle":
-            story.append(P(blocks.pop(0).text, st["csub"]))
-        if s["ornament"]:
-            story.append(Rule(1.4 * inch, 0.8, 6, diamond=True))
-            story.append(Spacer(1, 10))
-        fresh = True
-        cap_pending = bool(s["drop_cap"])
+            chap_no += 1
+            lbl = ch.label
+            if not lbl and s["chapter_label"] not in ("None", "") and not LABELISH.match(ch.title + " "):
+                lbl = auto_label(s["chapter_label"], chap_no)
+            tn = s["toc_numbers"]
+            tt = apply_case(ch.title, s["toc_case"])
+            # The "Chapter N:" prefix and a chapter's own label follow UPPERCASE too (Title Case
+            # leaves them as they are, so labels such as "CHAPTER IV" keep their numerals).
+            up = str.upper if s["toc_case"] == "UPPERCASE" else str
+            if ch.label:
+                toc_text = f"{up(ch.label)} \u2014 {tt}" if tt else up(ch.label)
+            elif tn == "Number (1.)":
+                toc_text = f"{chap_no}. {tt}"
+            elif tn == "Chapter N:":
+                toc_text = f"{up('Chapter')} {chap_no}: {tt}"
+            else:
+                toc_text = tt
+            lvl = 1 if (has_parts and seen_part) else 0
+            story.append(Anchor(f"ch{ci}", plain(toc_text), lvl, toc_text=cov.apply(esc(toc_text)), toc_level=lvl,
+                                title=plain(ch.title), opener=True, body_start=first))
+            first = False
+            if float(s["chapter_sink"]) > 0 and not cont:
+                story.append(Spacer(1, float(s["chapter_sink"]) * inch))
+            if lbl:
+                story.append(P(esc(lbl), st["label"]))
+            if title:
+                story.append(P(esc(title), st["ctitle"]))
+            blocks = list(ch.blocks)
+            while blocks and blocks[0].kind == "subtitle":
+                story.append(P(blocks.pop(0).text, st["csub"]))
+            if s["ornament"]:
+                story.append(Rule(1.4 * inch, 0.8, 6, diamond=True))
+                story.append(Spacer(1, 10))
+            fresh = True
+            cap_pending = bool(s["drop_cap"])
         prev_label, in_note = None, False
         for b in blocks:
             fmt_now[0] = b
@@ -940,11 +962,15 @@ def build_pdf(book, s, out_path, log=print):
                     pass
         if not ch.blocks:
             story.append(Spacer(1, 1))
+        if ch.level == 0 and cont:
+            story.append(PageBreak())          # chapters after a part's text still start on a new page
     if s["the_end"]:
         story.append(Spacer(1, 24))
         story.append(P("THE END", st["scene"]))
     for _ in range(int(s.get("notes_pages") or 0)):
         story.append(PageBreak())
+        # running heads on these pages say "Notes", not the last chapter's title
+        story.append(Marker(lambda canv, doc: doc.bf.__setitem__("cur", "Notes")))
         story.append(P("Notes", st["sub"]))
         story.append(WriteLines(0.34 * inch))
 

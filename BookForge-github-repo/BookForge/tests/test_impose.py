@@ -3,6 +3,9 @@
 Fold-line rule checked here (matches bookbinder-js): each fold's guide line is printed on the face
 that is on top when that fold is made, i.e. on the INSIDE of the fold, unless the user picks
 Outside or Both.
+
+Printing order (matches bookbinder-js since 1.5.1): each signature's innermost sheet comes first, and
+each sheet's inside face is printed before its outside face.
 """
 import os
 import sys
@@ -79,11 +82,11 @@ for name, (rows, cols, folds, _l) in FOLD_LAYOUTS.items():
 # ---------------------------------------------------------------- fold guides (the bug)
 g = fold_guides(1, 2, "V")
 check([x for x in g["B"] if x[5] == "in"] == [(1, 0, 1, 1, 0, "in")] and not [x for x in g["F"] if x[5] == "in"],
-      "folio: inside fold line is on the second side (inside of the sheet), centre, full height")
+      "folio: inside fold line is on the inside face (printed first), centre, full height")
 
 for kw, want_front, want_back, label in (
-        ({}, 0, 1, "default = Inside"),
-        ({"fold_side": "Outside"}, 1, 0, "Outside"),
+        ({}, 1, 0, "default = Inside"),                  # the inside face prints first
+        ({"fold_side": "Outside"}, 0, 1, "Outside"),
         ({"fold_side": "Both sides"}, 1, 1, "Both sides")):
     info = run(sig_format="Perfect bound (every sheet separate)", imp_scaling="Stretch to fit", **kw)
     with pdfplumber.open(info["files"][0]) as pdf:
@@ -98,11 +101,11 @@ for kw, want_front, want_back, label in (
 info = run(imp_layout="Quarto - 4 pages per side", sig_format="Perfect bound (every sheet separate)")
 with pdfplumber.open(info["files"][0]) as pdf:
     W, H = pdf.pages[0].width, pdf.pages[0].height
-    fr, bk = fold_lines(pdf.pages[0]), fold_lines(pdf.pages[1])
-check(("H", round(H / 2), 0, round(W / 2)) in bk and ("H", round(H / 2), round(W / 2), round(W)) in bk,
-      f"quarto: fold 1 runs full width on the side that is on top for fold 1 ({bk})")
-check(fr == [("V", round(W / 2), 0, round(H / 2))],
-      f"quarto: fold 2 is half length, on the other side, on the half that shows ({fr})")
+    first, second = fold_lines(pdf.pages[0]), fold_lines(pdf.pages[1])
+check(("H", round(H / 2), 0, round(W / 2)) in first and ("H", round(H / 2), round(W / 2), round(W)) in first,
+      f"quarto: fold 1 runs full width on the side that is on top for fold 1, printed first ({first})")
+check(second == [("V", round(W / 2), 0, round(H / 2))],
+      f"quarto: fold 2 is half length, on the other side, on the half that shows ({second})")
 
 for lay in ("Octavo - 8 pages per side", "Sextodecimo - 16 pages per side"):
     info = run(imp_layout=lay, sig_format="Perfect bound (every sheet separate)")
@@ -118,8 +121,8 @@ r = PdfReader(info["files"][0])
 check(r.pages[0].get("/Rotate", 0) in (0, None) and r.pages[1].get("/Rotate") == 180,
       "rotate back sides: only the second side of each sheet is turned 180")
 with pdfplumber.open(info["files"][0]) as pdf:
-    check(len(fold_lines(pdf.pages[1])) == 1 and not fold_lines(pdf.pages[0]),
-          "rotate back sides: fold line still on the inside face")
+    check(len(fold_lines(pdf.pages[0])) == 1 and not fold_lines(pdf.pages[1]),
+          "rotate back sides: fold line still on the inside face (printed first, not turned)")
 
 info = run(rotate_paper=True)
 r = PdfReader(info["files"][0])
@@ -130,8 +133,8 @@ check(float(p0.mediabox.width) < float(p0.mediabox.height) and p0.get("/Rotate",
 info = run(printer_type="Single-sided (fronts and backs files)")
 check(len(info["files"]) == 2, "single-sided: separate fronts and backs files")
 with pdfplumber.open(info["files"][0]) as f_pdf, pdfplumber.open(info["files"][1]) as b_pdf:
-    check(not fold_lines(f_pdf.pages[0]) and len(fold_lines(b_pdf.pages[0])) == 1,
-          "single-sided: fold line is in the backs file (inside face)")
+    check(len(fold_lines(f_pdf.pages[0])) == 1 and not fold_lines(b_pdf.pages[0]),
+          "single-sided: fold line is in the fronts file (inside face, printed first)")
 
 # ---------------------------------------------------------------- page range (bookbinder-js rules)
 check(parse_range("", 5) == [0, 1, 2, 3, 4], "page range: empty = all pages")
@@ -146,8 +149,8 @@ info = run(edge_marks=True, fold_marks=False, sig_sheets=2)
 with pdfplumber.open(info["files"][0]) as pdf:
     def ticks(p):
         return [l for l in p.lines if abs(l["top"] - l["bottom"]) < 0.5 and 5 < l["x1"] - l["x0"] < 7]
-    outer = len(ticks(pdf.pages[0])) + len(ticks(pdf.pages[1]))
-    inner = len(ticks(pdf.pages[2])) + len(ticks(pdf.pages[3]))
+    inner = len(ticks(pdf.pages[0])) + len(ticks(pdf.pages[1]))      # innermost sheet prints first
+    outer = len(ticks(pdf.pages[2])) + len(ticks(pdf.pages[3]))
 check(outer > 0 and inner == 0, f"spine edge marks only on the outermost folio (outer {outer}, inner {inner})")
 
 # ---------------------------------------------------------------- every layout still builds

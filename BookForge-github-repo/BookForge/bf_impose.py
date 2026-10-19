@@ -16,20 +16,20 @@ import re
 from bf_core import safe_name, DEFAULTS
 
 PT = 72.0
-SHEETS = {  # portrait width, height in points
+SHEETS = {  # width, height in points; the few landscape entries (as bookbinder-js lists them) lay out turned
     "Letter": (612, 792), "Legal": (612, 1008), "Tabloid / 11x17": (792, 1224),
     "Half Letter": (396, 612), "Executive": (522, 756), "Note": (540, 720),
     "A3": (842, 1191), "A4": (595, 842), "A5": (420, 595), "A6": (297, 420),
     "B4": (708, 1000), "B5": (498, 708), "JIS B4": (729, 1032), "JIS B5": (516, 729),
     "Postcard": (283, 416),
-    "Ledger (17 x 11)": (792, 1224), "US Foolscap (8.5 x 13)": (612, 936), "Foolscap (9 x 13)": (648, 936),
+    "Ledger (17 x 11)": (1224, 792), "US Foolscap (8.5 x 13)": (612, 936), "Foolscap (9 x 13)": (648, 936),
     "A0": (2384, 3370), "A1": (1684, 2384), "A2": (1191, 1684), "A7": (210, 297), "A8": (148, 210),
     "A9": (105, 148), "B0": (2834, 4008), "B1": (2004, 2834), "B2": (1417, 2004), "B3": (1000, 1417),
     "B6": (354, 498), "B7": (249, 354), "B8": (175, 249), "B9": (124, 175), "B10": (87, 124),
     "JIS B0": (2920, 4127), "JIS B1": (2064, 2920), "JIS B2": (1460, 2064), "JIS B3": (1032, 1460),
     "JIS B6": (363, 516), "JIS B7": (258, 363), "Arch A": (648, 864), "Arch B": (864, 1296),
-    "Arch C": (1296, 1728), "Arch E": (2592, 3456), "ID-1": (153, 242.65), "ID-2": (210, 297),
-    "ID-3": (249, 354), "Crown Quarto": (535, 697), "Large Crown Quarto": (569, 731),
+    "Arch C": (1296, 1728), "Arch E": (2592, 3456), "ID-1": (242.65, 153), "ID-2": (297, 210),
+    "ID-3": (354, 249), "Crown Quarto": (535, 697), "Large Crown Quarto": (569, 731),
     "Demy Quarto": (620, 782), "Royal Quarto": (671, 884), "Crown Octavo": (348, 527),
     "Large Crown Octavo": (365, 561), "Demy Octavo": (391, 612), "Royal Octavo": (442, 663),
     "Small Paperback": (314, 504), "Penguin Small Paperback": (314, 513),
@@ -41,7 +41,7 @@ FOLD_SIDES = ["Inside (recommended)", "Outside", "Both sides"]
 FOLD_LAYOUTS = {  # name: (rows, cols, folds, landscape sheet)
     "Folio - 2 pages per side": (1, 2, "V", True),
     "Quarto - 4 pages per side": (2, 2, "HV", False),
-    "Octavo - 8 pages per side": (2, 4, "VHV", True),
+    "Octavo - 8 pages per side": (2, 4, "vHV", True),   # first fold right over left, as bookbinder-js lays it out
     "Sextodecimo - 16 pages per side": (4, 4, "HVHV", False),
 }
 WACKY = {
@@ -148,9 +148,10 @@ _PLANS = {}
 def fold_plan(rows, cols, folds, nsheets):
     """Returns {sheet: {"F": [...], "B": [...]}} with entries (row, col, page, rot, bind, inside).
 
-    Sheets are folded one at a time (each laid printed-front-side DOWN, folds made in
-    order: V = left half over onto the right half, H = top half down onto the bottom half)
-    and then nested, sheet 0 outermost. Pages are 0-based within the signature.
+    Sheets are folded one at a time (each laid face "F" DOWN, folds made in order: V = left half
+    over onto the right half, v = right half over onto the left half, H = top half down onto the
+    bottom half) and then nested, sheet 0 outermost. Pages are 0-based within the signature.
+    Face "F" is the outside of the folded sheet (it has the signature's first page); "B" is the inside.
     """
     key = (rows, cols, folds, nsheets)
     if key in _PLANS:
@@ -196,7 +197,7 @@ def fold_plan(rows, cols, folds, nsheets):
         face = state[next(iter(top_layer.values()))]["up"]
         other = "F" if face == "B" else "B"
         pairs = ([(top_layer.get((r, w // 2 - 1)), top_layer.get((r, w // 2))) for r in range(h)]
-                 if f == "V" else
+                 if f in "Vv" else
                  [(top_layer.get((h // 2 - 1, c)), top_layer.get((h // 2, c))) for c in range(w)])
         for a, b in pairs:
             seg = crease(a, b) if a and b else None
@@ -212,14 +213,17 @@ def fold_plan(rows, cols, folds, nsheets):
             for st in state.values():
                 st["inside"] = st["up"]
         top, bottom = [], []
-        if f == "V":
+        if f in "Vv":
             half = w // 2
+            left_over = f == "V"              # V: the left half moves; v: the right half moves
             for layer in reversed(layers):
-                moved = {(r, (w - 1 - c) - half): k for (r, c), k in layer.items() if c < half}
+                moved = {(r, (w - 1 - c) - (half if left_over else 0)): k for (r, c), k in layer.items()
+                         if (c < half) == left_over}
                 if moved:
                     top.append(moved)
             for layer in layers:
-                rem = {(r, c - half): k for (r, c), k in layer.items() if c >= half}
+                rem = {(r, c - (half if left_over else 0)): k for (r, c), k in layer.items()
+                       if (c < half) != left_over}
                 if rem:
                     bottom.append(rem)
             for layer in top:
@@ -267,19 +271,20 @@ _GUIDES = {}
 
 
 def fold_guides(rows, cols, folds):
-    """Fold-line segments per sheet face ("F" = side printed first, "B" = other side)."""
+    """Fold-line segments per sheet face ("F" = outside face, "B" = inside face, printed first)."""
     fold_plan(rows, cols, folds, 1)
     return _GUIDES[(rows, cols, folds)]
 
 
 def fold_instructions(layout, nested=True):
     rows, cols, folds, _ = FOLD_LAYOUTS[layout]
-    steps = ["bring the LEFT edge over to the RIGHT edge" if f == "V" else
-             "bring the TOP edge down to the BOTTOM edge" for f in folds]
-    txt = ("Fold every sheet on its own: lay it with the side that printed FIRST facing DOWN (page numbers "
+    steps = [{"V": "bring the LEFT edge over to the RIGHT edge", "v": "bring the RIGHT edge over to the LEFT edge",
+              "H": "bring the TOP edge down to the BOTTOM edge"}[f] for f in folds]
+    txt = ("Fold every sheet on its own: lay it with the side that printed FIRST facing UP (page numbers "
            "the right way up), then " + "; ".join(f"fold {i + 1}: {x}" for i, x in enumerate(steps)) +
-           (". Then nest the folded sheets of each signature: sheet 2 goes into the centre of sheet 1, sheet 3 "
-            "into the centre of sheet 2, and so on." if nested else
+           (". Then nest the folded sheets of each signature. As in bookbinder-js, each signature's innermost "
+            "sheet prints first: put sheet 1 into the centre of sheet 2, those two into the centre of sheet 3, "
+            "and so on, so the signature's last sheet is on the outside." if nested else
             ". Each folded sheet is its own signature: stack them in printed order (don't nest them)."))
     if len(folds) > 1:
         txt += " Crease each fold firmly; the folded edges at the top and outside are cut open after binding."
@@ -388,6 +393,33 @@ def wacky_sides(fmt, npages, duplex):
     return out
 
 
+def drop_blank_rows(sides, fmt, duplex):
+    """Leave out the empty rows of the first sheet, as bookbinder-js does, so a short book
+    prints its pages larger.  A row is only left out when its strip of paper is empty on both
+    sides of the sheet, so the fronts and backs keep the same page size and still line up."""
+    def empty(row):
+        return all(idx is None for idx, _fl in row)
+
+    if len(sides) == 1:                       # one-sided layout (the zine)
+        kept = [row for row in sides[0] if not empty(row)]
+        if kept:
+            sides[0] = kept
+        return sides
+    fr, bk = sides[0], sides[1]
+    n = len(fr)
+    if len(bk) != n:
+        return sides
+    turned = fmt in STRIPS and not duplex     # single-sided strip backs are printed upside down
+
+    def partner(j):
+        return n - 1 - j if turned else j
+    keep = [not (empty(fr[j]) and empty(bk[partner(j)])) for j in range(n)]
+    if any(keep) and not all(keep):
+        sides[0] = [fr[j] for j in range(n) if keep[j]]
+        sides[1] = [bk[k] for k in range(n) if keep[partner(k)]]
+    return sides
+
+
 # --------------------------------------------------------------------------
 # Drawing
 # --------------------------------------------------------------------------
@@ -460,6 +492,9 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
     layout = s.get("imp_layout") if s.get("imp_layout") in LAYOUT_NAMES else LAYOUT_NAMES[0]
     rot_odd, rot_even = SOURCE_ROT.get(s.get("imp_source_rot"), (0, 0))
     W0, H0 = sheet_points(s)
+    # Like bookbinder-js, the paper keeps the way round it is listed: a landscape entry (Ledger,
+    # ID-1/2/3, or a custom size wider than it is tall) lays out like the upright size turned 90 degrees.
+    turn = bool(s.get("rotate_paper")) != (W0 > H0)
     sides = []          # each: dict(front, sig, sheet, items=[...], lines=callable)
     info = {"layout": layout}
 
@@ -469,7 +504,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
     if layout in FOLD_LAYOUTS:
         rows, cols, folds, landscape = FOLD_LAYOUTS[layout]
         W, H = (max(W0, H0), min(W0, H0)) if landscape else (min(W0, H0), max(W0, H0))
-        if s.get("rotate_paper"):
+        if turn:
             W, H = H, W
         per_sheet = 2 * rows * cols
         filled = len(order)
@@ -485,23 +520,34 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
             chunk = order[pos:pos + nsh * per_sheet]
             pos += nsh * per_sheet
             plan = fold_plan(rows, cols, folds, nsh)
-            for sh in range(nsh):
-                for face in ("F", "B"):
+            # Printing order as in bookbinder-js: each signature's innermost sheet first, and each sheet's
+            # inside face ("B") before its outside face ("F").
+            for sh in reversed(range(nsh)):
+                for face in ("B", "F"):
                     items = []
                     for (r, c, p, rot, bind, inside) in plan[sh][face]:
                         items.append({"ref": chunk[p], "r": r, "c": c, "rot": rot, "bind": bind,
                                       "sigpage": p, "sigpages": len(chunk), "outer": sh == 0})
-                    sides.append({"front": face == "F", "sig": si, "sheet": sh, "items": items})
+                    sides.append({"front": face == "B", "face": face, "sig": si, "sheet": sh, "items": items})
         info.update(sheets=sum(plan_sizes), signatures=len(plan_sizes), plan=plan_sizes, blanks=blanks,
                     sheet=(W, H), cell=(cw, ch), instructions=fold_instructions(layout, max(plan_sizes) > 1))
     else:
         fmt = WACKY[layout]
         land = WACKY_LANDSCAPE[fmt]
         W, H = (max(W0, H0), min(W0, H0)) if land else (min(W0, H0), max(W0, H0))
-        if s.get("rotate_paper"):
+        if turn:
             W, H = H, W
         refs = [o for o in order]
-        wsides = wacky_sides(fmt, len(refs), duplex)
+        wsides = drop_blank_rows(wacky_sides(fmt, len(refs), duplex), fmt, duplex)
+        if fmt == "8_zine":
+            book_pages = [r[1] for r in refs if r[0] == "p"]
+            on_sheet = [r[1] for r in refs[:8] if r[0] == "p"]
+            if len(on_sheet) < len(book_pages):
+                left = len(book_pages) - len(on_sheet)
+                info["warning"] = (f"The one-sheet zine holds 8 pages (flyleafs included), so {left} of the "
+                                   f"{len(book_pages)} pages are left out: it ends at page {on_sheet[-1] + 1 if on_sheet else 0}. "
+                                   "Use another layout, or a page range, for a longer book.")
+                log("Note: " + info["warning"])
         for i, side in enumerate(wsides):
             sides.append({"front": i % 2 == 0, "sig": i // 2, "sheet": 0, "rows": side, "items": []})
         info.update(sheets=math.ceil(len(wsides) / 2), signatures=0, plan=[], blanks=0, sheet=(W, H),
@@ -566,8 +612,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
                     hoff = left if packed else (1 + i - (i % 2)) * left
                     voff = top if packed else top + 2 * top * r
                     x = (pw + fg) * i + hoff + fg * ((i + 1) % 2)
-                    y_top = ph * r + voff
-                    y = H - y_top - ph
+                    y = ph * r + voff         # row 0 at the bottom of the sheet, as bookbinder-js prints it
                     rects.append((x, y, pw, ph, "L" if i % 2 else "R", None))
                     if idx is None:
                         continue
@@ -591,11 +636,11 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
             if s["fold_marks"]:
                 where = s.get("fold_side", FOLD_SIDES[0])
                 show = {"in": not where.startswith("Outside"), "out": not where.startswith("Inside")}
-                for (x1, y1, x2, y2, fno, pos) in fold_guides(rows, cols, folds)["F" if side["front"] else "B"]:
+                for (x1, y1, x2, y2, fno, pos) in fold_guides(rows, cols, folds)[side["face"]]:
                     if show[pos]:
                         _fold_line(cv, x1 * cw, H - y1 * ch, x2 * cw, H - y2 * ch, fno)
             for (x, y, w_, h_, bind, it) in rects:
-                if s["cut_marks"] and side["front"]:
+                if s["cut_marks"] and side["face"] == "F":         # crop marks on the outside face
                     _crop_marks(cv, x, y, w_, h_)
                 ex = x if bind == "L" else x + w_
                 d = -1 if bind == "L" else 1
@@ -685,7 +730,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
                 bk.reverse()
             write(build(fr, False), base + " - fronts (print first).pdf")
             if bk:
-                write(build(bk, False), base + " - backs (print second).pdf")
+                write(build(bk, bool(s.get("rotate_back"))), base + " - backs (print second).pdf")
 
     if not mode.startswith("Signature files") or layout not in FOLD_LAYOUTS:
         emit(all_idx, os.path.join(out_dir, base_name + " - Imposed for binding"))

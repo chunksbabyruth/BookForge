@@ -76,13 +76,15 @@ def run_build(book, s, log=print):
         how = (f"double-sided, FLIP ON {flip} EDGE (or tick 'Rotate back sides' if your printer only offers the "
                "other flip)") if info["duplex"] else (
             "on a single-sided printer: print the 'fronts' file, put the printed stack back in the tray "
-            "(turned over so the blank sides print), then print the 'backs' file")
+            "(turned over so the blank sides print), then print the 'backs' file (if the backs come out "
+            "upside down, tick 'Rotate back sides 180' and make the files again)")
         notes.append(
             f"Imposed for binding ({lay}): {info['sheets']} sheet(s) of {s['sheet_size']} paper "
             f"({SW:g} x {SH:g} in); {sig}; {info['blanks']} blank page(s) added to fill the last sheet.\n"
             f"  Print at Actual size / 100%, {how}. Print one test sheet first.\n  Folding: {info['instructions']}"
             + ("\n  Fold lines are printed on the inside of each fold (the side facing you as you fold)."
-               if s.get("fold_marks") and s.get("fold_side", "Inside").startswith("Inside") else ""))
+               if s.get("fold_marks") and s.get("fold_side", "Inside").startswith("Inside") else "")
+            + (f"\n  WARNING: {info['warning']}" if info.get("warning") else ""))
 
     if s["fmt_cover"]:
         log("Drawing cover template...")

@@ -231,3 +231,117 @@ OPEN / NOT VERIFIED (carry forward):
   --font-report out.txt; bf_fonts.font_report()/SCAN_REPORT records folders, files, errors.
 - Regression PASS (chapters 16/16, impose 37/37, build 22/22, gui5 OK, gui6 14/14, gui7 12/12, gui8 5/5).
 - Delivered: BookForge-Windows.zip (verification build, folder version) + BookForge-github-repo.zip.
+
+## 2026-10-19 — macOS/Linux builds + full 1.5.0 bug check (Cowork session)
+Rules: user's "BookForge — Mandatory Development Rules for Claude" (saved in the Book Forge folder and the Project).
+Source of truth: GitHub main @ 682481c (= uploaded BookForge-1.5.0-complete-source.zip + cross-platform commits).
+Reference copy of the 1.5.0 source: Book Forge\Source backups\BookForge-1.5.0-complete-source.zip.
+
+The "SKIP gutenberg.epub / ao3_story.epub / ao3_oneshot.html / standard_ebooks.epub" lines in CI are the optional
+real-book tests: tests/inputs/ is gitignored (books can't be redistributed), so on GitHub those checks skip. Not
+needed for the build. tests/test_regressions.py (new) makes its own books so it always runs.
+
+Bug check done (Linux, Python 3.12 + Tk 8.6 like the runners): 2,396 real builds of every option value on EPUB/TXT/
+HTML(AO3)/DOCX (all 7 outputs + preview each); ~75,000 imposition checks (every layout x signature format x printer
+x rotate back/paper x page counts, flyleafs, ranges, sheet sizes, source rotations: every page printed once, every
+recto backs onto its verso the right way up); option-by-option output checks (page sizes, margins, fonts, sizes,
+spacing, alignment, indents, page numbers x4 positions x3 styles x3 modes, hide options, running heads, chapter
+starts/labels/case, drop caps x quote modes, section breaks, THE END, notes pages, front matter order, bookplate,
+contents x18 variants with real page numbers, hyphenation, runts, verse, AO3 options x18, cover widths, every word
+kept in PDF/TXT/HTML/EPUB/DOCX); a GUI walkthrough of every tab/control/window/editor tool (83 checks, xvfb).
+
+CONFIRMED BUGS FIXED (each has a regression test in tests/test_regressions.py or a CI packaged-app check):
+- B1 Linux/macOS packaged preview window empty: PIL._tkinter_finder not bundled (confirmed in the user's own Linux
+  download). BookForge.py imports it in PreviewWindow.render; workflow adds --hidden-import; preview shows a message
+  instead of a blank window if a page can't be drawn.
+- B2 BookForge.py poll(): if handling one queued message raised, polling stopped for good (later builds never
+  "finished"). Now always reschedules (finally).
+- B3 bf_pdf: mirrored margins swapped on every other pair of pages (ReportLab autoNextPageTemplate kept each template
+  for 2 pages). BookDoc.handle_pageBegin picks odd/even frame from the page number. Invisible with the default equal
+  inside/outside margins; output pixel-identical when margins are equal (66 builds compared).
+- B4 bf_pdf: text under a Part heading (epigraph/intro) was dropped from the print PDF (other formats had it).
+- B5 bf_pdf DropLetter: missing _unRestrictSize -> build crashed when a drop-cap paragraph was laid out again
+  (~10% of drop-cap builds in a sweep: small pages, big text, Continuous chapters, AO3 notes).
+- B6 bf_core parse_docx: words inside Word hyperlinks were dropped (python-docx p.runs skips links).
+- B7 Packaged Linux/macOS Word export failed (python-docx opens docx/parts/../templates/...; folder missing in the
+  bundle; POSIX needs it, Windows doesn't). Workflow adds docx/parts to the bundle. Found by the new packaged
+  full-book CI check; also present in the user's Oct 18 Linux download.
+- B8 Linux mouse wheel did nothing (X11 sends Button-4/5); macOS preview wheel did nothing (small deltas). Wheel over
+  another window no longer scrolls the hidden settings page.
+- B9 macOS: Cmd+Q / app-menu Quit skipped the "Save your edits?" prompt -> tk::mac::Quit -> on_close. (NOT testable
+  here: no Mac.) Linux/macOS window icon via iconphoto (Tk can't use .ico there).
+BUILD_DATE -> 2026-10-19 (version still 1.5.0 - ask user if this should be 1.5.1).
+
+NOT CHANGED (reported, need the user's decision):
+- "Rotate back sides 180" has no effect with the two single-sided printer types (backs file never rotated).
+- One-sheet zine silently uses only the first 8 pages of a longer book (no warning).
+- Word import ignores tables, pictures and tracked insertions (text in tables is lost).
+- Contents "Chapter N:" prefix isn't uppercased with Contents case = UPPERCASE.
+- Running heads on lined Notes pages show the last chapter's title.
+- A book-title <h1> at the same level as Part headings becomes a Part page; pasted text with Parts that have
+  fewer than 2 chapters each makes Parts the chapters (heuristic counts >= 2x).
+- A single "Chapter 1" line in pasted text isn't a chapter (needs 2+).
+- AO3 HTML author isn't auto-filled (seen with a synthetic AO3 file only - check with a real one).
+
+WORKFLOW (.github/workflows/build-cross-platform.yml) rewritten to mirror main.yml step for step; main.yml untouched.
+macOS: inside-out signing (tools/macos_sign_and_package.sh): Developer ID + hardened runtime + notarytool + staple when
+secrets exist (MACOS_CERTIFICATE_P12_BASE64, MACOS_CERTIFICATE_PASSWORD, [MACOS_SIGNING_IDENTITY], APPLE_ID,
+APPLE_TEAM_ID, APPLE_APP_SPECIFIC_PASSWORD), otherwise correct ad-hoc signing; DMG (with "How to open" note) + ZIP;
+Info.plist version; icon. "Damaged"/"Open Anyway" can only be removed with a paid Apple Developer ID ($99/yr).
+Linux: folder zip (top folder BookForge/, like Windows) + single-file tar.gz (like BookForge.exe).
+New CI gates: tools/check_packaged_modules.py, BookForge --preview-window-check (real preview window inside the
+packaged app), full book with every format + included fonts made by the packaged app.
+Verified here: Linux steps of the workflow run locally exactly as written (all pass); negative control (bug
+reintroduced) makes both new gates fail. Windows: folder + single-file exe rebuilt under Wine with main.yml's exact
+command from the fixed code: full book (7 outputs, EB Garamond/Cinzel embedded, margins mirrored correctly),
+--preview-check and --preview-window-check pass. NOT verified: real macOS run, real Windows (only Wine), printer.
+
+## 2026-10-19 (later) — 1.5.1: the five reported items + bookbinder-js parity (Cowork session)
+User asked: make the binding settings work like bookbinder-js (reference URL: aggregated, LETTER, fold lines,
+stretch, perfect, flyleafs 0), check every other option against it, fix the five "NOT CHANGED" items above, and
+bump the version to 1.5.1. For the convention questions the user asked for my recommendations ("ease of use and
+results comparable to bookbinder-js"): match print order + octavo, keep the even signature split, keep the extras.
+bookbinder-js (MPL-2.0) was read and run unchanged in Node for comparison only; none of its code is in BookForge.
+
+FIXED / CHANGED
+- bf_impose emit(): "Rotate back sides 180" now also turns the backs file for both single-sided printer types.
+- bf_impose 8_zine: warning in the log, info["warning"] and the READ ME notes when book pages don't fit (counts
+  flyleafs). Layout unchanged (bookbinder-js also drops pages after 8).
+- bf_core parse_docx: body read in document order (paragraphs AND tables; each table row -> one paragraph, cells
+  joined by an em space like the HTML/EPUB importer; merged cells once; nested tables go with their cell); runs
+  read through w:ins / w:moveTo / smartTag / customXml / fldSimple / sdt (tracked deletions and moveFrom left
+  out); pictures (a:blip, VML imagedata) imported when Include pictures is on, in place (text before / picture /
+  text after). Documents without these import exactly as before (corpus + round-tripped exports compared).
+- bf_pdf contents: "Chapter N:" prefix and a chapter's own label follow UPPERCASE (Title Case leaves them, so
+  roman numerals in labels survive).
+- bf_pdf Notes pages: a Marker sets the running head to "Notes".
+- Version 1.5.1: APP_VERSION, version_info.txt (1.5.1.0), README (tag example + corrected release text: the
+  active workflows don't check tag vs APP_VERSION, Run workflow on Windows publishes to the tag you type, no
+  custom-compiled launcher), root main.yml dispatch default v1.5.1, cross-platform example tag + v1.5.1 notes.
+PARITY CHANGES (bookbinder-js behaviour)
+- Folio/quarto/octavo/16mo printing order: each signature's innermost sheet first, inside face ("B") first.
+  Sides carry side["face"]; fold guides use the face, crop marks stay on the outside face. Folding notes: "lay it
+  with the side that printed FIRST facing UP", "put sheet 1 into the centre of sheet 2 ...". GUI help text too.
+- Octavo folds "vHV": fold 1 right edge over to the left (fold_plan supports "v"); layout now = bookbinder-js.
+- Paper: Ledger/ID-1/ID-2/ID-3 stored landscape like bookbinder-js; a landscape entry (or custom w > h) lays out
+  like the upright size with Rotate paper 90 (turn = rotate_paper XOR w > h).
+- Small layouts: drop_blank_rows() leaves out first-sheet rows that are blank on BOTH sides (bookbinder-js drops
+  per side, which misaligns fronts/backs when a row is blank on one side only - BookForge keeps that row).
+KEPT ON PURPOSE (differences from bookbinder-js; bookbinder-js drops pages or ignores the setting)
+- Standard signature split: identical whenever bookbinder-js's own plan adds up (all sizes 2-12 x 1-40 sheets);
+  differs only where its formula plans more sheets than exist (e.g. 9 sheets at 8 -> 7+2; BookForge 5+4).
+- Custom signature list repeats its last size (bookbinder-js drops the remaining pages); open-ended ranges "12-";
+  flyleafs also on small layouts; one-sided zine writes no empty backs file; rotate back also on small layouts.
+- Mark styles: BookForge "Cut lines / crop marks" = trim marks around each page on the outside face; bookbinder-js
+  "Cutlines" = short marks at the sheet's cut folds on every face. Not changed (ask the user if wanted).
+TESTS (all on this code): parity.py 184/193 SAME (9 = the kept differences above; 0 order/face notes);
+impose_check 84,199 checks, 145 = 144 by-design (alternating source rotation turns versos 180, identical before
+the change) + zine-flyleaf checker artifact; repo tests 0 failures incl. new tests/test_regressions_151.py (32
+checks, 20 fail on the old code); test_impose.py: 5 order checks updated to the new convention; matrix 2396 builds,
+12 intended "margins too large" errors, 0 output problems; semantic 2 failures (same as before, checker
+heuristics; the 2 contents-UPPERCASE failures are fixed); GUI 83/83; old vs new renders: print PDFs and covers
+identical in 66 builds, imposed folio/quarto = same sheets reordered; local Linux workflow run all green;
+Windows (Wine): all test_*.py pass with Windows Python, folder + single-file exe rebuilt with main.yml's command,
+version resource 1.5.1.0, CLI books from a Word file (tables/pictures/insertions, EB Garamond/Cinzel), octavo
+single-sided rotate back, Ledger folio, zine warning, preview + preview-window checks pass.
+NOT VERIFIED: real Windows/macOS hardware, a real printer and hand folding of the new octavo steps.

@@ -61,9 +61,10 @@ PRINTING THE "IMPOSED FOR BINDING" PDF
   which edge to flip on for your layout. If your printer can only flip on the
   other edge, tick "Rotate back sides 180" and rebuild.
 - Print ONE test sheet first and fold it: page numbers should run in order.
-- The notes file also has the folding steps for your layout. For folio:
-  fold every sheet in half, then nest sheet 2 inside sheet 1, sheet 3 inside
-  sheet 2, and so on. "Perfect bound" signatures are single sheets: just
+- The notes file also has the folding steps for your layout. As in
+  bookbinder-js, each signature's innermost sheet prints first. For folio:
+  fold every sheet in half, then nest sheet 1 inside sheet 2, those inside
+  sheet 3, and so on. "Perfect bound" signatures are single sheets: just
   fold and stack them in order.
 - Stack the signatures in order. The small black marks on the folds make a
   staircase when they're in the right order.
@@ -818,7 +819,11 @@ class PreviewWindow:
         vs.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self.render())
-        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+        # Windows sends wheel steps of 120, macOS small steps (1, 2, 3...); Linux (X11) sends Button-4/5 instead.
+        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(
+            int(-e.delta / 120) or (-1 if e.delta > 0 else 1 if e.delta < 0 else 0), "units"))
+        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
         for key, d in (("<Left>", -1), ("<Right>", 1), ("<Prior>", -1), ("<Next>", 1)):
             w.bind(key, lambda e, d=d: self.go(self.i + d))
         w.bind("<Home>", lambda e: self.go(0))
@@ -912,18 +917,41 @@ class PreviewWindow:
         if not self.alive() or not self.items:
             return
         from PIL import ImageTk
+        try:
+            # Pillow finds Tk through this module on macOS and Linux. Importing it here also makes
+            # PyInstaller bundle it; without it the packaged app's preview window stays empty.
+            from PIL import _tkinter_finder  # noqa: F401
+        except ImportError:
+            pass
         path, idx, label = self.items[self.i]
-        page = self._doc(path)[idx]
-        pw, ph = page.get_size()
-        rotation = page.get_rotation()
-        if rotation in (90, 270):
-            pw, ph = ph, pw
-        cw, ch = max(200, self.canvas.winfo_width() - 30), max(200, self.canvas.winfo_height() - 30)
-        z = self.zoom.get()
-        k = min(cw / pw, ch / ph) if z == "Fit page" else (cw / pw if z == "Fit width" else 96 / 72)
-        img = page.render(scale=k, may_draw_forms=False).to_pil()
-        self.photo = ImageTk.PhotoImage(img)
         c = self.canvas
+        try:
+            page = self._doc(path)[idx]
+            pw, ph = page.get_size()
+            rotation = page.get_rotation()
+            if rotation in (90, 270):
+                pw, ph = ph, pw
+            cw, ch = max(200, self.canvas.winfo_width() - 30), max(200, self.canvas.winfo_height() - 30)
+            z = self.zoom.get()
+            k = min(cw / pw, ch / ph) if z == "Fit page" else (cw / pw if z == "Fit width" else 96 / 72)
+            img = page.render(scale=k, may_draw_forms=False).to_pil()
+            self.photo = ImageTk.PhotoImage(img)
+        except Exception as e:
+            # Say so in the window instead of leaving it blank (details go to last_error.txt).
+            try:
+                with open(os.path.join(app_dir(), "last_error.txt"), "w", encoding="utf-8") as f:
+                    f.write(traceback.format_exc())
+            except Exception:
+                pass
+            c.delete("all")
+            c.create_text(20, 20, anchor="nw", width=max(300, c.winfo_width() - 40), fill=th.INK,
+                          font=("Segoe UI", 11),
+                          text=f"This page couldn't be drawn in the preview ({type(e).__name__}: {e}).\n\n"
+                               "The printing files are not affected. Details were saved to last_error.txt in "
+                               + app_dir())
+            self.page_var.set(str(self.i + 1))
+            self.of.configure(text=f"of {len(self.items)}   —   {label}")
+            return
         c.delete("all")
         x = max(15, (c.winfo_width() - img.width) // 2)
         c.create_rectangle(x + 4, 19, x + img.width + 4, 19 + img.height, fill="#000000", outline="", stipple="gray25")
@@ -982,7 +1010,15 @@ class App(tk.Tk):
         try:
             self.iconbitmap(resource("bookforge.ico"))
         except Exception:
-            pass
+            try:                      # macOS / Linux: Tk can't use .ico files directly
+                from PIL import Image, ImageTk
+                self._icon = ImageTk.PhotoImage(Image.open(resource("bookforge.ico")))
+                self.iconphoto(True, self._icon)
+            except Exception:
+                pass
+        if sys.platform == "darwin":
+            # Quit from the macOS menu / Cmd+Q / Dock goes through the same "save your edits?" check
+            self.createcommand("tk::mac::Quit", self.on_close)
         self.dark = self._saved_dark()
         th.set_mode(self.dark)
         th.apply(self)
@@ -1138,6 +1174,9 @@ class App(tk.Tk):
             build(fr)
             self.pages.append(page)
         self.bind_all("<MouseWheel>", self._wheel)
+        # Linux (X11) reports the mouse wheel as buttons 4 and 5
+        self.bind_all("<Button-4>", lambda e: self._wheel(e, 120))
+        self.bind_all("<Button-5>", lambda e: self._wheel(e, -120))
         self.k = "src"
         for i in range(len(th.TABS)):
             self.bind_all(f"<Control-Key-{i + 1}>", lambda e, i=i: self.shelf.select(i))
@@ -1173,11 +1212,16 @@ class App(tk.Tk):
         if th.TABS[i][0] == "edit" and getattr(self, "editor", None) is not None:
             self.editor.on_show()
 
-    def _wheel(self, e):
+    def _wheel(self, e, delta=None):
         w = e.widget
         if isinstance(w, (tk.Text, tk.Listbox, ttk.Treeview)) or str(w).endswith("popdown.f.l"):
             return
-        self.pages[getattr(self, "cur_page", 0)].wheel(e.delta)
+        try:
+            if w.winfo_toplevel() is not self:
+                return            # wheel over another window (e.g. the preview), not over the settings pages
+        except (AttributeError, tk.TclError):
+            pass
+        self.pages[getattr(self, "cur_page", 0)].wheel(e.delta if delta is None else delta)
 
     def _tab_source(self, t):
         t.rowconfigure(1, weight=1)
@@ -2455,7 +2499,9 @@ class App(tk.Tk):
                                          + app_dir() + ")")
         except queue.Empty:
             pass
-        self._poll_id = self.after(120, self.poll)
+        finally:
+            # keep listening even if handling one message failed - otherwise later builds never finish
+            self._poll_id = self.after(120, self.poll)
 
     def show_help(self):
         w = tk.Toplevel(self)
@@ -2497,7 +2543,62 @@ def cli(argv):
     return 0
 
 
+def preview_window_check(source, report=None):
+    """Self-test for packaged builds: typeset SOURCE, open the real preview window and check that the book
+    pages and printing sheets are actually drawn in it. Returns 0 when they are."""
+    s = dict(DEFAULTS)
+    s.update(source_mode="file", source_path=source, fmt_impose=True)
+    res = build_preview(apply_info(load_book(s), s), s, log=lambda m: None)
+    app = App()
+    errors = []
+    app.report_callback_exception = lambda *a: errors.append("".join(traceback.format_exception(*a)))
+    lines, ok = [], True
+    try:
+        win = PreviewWindow(app, res)
+        for mode in ("pages", "sheets"):
+            if mode == "sheets":
+                if not win.sheets:
+                    lines.append("FAIL: no printing sheets in the preview")
+                    ok = False
+                    break
+                win.set_mode("sheets")
+            for _ in range(10):
+                app.update()
+            ph = getattr(win, "photo", None)
+            drawn = ph is not None and ph.width() > 100 and ph.height() > 100 and bool(win.canvas.find_all())
+            if drawn:
+                lines.append(f"PASS: preview window shows {mode} ({ph.width()}x{ph.height()} image)")
+            else:
+                texts = [win.canvas.itemcget(i, "text") for i in win.canvas.find_all()
+                         if win.canvas.type(i) == "text"]
+                lines.append(f"FAIL: preview window shows no {mode} image {texts[:1]}")
+                ok = False
+            win.photo = None
+        win.close()
+    except Exception:
+        lines.append("FAIL: " + traceback.format_exc())
+        ok = False
+    finally:
+        try:
+            app.destroy()
+        except tk.TclError:
+            pass
+    if errors:
+        lines += ["FAIL: window error: " + e for e in errors]
+        ok = False
+    msg = "\n".join(lines) + "\n"
+    if report:
+        with open(report, "w", encoding="utf-8") as f:
+            f.write(msg)
+    else:
+        sys.stdout.write(msg)
+    return 0 if ok else 1
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--preview-window-check":
+        # BookForge --preview-window-check SOURCE [REPORT.txt] : opens the real preview window (self-test)
+        sys.exit(preview_window_check(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None))
     if len(sys.argv) >= 3 and sys.argv[1] == "--font-report":
         bf_fonts.set_user_fonts_dir(None)
         bf_fonts.scan_installed(force=True)

@@ -12,11 +12,17 @@ No install needed. Until the program is code-signed, Windows may say "Windows pr
 
 ### macOS and Linux (experimental)
 
-Cross-platform build jobs are being added and are not yet considered stable releases. Test packages will be published as GitHub Actions artifacts; tagged releases may include macOS and Linux ZIPs. These builds must be tested on the target operating system before being treated as fully supported. The macOS package is architecture-specific (Apple Silicon or Intel), so download the matching package. On macOS, Gatekeeper may warn because the app is not yet signed and notarized. Linux desktop libraries and font availability can vary by distribution.
+Each release also has macOS and Linux downloads, built and checked automatically on GitHub (the same tests as Windows, plus the packaged app's own preview window and a full book made by the packaged app). They still need wider testing on real computers, so please report problems through GitHub Issues.
+
+**macOS:** download `BookForge-macOS-arm64.dmg` for Apple Silicon Macs (M1, M2, M3, M4…) or `BookForge-macOS-x86_64.dmg` for Intel Macs, open it and drag BookForge to Applications. Until the app is signed with a paid Apple Developer ID and notarized, macOS asks you to allow it the first time: open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. If macOS says the app is "damaged" and offers only *Move to Trash*, open Terminal and run `xattr -dr com.apple.quarantine /Applications/BookForge.app` once. The DMG includes these steps.
+
+**Linux (x86_64):** `BookForge-Linux-x86_64.zip` is the folder version (extract it and run `BookForge/BookForge`); `BookForge-Linux-x86_64-single-file.tar.gz` holds a single `BookForge` program. Built on Ubuntu 24.04, so it needs a Linux with glibc 2.39 or newer.
+
+**Signing the Mac app properly (for the maintainer):** with an Apple Developer Program membership, add these repository secrets and every build is signed with the hardened runtime, notarized and stapled automatically, so macOS opens it without any warning: `MACOS_CERTIFICATE_P12_BASE64` (your *Developer ID Application* certificate exported as .p12, base64-encoded), `MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD` (made at appleid.apple.com), and optionally `MACOS_SIGNING_IDENTITY`. Without them the app is ad-hoc signed.
 
 ### About antivirus warnings
 
-BookForge is built with PyInstaller, and some antivirus programs wrongly flag PyInstaller apps because other programs (including malware) use the same packaging. Each release is built automatically on GitHub from the public source code in this repository, with a custom-compiled launcher to reduce these false alarms. If Windows Defender still flags a release, please open an issue.
+BookForge is built with PyInstaller, and some antivirus programs wrongly flag PyInstaller apps because other programs (including malware) use the same packaging. Each release is built automatically on GitHub from the public source code in this repository. If Windows Defender still flags a release, please open an issue.
 
 ## What it does
 
@@ -72,20 +78,20 @@ Alegreya, Baskervville, Crimson Pro, EB Garamond, Gelasio, Libre Baskerville, Li
 
 ## Where BookForge keeps its files
 
-- **Settings and font caches:** `%APPDATA%\BookForge`. You can open it, or clear it, from **Settings & storage**. Deleting this folder is safe.
+- **Settings and font caches:** `%APPDATA%\BookForge` (on macOS and Linux: a `BookForge` folder in your home folder). You can open it, or clear it, from **Settings & storage**. Deleting this folder is safe.
 - **Books you make:** `Documents\BookForge Books`, unless you choose another folder on the Output tab.
 - **Your extra fonts:** `Documents\BookForge Fonts`, unless you choose another folder in Settings & storage.
 
 ## Versions and releases
 
-Versions go up by 0.1 for each minor update (1.5.0, 1.6.0, 1.7.0 ...). To publish one, set `APP_VERSION` in `bf_core.py` (and the numbers in `version_info.txt`), commit, then push a matching tag:
+Versions go up by 0.1 for each minor update (1.5.0, 1.6.0, 1.7.0 ...) and by 0.0.1 for a bug-fix update (1.5.1). To publish one, set `APP_VERSION` in `bf_core.py` (and the numbers in `version_info.txt`), commit, then push a matching tag:
 
 ```
-git tag v1.5.0
-git push origin v1.5.0
+git tag v1.5.1
+git push origin v1.5.1
 ```
 
-GitHub then runs the tests, builds the program, checks that the fonts, their licences and the preview engine are inside it, and attaches `BookForge-Windows.zip` and `BookForge.exe` to the v1.5.0 release. The build stops if the tag and `APP_VERSION` don't match. **Run workflow** on the Actions tab makes a test build you can download from that run, without touching any release.
+GitHub then runs the tests, builds the program, checks that the fonts, their licences and the preview engine are inside it, and attaches `BookForge-Windows.zip` and `BookForge.exe` to the v1.5.1 release; the macOS and Linux workflow attaches its packages and the release notes to the same release. Check that the tag matches `APP_VERSION` before pushing it (the workflows don't check). **Run workflow** on the Actions tab also works: the Windows build asks for a release tag and attaches the files to that release (making the release if it doesn't exist yet), and the macOS and Linux build only attaches to a release when you type a tag; otherwise its packages stay downloadable from that run.
 
 ## Command line
 

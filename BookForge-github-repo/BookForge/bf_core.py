@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.5.0"
-BUILD_DATE = "2026-10-16"     # shown next to the version so different builds can be told apart
+APP_VERSION = "1.5.1"
+BUILD_DATE = "2026-10-19"     # shown next to the version so different builds can be told apart
 APP_AUTHOR = "ChunksBabyRuth"
 
 # --------------------------------------------------------------------------
@@ -938,35 +938,134 @@ def parse_docx(path, s):
             return (r.lower() if fmt == "lowerRoman" else r) + "."
         return f"{n}."
 
+    from docx.text.run import Run
+    from docx.text.paragraph import Paragraph
+    from docx.table import Table
+    W_R, W_HL = qn("w:r"), qn("w:hyperlink")
+    # Wrappers whose runs are part of the text Word shows: tracked insertions and moves, smart tags,
+    # custom XML, simple fields and content controls. Tracked deletions (w:del, w:moveFrom) are left out.
+    W_INTO = {qn("w:ins"), qn("w:moveTo"), qn("w:smartTag"), qn("w:customXml"), qn("w:fldSimple"),
+              qn("w:sdt"), qn("w:sdtContent")}
+    R_EMBED, R_ID = qn("r:embed"), qn("r:id")
+    pictures = {}
+
+    def runs_of(p):
+        """The paragraph's runs in order, including the words of links and tracked insertions
+        (p.runs only has the runs directly in the paragraph)."""
+        out = []
+
+        def visit(el):
+            for c in el:
+                if c.tag == W_R:
+                    out.append(Run(c, p))
+                elif c.tag == W_HL or c.tag in W_INTO:
+                    visit(c)
+        visit(p._p)
+        return out
+
+    def run_pictures(r):
+        """Pictures in a run, as event names (their bytes go in `pictures`)."""
+        if not s.get("include_images"):
+            return []
+        names = []
+        for el in r._r.iter():
+            rid = el.get(R_EMBED) if el.tag == qn("a:blip") else el.get(R_ID) if el.tag.endswith("}imagedata") else None
+            if not rid:
+                continue
+            try:
+                part = d.part.related_parts[rid]
+            except KeyError:
+                continue
+            name = posixpath.basename(str(part.partname)) or "picture"
+            pictures.setdefault(name, part.blob)
+            names.append(name)
+        return names
+
+    def styled(r):
+        t = esc(r.text).replace("\n", "<br/>")
+        if not t:
+            return ""
+        if r.font.strike or r.font.double_strike:
+            t = f"<strike>{t}</strike>"
+        if r.underline:
+            t = f"<u>{t}</u>"
+        if r.italic:
+            t = f"<i>{t}</i>"
+        if r.bold:
+            t = f"<b>{t}</b>"
+        return t
+
+    def cell_text(tc):
+        """A table cell's text: its paragraphs (and any table inside it) joined with spaces."""
+        bits = []
+        for c in tc:
+            if c.tag == qn("w:p"):
+                bits.append("".join(styled(r) for r in runs_of(Paragraph(c, None))))
+            elif c.tag == qn("w:tbl"):
+                for tr in c.iter(qn("w:tr")):
+                    bits.extend(cell_text(x) for x in tr.findall(qn("w:tc")))
+        return norm_ws(" ".join(b for b in bits if b))
+
+    def body_items():
+        """Paragraphs and tables in document order (d.paragraphs leaves the tables out)."""
+        for c in d.element.body:
+            if c.tag == qn("w:p"):
+                yield Paragraph(c, d._body)
+            elif c.tag == qn("w:tbl"):
+                yield Table(c, d._body)
+
     counters = {}
     events = []
-    for p in d.paragraphs:
+    for p in body_items():
+        if isinstance(p, Table):
+            # Like tables in web pages and EPUBs: each row becomes a line, cells separated by a wide space.
+            for tr in p._tbl.iter(qn("w:tr")):
+                if tr.getparent() is not p._tbl:
+                    continue                      # rows of a table inside a cell go with that cell
+                cells = [x for x in (cell_text(tc) for tc in tr.findall(qn("w:tc"))) if x]
+                if cells:
+                    events.append(("para", "\u2003".join(cells)))
+            if s.get("include_images"):
+                for r in p._tbl.iter(W_R):
+                    events.extend(("image", n) for n in run_pictures(Run(r, None)))
+            continue
+        runs = runs_of(p)
         sty = (p.style.name or "").lower() if p.style is not None else ""
         if sty.startswith("heading") or sty == "title":
             lvl = 1 if sty == "title" else int(re.sub(r"\D", "", sty) or 1)
-            if p.text.strip():
-                events.append(("head", lvl, p.text.strip()))
+            text = "".join(r.text for r in runs).strip()
+            if text:
+                events.append(("head", lvl, text))
+            for r in runs:
+                events.extend(("image", n) for n in run_pictures(r))
             continue
-        parts = []
-        for r in p.runs:
-            t = esc(r.text).replace("\n", "<br/>")
-            if not t:
-                continue
-            if r.font.strike or r.font.double_strike:
-                t = f"<strike>{t}</strike>"
-            if r.underline:
-                t = f"<u>{t}</u>"
-            if r.italic:
-                t = f"<i>{t}</i>"
-            if r.bold:
-                t = f"<b>{t}</b>"
-            parts.append(t)
+        parts, pics = [], []          # pics: (where in parts the picture sits, picture name)
+        for r in runs:
+            pics.extend((len(parts), n) for n in run_pictures(r))
+            t = styled(r)
+            if t:
+                parts.append(t)
         m = norm_ws("".join(parts))
-        if not m:
-            continue
         ppr = p._p.pPr
         numpr = ppr.numPr if ppr is not None else None
-        if numpr is not None and numpr.numId is not None and numpr.numId.val != 0 or "list" in sty:
+        is_item = numpr is not None and numpr.numId is not None and numpr.numId.val != 0 or "list" in sty
+        if pics and not is_item:
+            # Pictures in an ordinary paragraph: the text before each picture, the picture, the rest.
+            cut = 0
+            for pos, name in pics:
+                seg = norm_ws("".join(parts[cut:pos]))
+                if seg:
+                    events.append(("para", seg))
+                events.append(("image", name))
+                cut = pos
+            seg = norm_ws("".join(parts[cut:]))
+            if seg:
+                events.append(("para", seg))
+            continue
+        if not m:
+            events.extend(("image", name) for _pos, name in pics)
+            continue
+        if is_item:
             num_id = numpr.numId.val if numpr is not None and numpr.numId is not None else sty
             ilvl = numpr.ilvl.val if numpr is not None and numpr.ilvl is not None else 0
             fmt = num_format(num_id, ilvl) if numpr is not None else (
@@ -980,10 +1079,11 @@ def parse_docx(path, s):
                     counters.pop(k2)
                 bullet = fmt_number(counters[key], fmt)
             events.append(("item", m, bullet, int(ilvl)))
+            events.extend(("image", name) for _pos, name in pics)
         else:
             events.append(("para", m))
     cp = d.core_properties
-    return events_to_book(events, s, {"title": cp.title or "", "author": cp.author or ""})
+    return events_to_book(events, s, {"title": cp.title or "", "author": cp.author or ""}, pictures)
 
 
 # --------------------------------------------------------------------------
