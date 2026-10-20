@@ -29,7 +29,7 @@ import bf_pictures
 import bf_update
 import bf_theme as th
 
-SHEET_CUSTOM_HINT = "Used when Paper size is Custom."
+SHEET_CUSTOM_HINT = "Width \u00d7 height of your paper, in the display unit above."
 TEXT_KEYS = ("paste_text", "dedication", "note_text", "blurb", "hyph_words")
 # Fields that belong to one particular book. They are NOT remembered between sessions, so a new
 # session never starts with the previous book's file, text, title or author.
@@ -70,10 +70,11 @@ The seven steps are the tabs along the top, in order (Ctrl+1 ... Ctrl+7):
    picture to set its size, alignment and whether it sits in the text, on a
    page of its own or fills the whole page.
 7. OUTPUT: tick the formats you want, choose the binding layout and the
-   printer paper (with the unit its size is shown in), and click GENERATE
-   PRINTING FILES. Everything is saved in one folder, together with a "READ ME
-   - printing notes.txt" file. The Cover box takes front and back cover
-   pictures and your measured spine width.
+   printer paper (with the unit its size is shown in; tick "Use a custom
+   paper size" to type your own), and click GENERATE PRINTING FILES.
+   Everything is saved in one folder, together with a "READ ME - printing
+   notes.txt" file. The Cover box takes front and back cover pictures and
+   your measured spine width.
 
 PREVIEW BOOK shows the book exactly as it will print (and, with imposition on,
 the printing sheets, and with a cover, the cover). Nothing is saved. Change
@@ -2184,27 +2185,35 @@ class App(tk.Tk):
                            state="readonly", width=16, style=self.S("TCombobox"))
         ucb.grid(row=2, column=1, sticky="w", padx=6, pady=3)
         ucb.bind("<<ComboboxSelected>>", lambda e: self._paper_unit_chosen())
-        self.lab(pr, 3, "Custom paper size")
+        # A custom size is only used when this is ticked (ticking it sets Paper size to Custom, and choosing
+        # Custom in the list ticks it); otherwise the boxes are greyed out and the chosen preset is used.
+        self.custom_paper_on = tk.BooleanVar(value=False)
+        ttk.Checkbutton(pr, text="Use a custom paper size", variable=self.custom_paper_on,
+                        command=self._custom_paper_toggled, style=self.S("Card.TCheckbutton")).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 2))
+        self.lab(pr, 4, "Custom paper size")
         cf = ttk.Frame(pr, style=self.S("Card.TFrame"))
-        cf.grid(row=3, column=1, sticky="w", padx=6, pady=3)
+        cf.grid(row=4, column=1, sticky="w", padx=6, pady=3)
         self.sheet_w_text, self.sheet_h_text = tk.StringVar(), tk.StringVar()
-        ttk.Entry(cf, textvariable=self.sheet_w_text, width=9, style=self.S("TEntry")).pack(side="left")
+        self.sheet_entries = (ttk.Entry(cf, textvariable=self.sheet_w_text, width=9, style=self.S("TEntry")),
+                              ttk.Entry(cf, textvariable=self.sheet_h_text, width=9, style=self.S("TEntry")))
+        self.sheet_entries[0].pack(side="left")
         ttk.Label(cf, text=" \u00d7 ", style=self.S("Card.TLabel")).pack(side="left")
-        ttk.Entry(cf, textvariable=self.sheet_h_text, width=9, style=self.S("TEntry")).pack(side="left")
+        self.sheet_entries[1].pack(side="left")
         self.sheet_unit_lbl = ttk.Label(cf, style=self.S("CardHint.TLabel"))
         self.sheet_unit_lbl.pack(side="left", padx=(6, 0))
         self.sheet_msg = ttk.Label(pr, style=self.S("CardHint.TLabel"), wraplength=330, justify="left")
-        self.sheet_msg.grid(row=4, column=1, sticky="we", padx=6)
+        self.sheet_msg.grid(row=5, column=1, sticky="we", padx=6)
         self.wrap_to_width(self.sheet_msg)
         for v in (self.sheet_w_text, self.sheet_h_text):
             v.trace_add("write", lambda *a: self._custom_paper_typed())
         for k in ("sheet_size", "sheet_unit", "sheet_w", "sheet_h", "rotate_paper"):
             self._trace_once(k, self._paper_changed)
-        self.combo(pr, 5, "Printer", "printer_type", ["Duplex (two-sided printer)",
+        self.combo(pr, 6, "Printer", "printer_type", ["Duplex (two-sided printer)",
                                                        "Single-sided (fronts and backs files)",
                                                        "Single-sided, backs in reverse order"])
-        self.check(pr, 6, "Rotate paper 90\u00b0", "rotate_paper")
-        self.check(pr, 7, "Rotate back sides 180\u00b0 (flip on the other edge)", "rotate_back")
+        self.check(pr, 7, "Rotate paper 90\u00b0", "rotate_paper")
+        self.check(pr, 8, "Rotate back sides 180\u00b0 (flip on the other edge)", "rotate_back")
         self._paper_changed()
         pl = self.group(t, "Page placement", row=3, column=0)
         self.combo(pl, 0, "Page scaling", "imp_scaling", ["Keep proportional", "Stretch to fit", "Original size"])
@@ -2927,6 +2936,7 @@ class App(tk.Tk):
         except tk.TclError:
             return
         unit = self._sheet_unit()
+        custom = self._custom_paper_sync()
         self.unit_disp.set(bf_impose.UNIT_NAMES[unit])
         self.sheet_unit_lbl.configure(text=bf_impose.UNIT_WORDS[unit])
         if not getattr(self, "_sheet_typing", False):
@@ -2941,7 +2951,7 @@ class App(tk.Tk):
             finally:
                 self._sheet_typing_skip = False
             self._sheet_error = ""
-            self.sheet_msg.configure(text=SHEET_CUSTOM_HINT, foreground="")
+            self.sheet_msg.configure(text=SHEET_CUSTOM_HINT if custom else "", foreground="")
         s = {"sheet_size": self.var("sheet_size").get(), "sheet_unit": unit}
         try:
             s.update(sheet_w=self.var("sheet_w").get(), sheet_h=self.var("sheet_h").get())
@@ -2954,6 +2964,35 @@ class App(tk.Tk):
         except ValueError as e:
             text = f"Paper size: {bf_impose.sheet_name(s)} \u2013 {e}"
         self.paper_lbl.configure(text=text)
+
+    def _custom_paper_sync(self):
+        """Tick box, custom boxes and Paper size agree: the custom size is used only when Paper size is Custom.
+        Returns True when it is."""
+        name = self.var("sheet_size").get()
+        custom = name == "Custom"
+        if not custom and name in SHEETS:
+            self._last_preset = name                 # where unticking goes back to
+        try:
+            if bool(self.custom_paper_on.get()) != custom:
+                self.custom_paper_on.set(custom)
+            for e in self.sheet_entries:
+                e.configure(state="normal" if custom else "disabled")
+        except (AttributeError, tk.TclError):
+            pass
+        return custom
+
+    def _custom_paper_toggled(self):
+        """'Use a custom paper size' ticked: Paper size becomes Custom; unticked: back to the paper chosen before."""
+        on = bool(self.custom_paper_on.get())
+        name = self.var("sheet_size").get()
+        if on and name != "Custom":
+            if name in SHEETS:
+                self._last_preset = name
+            self.var("sheet_size").set("Custom")
+        elif not on and name == "Custom":
+            back = getattr(self, "_last_preset", "Letter")
+            self.var("sheet_size").set(back if back in SHEETS and back != "Custom" else "Letter")
+        self._paper_changed()
 
     def _paper_unit_chosen(self):
         """A new display unit: show the same physical sizes in it (the custom size is converted, not re-read)."""
@@ -2978,6 +3017,8 @@ class App(tk.Tk):
         """Typing in the custom size boxes: keep the last valid size until both numbers are usable."""
         if getattr(self, "_sheet_typing_skip", False):
             return
+        if self.var("sheet_size").get() != "Custom":
+            return                                   # the boxes are greyed out: nothing typed is used
         unit = self._sheet_unit()
         w, h = self.sheet_w_text.get(), self.sheet_h_text.get()
         try:

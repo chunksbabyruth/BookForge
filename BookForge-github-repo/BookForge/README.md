@@ -55,7 +55,7 @@ Everything needed to print a book for hand binding, built in:
 - **Pages:** page range, page rotation, scaling, positioning and margins
 - **Marks:** fold lines, cut lines, spine edge marks, signature order marks and sewing marks
 - **Printing:** duplex or single-sided printing, and aggregated and/or per-signature files
-- **Printer paper:** 57 paper sizes (US, ISO A and B, JIS B, architectural, foolscap, ID card, book and paperback sizes) or a custom size. The chosen paper's size is shown next to it in the **display unit for paper selection** (inches, millimetres, centimetres or points); a custom size is typed in that unit (decimals allowed), keeps its real size when you change the unit, and is checked (more than 0, at most 200 inches a side) before anything is made
+- **Printer paper:** 57 paper sizes (US, ISO A and B, JIS B, architectural, foolscap, ID card, book and paperback sizes) or a size of your own: tick **Use a custom paper size** (Paper size then says Custom; untick it to go back to the paper you had). The chosen paper's size is shown next to it in the **display unit for paper selection** (inches, millimetres, centimetres or points); a custom size is typed in that unit (decimals allowed), keeps its real size when you change the unit, and is checked (more than 0, at most 200 inches a side) before anything is made
 
 ### Output formats
 
@@ -94,11 +94,11 @@ Alegreya, Baskervville, Crimson Pro, EB Garamond, Gelasio, Libre Baskerville, Li
 Versions go up by 0.1 for each minor update (1.5.0, 1.6.0, 1.7.0 ...) and by 0.0.1 for a bug-fix update (1.5.1). To publish one, set `APP_VERSION` in `bf_core.py` (and the numbers in `version_info.txt`), commit, then push a matching tag:
 
 ```
-git tag v1.6.0
-git push origin v1.6.0
+git tag v1.6.1
+git push origin v1.6.1
 ```
 
-GitHub then runs the tests, builds the program, checks that the fonts, their licences and the preview engine are inside it, and attaches `BookForge-Windows.zip` and `BookForge.exe` to the v1.6.0 release; the macOS and Linux workflow attaches its packages and the release notes to the same release. Check that the tag matches `APP_VERSION` before pushing it (the workflows don't check). **Run workflow** on the Actions tab also works: the Windows build asks for a release tag and attaches the files to that release (making the release if it doesn't exist yet), and the macOS and Linux build only attaches to a release when you type a tag; otherwise its packages stay downloadable from that run.
+GitHub then runs the tests, builds the program, checks that the fonts, their licences and the preview engine are inside it, and attaches `BookForge-Windows.zip` and `BookForge.exe` to the v1.6.1 release; the macOS and Linux workflow attaches its packages and the release notes to the same release. Check that the tag matches `APP_VERSION` before pushing it (the workflows don't check). **Run workflow** on the Actions tab also works: the Windows build asks for a release tag and attaches the files to that release (making the release if it doesn't exist yet), and the macOS and Linux build only attaches to a release when you type a tag; otherwise its packages stay downloadable from that run.
 
 ## Command line
 

@@ -434,9 +434,9 @@ check(not re.search(r"urlretrieve|subprocess|os\.system|startfile|exec\(", src),
       "the update check never downloads or runs anything")
 
 # ---------------------------------------------------------------- 10. version
-check(APP_VERSION == "1.6.0", f"version is 1.6.0 ({APP_VERSION})")
+check(tuple(int(x) for x in APP_VERSION.split(".")) >= (1, 6, 0), f"version is 1.6.0 or later ({APP_VERSION})")
 vi = open(os.path.join(ROOT, "version_info.txt"), encoding="utf-8").read()
-check("'1.6.0.0'" in vi, "version_info.txt says 1.6.0.0")
+check(f"'{APP_VERSION}.0'" in vi, f"version_info.txt says {APP_VERSION}.0")
 
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

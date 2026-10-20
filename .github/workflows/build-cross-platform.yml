@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Optional existing release tag to attach packages to (for example v1.6.0)"
+        description: "Optional existing release tag to attach packages to (for example v1.6.1)"
         required: false
         default: ""
         type: string
@@ -482,7 +482,7 @@ jobs:
             mac_note="The macOS app is not yet signed with a paid Apple Developer ID, so the first time you open it macOS asks you to allow it: open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. If macOS says the app is \"damaged\", run \`xattr -dr com.apple.quarantine /Applications/BookForge.app\` in Terminal once. The DMG includes a *How to open BookForge* note with these steps."
           fi
           cat > release-notes.md <<EOF
-          **BookForge v1.6.0 — PDFs, pictures, an editable contents page, blank pages, paper units and update checks**
+          **BookForge v1.6.1 — PDFs, pictures, an editable contents page, blank pages, paper units and update checks**
 
           A feature update.
 
@@ -511,7 +511,7 @@ jobs:
 
           **Printer paper**
           - The Output tab shows the size of the chosen paper, for example Letter (8.5 × 11.0 inches). **Display unit for paper selection** shows sizes in inches, millimeters, centimeters or points.
-          - A custom paper size is typed in that unit, decimals allowed. It is checked before printing (more than 0 and at most 200 inches on each side), and switching the unit converts the numbers exactly.
+          - **Use a custom paper size**: tick it to type your own paper size (Paper size then says Custom; untick it to go back to the paper you had). The size is typed in the display unit, decimals allowed, checked before printing (more than 0 and at most 200 inches on each side), and switching the unit converts the numbers exactly. Unticked, the custom boxes are greyed out and never used.
 
           **Update check**
           - **Check for updates** (top right) shows the newest published release and what's new, with a link to its download page. BookForge also checks quietly when it starts; this can be turned off in Settings & storage. Nothing is ever downloaded or installed by BookForge.

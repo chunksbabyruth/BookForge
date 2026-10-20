@@ -406,6 +406,36 @@ if have_display:
     app.var("sheet_unit").set("in")
     pump()
     check(app.paper_lbl.cget("text") == "Paper size: Letter (8.5 × 11.0 inches)", app.paper_lbl.cget("text"))
+    # the custom size is off until "Use a custom paper size" is ticked
+    states = lambda: [str(e.cget("state")) for e in app.sheet_entries]          # noqa: E731
+    check(not app.custom_paper_on.get() and states() == ["disabled", "disabled"] and app.sheet_msg.cget("text") == "",
+          "a preset is chosen: the tick box is off and the custom size boxes are greyed out")
+    app.sheet_w_text.set("99")
+    pump()
+    check(app.var("sheet_size").get() == "Letter" and app.var("sheet_w").get() == 8.5,
+          "text put in the greyed-out boxes is not used")
+    app.custom_paper_on.set(True)
+    app._custom_paper_toggled()
+    pump()
+    check(app.var("sheet_size").get() == "Custom" and states() == ["normal", "normal"] and
+          app.paper_lbl.cget("text").startswith("Paper size: Custom ("),
+          "ticking the box sets Paper size to Custom and opens the boxes")
+    app.custom_paper_on.set(False)
+    app._custom_paper_toggled()
+    pump()
+    check(app.var("sheet_size").get() == "Letter" and states() == ["disabled", "disabled"] and
+          sheet_points(app.collect()) == (612.0, 792.0), "unticking goes back to the paper chosen before (Letter)")
+    app.var("sheet_size").set("A5")
+    pump()
+    app.var("sheet_size").set("Custom")
+    pump()
+    check(app.custom_paper_on.get() and states() == ["normal", "normal"], "choosing Custom in the list ticks the box")
+    app.custom_paper_on.set(False)
+    app._custom_paper_toggled()
+    pump()
+    check(app.var("sheet_size").get() == "A5", "unticking after choosing Custom in the list goes back to A5")
+    app.var("sheet_size").set("Letter")
+    pump()
     app.unit_disp.set("Millimeters")
     app._paper_unit_chosen()
     pump()
@@ -436,10 +466,28 @@ if have_display:
           "making the book is stopped with a message while the custom size is invalid")
     app.sheet_w_text.set("230.5")
     pump()
-    check(app.sheet_msg.cget("text") == "Used when Paper size is Custom." and str(app.sheet_msg.cget("foreground")) == ""
+    check(app.sheet_msg.cget("text") == BF.SHEET_CUSTOM_HINT and str(app.sheet_msg.cget("foreground")) == ""
           and app.sheet_unit_lbl.cget("text") == "mm", "a valid size puts the hint back")
     app.var("sheet_size").set("A4")
-    check(app.var("sheet_w").get() == 230.5, "choosing a preset keeps the custom size")
+    pump()
+    check(app.var("sheet_w").get() == 230.5 and not app.custom_paper_on.get() and
+          sheet_points(app.collect()) == (595.0, 842.0),
+          "choosing a preset unticks the box and uses the preset; the custom size is kept for later")
+    app.custom_paper_on.set(True)
+    app._custom_paper_toggled()
+    pump()
+    check(app.sheet_w_text.get() == "230.5" and app.var("sheet_size").get() == "Custom",
+          "ticking the box again brings the kept custom size back")
+    app.custom_paper_on.set(False)
+    app._custom_paper_toggled()
+    pump()
+    app.apply(dict(app.collect(), sheet_size="Custom"))
+    pump()
+    check(app.custom_paper_on.get() and [str(e.cget("state")) for e in app.sheet_entries] == ["normal", "normal"],
+          "settings or a project with a custom paper size open with the box ticked")
+    app.custom_paper_on.set(False)
+    app._custom_paper_toggled()
+    pump()
     app.shelf.select(th.tab_index("front"))
     pump()
     app.var("blank_pages_start").set(3)

@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.6.0"
-BUILD_DATE = "2026-10-19"     # shown next to the version so different builds can be told apart
+APP_VERSION = "1.6.1"
+BUILD_DATE = "2026-10-20"     # shown next to the version so different builds can be told apart
 APP_AUTHOR = "ChunksBabyRuth"
 
 # --------------------------------------------------------------------------

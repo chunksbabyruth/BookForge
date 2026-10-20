@@ -441,3 +441,13 @@ before/after builds identical to 1.6.0; imposition checker and parity identical 
 176-build blank-page/paper matrix with 0 problems; Linux workflow steps run locally; Windows exes rebuilt with
 main.yml's commands under Wine and used for books with blank pages and preset/custom paper.
 NOT VERIFIED: real Windows/macOS hardware, real printing and folding.
+LATER THE SAME DAY (reported: "the custom paper size is auto used"): the custom size was only applied when Paper size
+was Custom, but its boxes were always editable and showed red messages, so it looked active. Now a "Use a custom
+paper size" tick box (off by default) turns it on: ticking sets Paper size to Custom and opens the boxes, unticking
+goes back to the paper chosen before (Letter if none) and greys the boxes out; choosing Custom or a preset in the
+list ticks or unticks it. No new setting: the box follows sheet_size, so projects and settings are unchanged.
+Text typed while unticked is never used. Tests added to tests/test_steps_paper_blanks.py (GUI section).
+Released to Robert's folders as 1.6.1 (APP_VERSION 1.6.1, version_info.txt 1.6.1.0, BUILD_DATE 2026-10-20; the
+v1.6.1 release notes in build-cross-platform.yml cover everything since 1.5.1, as 1.6.0 was never published).
+main.yml was left exactly as it was: its manual "Run workflow" default tag still says v1.6.0, so type v1.6.1 there
+(pushing the tag v1.6.1 needs nothing typed).
