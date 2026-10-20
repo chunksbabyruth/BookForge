@@ -1,5 +1,6 @@
 """BookForge - one-click book maker (Windows GUI)."""
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -14,39 +15,69 @@ import traceback
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, APP_NAME, APP_VERSION, APP_AUTHOR, BUILD_DATE,
-                     load_book, apply_info, plain, esc, Block, Chapter)
+from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, PDF_MODES, BLANK_PAGES_MAX, parse_blank_count,
+                     APP_NAME, APP_VERSION, APP_AUTHOR, BUILD_DATE,
+                     load_book, apply_info, plain, esc, Block, Chapter, page_size_inches)
 import bf_fonts
 from bf_fonts import SAME_BODY, SAME_HEAD
-from bf_pdf import HYPH_LANGS
-from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE, FOLD_SIDES, UNITS
+from bf_pdf import HYPH_LANGS, TOC_SPACING, contents_entries, contents_rows, rows_to_edits
+from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE, FOLD_SIDES, UNITS, UNIT_CHOICES
+import bf_impose
 from bf_build import run_build, default_out_dir, build_preview
 import bf_edit
+import bf_pictures
+import bf_update
 import bf_theme as th
 
+SHEET_CUSTOM_HINT = "Used when Paper size is Custom."
 TEXT_KEYS = ("paste_text", "dedication", "note_text", "blurb", "hyph_words")
 # Fields that belong to one particular book. They are NOT remembered between sessions, so a new
 # session never starts with the previous book's file, text, title or author.
 BOOK_KEYS = ("source_path", "paste_text", "title", "subtitle", "author", "credit", "dedication",
-             "note_title", "note_text", "blurb")
+             "note_title", "note_text", "blurb", "cover_front_image", "cover_back_image")
 PARSE_KEYS = ("source_mode", "source_path", "split_mode", "custom_regex", "strip_gutenberg",
               "skip_contents", "skip_cover", "include_images", "keep_front_text", "drop_empty",
-              "line_paragraphs", "preserve_breaks")
+              "line_paragraphs", "preserve_breaks", "pdf_mode", "keep_format")
 
 HELP = """HOW TO USE BOOKFORGE
 
-1. SOURCE: pick an EPUB, TXT, Markdown, HTML or Word (.docx) file, or choose
-   "Paste text" and paste your writing. Click "Scan chapters" to check that the
-   chapters were found correctly. You can rename or skip chapters in the list.
+The seven steps are the tabs along the top, in order (Ctrl+1 ... Ctrl+7):
+
+1. SOURCE: pick an EPUB, PDF, Word (.docx), TXT, Markdown or HTML file, or
+   choose "Text I paste or type below" and paste your writing.
+   PDF files can be used two ways (choose next to "PDF files"):
+   - Keep the pages as they are: the PDF's own pages are printed and arranged
+     for binding, exactly as they look. Works for any PDF, scans included.
+   - Rebuild as an editable book: the text is read out of the PDF so you can
+     edit it and change fonts, sizes and layout like any other book. PDFs
+     store lines, not paragraphs, so check the chapters and text afterwards.
+     Scanned PDFs have no text to read; run them through an OCR program first.
+   "Keep the source's own fonts, sizes, colours and alignment" carries the
+   source's own look over (Word, EPUB/HTML and rebuilt PDFs) where it can.
 2. BOOK INFO: title, subtitle and author for the title page (left blank, the
-   EPUB's own details are used).
-3. LAYOUT / FRONT & BACK: page size, fonts, margins, chapter style, page
-   numbers, contents page, bookplate, dedication and so on.
-4. PREVIEW BOOK shows the book exactly as it will print (and, with imposition on,
-   the printing sheets). Nothing is saved. Change settings and click Update
-   preview as often as you like.
-5. OUTPUT: tick the formats you want and click GENERATE PRINTING FILES. Everything is saved
-   in one folder, together with a "READ ME - printing notes.txt" file.
+   source's own details are used), dedication and an extra front page.
+3. FRONT & BACK: title page, bookplate, the contents page ("Edit contents..."
+   lets you rename, reorder, hide or add entries and fix page numbers), "THE
+   END", lined notes pages, and blank pages at the beginning and end of the
+   book (they are part of the printed book, have no page number and are
+   folded into the signatures like any other page; the EPUB, Word, web page
+   and text files leave them out).
+4. CHAPTERS: check that the chapters were found correctly. You can rename,
+   skip, reorder or merge chapters in the list.
+5. LAYOUT: page size, fonts, margins, chapter style, page numbers and so on.
+6. SPECIFIC TEXT EDIT: change the text, styles and fonts of any chapter.
+   "Insert picture..." adds a picture where the cursor is; double-click a
+   picture to set its size, alignment and whether it sits in the text, on a
+   page of its own or fills the whole page.
+7. OUTPUT: tick the formats you want, choose the binding layout and the
+   printer paper (with the unit its size is shown in), and click GENERATE
+   PRINTING FILES. Everything is saved in one folder, together with a "READ ME
+   - printing notes.txt" file. The Cover box takes front and back cover
+   pictures and your measured spine width.
+
+PREVIEW BOOK shows the book exactly as it will print (and, with imposition on,
+the printing sheets, and with a cover, the cover). Nothing is saved. Change
+settings and click Update preview as often as you like.
 
 TEXT IS KEPT WORD FOR WORD. Only spacing used for line-wrapping in the source
 file is tidied; italics, bold and line breaks in poems are carried over.
@@ -61,8 +92,8 @@ PRINTING THE "IMPOSED FOR BINDING" PDF
   which edge to flip on for your layout. If your printer can only flip on the
   other edge, tick "Rotate back sides 180" and rebuild.
 - Print ONE test sheet first and fold it: page numbers should run in order.
-- The notes file also has the folding steps for your layout. As in
-  bookbinder-js, each signature's innermost sheet prints first. For folio:
+- The notes file also has the folding steps for your layout. Each
+  signature's innermost sheet prints first. For folio:
   fold every sheet in half, then nest sheet 1 inside sheet 2, those inside
   sheet 3, and so on. "Perfect bound" signatures are single sheets: just
   fold and stack them in order.
@@ -92,8 +123,18 @@ TIPS
 """
 
 
+def tk_photo(im):
+    """A PIL image -> Tk image (keeps Pillow's Tk link working in the packaged app on macOS and Linux)."""
+    from PIL import ImageTk
+    try:
+        from PIL import _tkinter_finder  # noqa: F401
+    except ImportError:
+        pass
+    return ImageTk.PhotoImage(im)
+
+
 class BookEditor:
-    """The Edit step: chapters on the left, a Word-style editor on the right.
+    """The Specific Text Edit step: chapters on the left, a Word-style editor on the right.
 
     The text box holds one chapter. Paragraph styles, alignment etc. are tags on whole lines; bold, italic,
     fonts, sizes and colours are tags on characters. bf_edit converts to and from the book model, which the
@@ -107,6 +148,7 @@ class BookEditor:
         self.app, self.cur, self.cur_obj = app, None, None
         self.loading, self.dirty, self.title_dirty = False, False, False
         self.images, self.fontcache, self.undo_stack, self.redo_stack = {}, {}, [], []
+        self.thumbs = {}          # small pictures shown in the text (kept so Tk doesn't drop them)
         self.last_snap = 0.0
         S = app.S
         parent.columnconfigure(1, weight=1)
@@ -146,6 +188,8 @@ class BookEditor:
         sz = ttk.Combobox(bar1, textvariable=self.size_var, values=self.SIZES, state="readonly", width=8, style=S("TCombobox"))
         sz.pack(side="left", padx=(6, 0))
         sz.bind("<<ComboboxSelected>>", lambda e: self.set_value("fs|", "" if self.size_var.get().startswith("(") else self.size_var.get()))
+        ttk.Button(bar1, text="Insert picture...", style="Tool.TButton", command=self.insert_picture).pack(
+            side="left", padx=(10, 0))
         ttk.Label(bar1, text="  paragraph style, font, size", style=S("PageHint.TLabel")).pack(side="left", padx=(6, 0))
         barf = ttk.Frame(right, style=S("Page.TFrame"))
         barf.grid(row=1, column=0, sticky="we", pady=(4, 0))
@@ -194,6 +238,7 @@ class BookEditor:
         t.bind("<KeyRelease>", lambda e: self._update_toolbar(), add="+")
         t.bind("<ButtonRelease-1>", lambda e: self._update_toolbar(), add="+")
         t.bind("<<Paste>>", lambda e: self._snap(force=True), add="+")
+        t.bind("<Double-1>", self._double_click, add="+")
         muted = th.MUTED
         t.tag_configure("f_u", underline=True)
         t.tag_configure("f_s", overstrike=True)
@@ -248,6 +293,11 @@ class BookEditor:
             self.families = {f.lower() for f in tkfont.families()}
         chs = self.chapters()
         self.refresh_list()
+        if self.app.book is not None and getattr(self.app.book, "fixed_pdf", ""):
+            self.txt.delete("1.0", "end")
+            self._status("This PDF's pages are printed as they are, so there is no text to edit here. Choose "
+                         "“Rebuild as an editable book” for PDF files on the Source tab to edit it.")
+            return
         if not chs:
             return
         idx = next((i for i, c in enumerate(chs) if c is self.cur_obj), None)
@@ -375,9 +425,13 @@ class BookEditor:
         self.loading = True
         t = self.txt
         t.delete("1.0", "end")
-        self.images = {}
+        self.images, self.thumbs = {}, {}
         for n, p in enumerate(paras):
             start = t.index("end-1c")
+            pic = p.style == "image" and p.block is not None and p.block.kind == "image"
+            if pic:
+                p = dataclasses.replace(p, runs=[(bf_edit.picture_label(p.block), {})])
+                self._thumb_at(start, n, p.block)
             for text, f in p.runs:
                 tags = [f"f_{k}" for k in bf_edit.FLAGS if f.get(k)]
                 if f.get("font"):
@@ -494,7 +548,11 @@ class BookEditor:
             fam = next((x[3:] for x in tags if x.startswith("ff|")), "")
             size = next((x[3:] for x in tags if x.startswith("fs|")), "")
             try:
-                size = float(size) if size else self.STYLE_SIZE.get(style, 12)
+                base = self.STYLE_SIZE.get(style, 12)
+                if size.endswith("%"):                     # kept from the source, relative to the text size
+                    size = base * float(size[:-1]) / 100
+                else:
+                    size = float(size) if size else base
             except ValueError:
                 size = 12
             if "f_sup" in tags or "f_sub" in tags:
@@ -525,6 +583,8 @@ class BookEditor:
         line = set(t.tag_names("insert lineend"))
         style = next((x[3:] for x in line if x.startswith("st|")), "para")
         self.style_var.set(bf_edit.STYLE_NAMES.get(style, "Normal text"))
+        if style == "image":
+            self._status("Picture: double-click it to change its size, alignment or placement.")
         self.font_var.set(next((x[3:] for x in tags if x.startswith("ff|")), "(default font)"))
         self.size_var.set(next((x[3:] for x in tags if x.startswith("fs|")), "(default)"))
         self.space_var.set(next((x[3:] for x in line if x.startswith("sp|")), "0"))
@@ -647,7 +707,7 @@ class BookEditor:
 
     def set_style(self, style):
         if style == "image":
-            self._status("Pictures come from your source file; they can be moved or deleted but not added here.")
+            self._status("To add a picture, click Insert picture... (double-click a picture to change it).")
             self._update_toolbar()
             return
         self.set_line("st|", style)
@@ -675,6 +735,208 @@ class BookEditor:
         self._snap(force=True)
         self.txt.insert("insert", bf_edit.BR, self.txt.tag_names("insert-1c"))
         self._after_format("insert linestart", "insert lineend")
+
+    # ------------------------------------------------------------ pictures
+    def _thumb_at(self, index, key, block):
+        """Show a small copy of the picture at the start of its line in the text box."""
+        im = bf_pictures.thumbnail(block.image, 220, 130) if block.image else None
+        if im is None:
+            return
+        try:
+            ph = tk_photo(im)
+        except Exception:
+            return
+        self.thumbs[key] = ph
+        self.txt.image_create(index, image=ph, padx=6, pady=4)
+
+    def _picture_line(self, ln):
+        """(key, Block) of the picture on text line ln, or None."""
+        tags = self.txt.tag_names(f"{ln}.end")
+        if "st|image" not in tags:
+            return None
+        ob = next((tg[3:] for tg in tags if tg.startswith("ob|")), None)
+        if ob is None or not ob.isdigit() or int(ob) not in self.images:
+            return None
+        return int(ob), self.images[int(ob)]
+
+    def _double_click(self, e):
+        ln = int(self.txt.index(f"@{e.x},{e.y}").split(".")[0])
+        if self._picture_line(ln):
+            self.txt.mark_set("insert", f"{ln}.0")
+            self.picture_settings(ln)
+            return "break"
+        return None
+
+    def _set_picture(self, ln, key, block):
+        """Replace the picture on line ln (its label and small copy follow)."""
+        t = self.txt
+        tags = [tg for tg in t.tag_names(f"{ln}.end") if not tg.startswith("df|")]
+        self.images[key] = block
+        t.delete(f"{ln}.0", f"{ln}.end")
+        t.insert(f"{ln}.0", bf_edit.picture_label(block))
+        self._thumb_at(f"{ln}.0", key, block)
+        for tg in tags:
+            t.tag_add(tg, f"{ln}.0", f"{ln}.end+1c")      # the small picture too, so it lines up the same way
+        self._after_format(f"{ln}.0", f"{ln}.end+1c")
+
+    def insert_picture(self):
+        if self.cur_obj is None:
+            self._status("Pick a chapter first.")
+            return
+        path = filedialog.askopenfilename(title="Insert picture", filetypes=bf_pictures.PICTURE_FILES,
+                                          parent=self.txt.winfo_toplevel())
+        if not path:
+            return
+        try:
+            data, name = bf_pictures.read_picture(path)
+        except ValueError as e:
+            messagebox.showerror("Insert picture", f"That picture can't be used: {e}.")
+            return
+        self._snap(force=True)
+        t = self.txt
+        ln = int(t.index("insert").split(".")[0])
+        t.insert(f"{ln}.end", "\n")
+        a, b = f"{ln + 1}.0", f"{ln + 1}.end+1c"
+        for tg in t.tag_names(a):
+            t.tag_remove(tg, a, b)
+        key = max(self.images, default=-1) + 1
+        block = Block("image", image=data, image_name=name)
+        t.tag_add("st|image", a, b)
+        t.tag_add(f"ob|{key}", a, b)
+        self._set_picture(ln + 1, key, block)
+        t.mark_set("insert", f"{ln + 1}.end")
+        t.see(f"{ln + 1}.0")
+        self._status("Picture added. Double-click it to change its size, alignment or placement.")
+
+    def picture_settings(self, ln=None):
+        t = self.txt
+        if ln is None:
+            ln = int(t.index("insert").split(".")[0])
+        found = self._picture_line(ln)
+        if not found:
+            self._status("Click a picture first (or use Insert picture...).")
+            return
+        key, block = found
+        app = self.app
+        S = lambda n: f"edit.{n}"                            # noqa: E731  (the Edit step's colours)
+        w = tk.Toplevel(t)
+        w.title("Picture")
+        w.configure(background=th.CARD)
+        w.transient(t.winfo_toplevel())
+        w.resizable(False, False)
+        fr = ttk.Frame(w, padding=14, style=S("Card.TFrame"))
+        fr.pack(fill="both", expand=True)
+        state = {"block": block}
+        thumb = ttk.Label(fr, style=S("Card.TLabel"))
+        thumb.grid(row=0, column=0, rowspan=8, sticky="n", padx=(0, 14))
+        info = ttk.Label(fr, style=S("CardHint.TLabel"), wraplength=330, justify="left")
+
+        def show_thumb():
+            im = bf_pictures.thumbnail(state["block"].image, 240, 240)
+            if im is not None:
+                thumb.image = tk_photo(im)
+                thumb.configure(image=thumb.image)
+        show_thumb()
+        auto = tk.BooleanVar(value=not block.img_width)
+        width = tk.IntVar(value=int(block.img_width or 60))
+        place = tk.StringVar(value=bf_pictures.PLACE_NAMES.get(block.img_place, bf_pictures.PLACES[0][1]))
+        align = tk.StringVar(value=dict(bf_pictures.ALIGNS).get(block.align or "center", "Centre"))
+        ttk.Label(fr, text="Size", style=S("Card.TLabel")).grid(row=0, column=1, sticky="w")
+        sz = ttk.Frame(fr, style=S("Card.TFrame"))
+        sz.grid(row=1, column=1, sticky="w", pady=(0, 6))
+        ttk.Checkbutton(sz, text="Automatic", variable=auto, style=S("Card.TCheckbutton"),
+                        command=lambda: upd()).pack(side="left")
+        sp = ttk.Spinbox(sz, from_=5, to=100, increment=5, textvariable=width, width=5, style=S("TSpinbox"),
+                         command=lambda: upd())
+        sp.pack(side="left", padx=(10, 4))
+        sp.bind("<KeyRelease>", lambda e: upd())
+        ttk.Label(sz, text="% of the text width (the shape is always kept)", style=S("CardHint.TLabel")).pack(
+            side="left")
+        ttk.Label(fr, text="Alignment", style=S("Card.TLabel")).grid(row=2, column=1, sticky="w")
+        ttk.Combobox(fr, textvariable=align, values=[n for _k, n in bf_pictures.ALIGNS], state="readonly",
+                     width=12, style=S("TCombobox")).grid(row=3, column=1, sticky="w", pady=(0, 6))
+        ttk.Label(fr, text="Placement", style=S("Card.TLabel")).grid(row=4, column=1, sticky="w")
+        pl = ttk.Frame(fr, style=S("Card.TFrame"))
+        pl.grid(row=5, column=1, sticky="w", pady=(0, 6))
+        for _k, name in bf_pictures.PLACES:
+            ttk.Radiobutton(pl, text=name, value=name, variable=place, style=S("Card.TRadiobutton"),
+                            command=lambda: upd()).pack(anchor="w")
+        info.grid(row=6, column=1, sticky="w", pady=(4, 8))
+
+        def upd():
+            full = place.get() == bf_pictures.PLACE_NAMES["full"]
+            sp.configure(state="disabled" if auto.get() or full else "normal")
+            px = bf_pictures.size(state["block"].image) or (0, 0)
+            try:
+                pct = max(5, min(100, int(width.get())))
+            except (tk.TclError, ValueError):
+                pct = 60
+            txt = f"{px[0]} x {px[1]} pixels."
+            try:
+                from bf_export import trim_size
+                s = app.collect()
+                pw, ph = page_size_inches(s)
+                fw = pw - float(s["margin_inner"]) - float(s["margin_outer"])
+                fh = ph - float(s["margin_top"]) - float(s["margin_bottom"])
+                scale = trim_size(s)[0] / pw                    # pages are shrunk to fit the sheet when imposed
+                code = next(k for k, n in bf_pictures.PLACES if n == place.get())
+                k = bf_pictures.picture_scale(px[0], px[1], 0 if auto.get() else pct, code, fw, fh, pw, ph, unit=1)
+                inches = (pw if full else px[0] * k) * scale
+                dpi = 1 / (k * scale)
+                txt += f" Printed about {inches:.1f} in wide ({dpi:.0f} dpi)."
+                if dpi < 150:
+                    txt += " It may look soft in print; a larger picture would be sharper."
+            except Exception:
+                pass
+            if full:
+                txt += " Full-page pictures fill the page and may be trimmed at the edges; home printers " \
+                       "leave a thin white border."
+            info.configure(text=txt)
+        upd()
+
+        def replace():
+            p = filedialog.askopenfilename(title="Replace picture", filetypes=bf_pictures.PICTURE_FILES, parent=w)
+            if not p:
+                return
+            try:
+                data, name = bf_pictures.read_picture(p)
+            except ValueError as e:
+                messagebox.showerror("Replace picture", f"That picture can't be used: {e}.", parent=w)
+                return
+            state["block"] = dataclasses.replace(state["block"], image=data, image_name=name)
+            show_thumb()
+            upd()
+
+        def remove():
+            self._snap(force=True)
+            w.destroy()
+            t.delete(f"{ln}.0", f"{ln}.end+1c")
+            self._after_format(f"{max(1, ln - 1)}.0", f"{ln}.0")
+
+        def ok():
+            try:
+                pct = max(5, min(100, int(width.get())))
+            except (tk.TclError, ValueError):
+                pct = 60
+            code = next(k for k, n in bf_pictures.PLACES if n == place.get())
+            al = next(k for k, n in bf_pictures.ALIGNS if n == align.get())
+            new = dataclasses.replace(state["block"], img_width=0 if auto.get() else pct, img_place=code)
+            w.destroy()
+            self._snap(force=True)
+            for tg in t.tag_names(f"{ln}.end"):
+                if tg.startswith("al|"):
+                    t.tag_remove(tg, f"{ln}.0", f"{ln}.end+1c")
+            if al != "center":
+                t.tag_add(f"al|{al}", f"{ln}.0", f"{ln}.end+1c")
+            self._set_picture(ln, key, dataclasses.replace(new, align=al if al != "center" else ""))
+        bt = ttk.Frame(fr, style=S("Card.TFrame"))
+        bt.grid(row=7, column=1, sticky="e")
+        ttk.Button(bt, text="Replace picture...", style=S("TButton"), command=replace).pack(side="left", padx=2)
+        ttk.Button(bt, text="Remove picture", style=S("TButton"), command=remove).pack(side="left", padx=(2, 14))
+        ttk.Button(bt, text="Cancel", style=S("TButton"), command=w.destroy).pack(side="left", padx=2)
+        ttk.Button(bt, text="OK", style=S("TButton"), command=ok).pack(side="left", padx=2)
+        w.bind("<Escape>", lambda e: w.destroy())
+        self.picture_win = w
 
     # ------------------------------------------------------------ find & replace
     def find_window(self):
@@ -857,6 +1119,7 @@ class PreviewWindow:
         keep = self.i
         self._release()
         self.result = result
+        self.covers = []
         self.pages = [(result["pdf"], k, f"page {k + 1} of the book") for k in range(len(self._doc(result["pdf"])))]
         self.sheets = []
         for f in result["sheets"]:
@@ -867,7 +1130,8 @@ class PreviewWindow:
                 else:
                     lab = f"sheet {k + 1}, {'front (print first)' if 'fronts' in f else 'back (print second)'}"
                 self.sheets.append((f, k, lab))
-        if not self.sheets:
+        self.covers = [(result["cover"], 0, "wraparound cover (back, spine, front)")] if result.get("cover") else []
+        if not self.items:
             self.mode = "pages"
         self._mode_buttons()
         import time
@@ -882,17 +1146,21 @@ class PreviewWindow:
 
     @property
     def items(self):
-        return self.sheets if self.mode == "sheets" else self.pages
+        return {"sheets": self.sheets, "cover": getattr(self, "covers", [])}.get(self.mode, self.pages)
 
     def _mode_buttons(self):
         for c in self.modes.winfo_children():
             c.destroy()
-        if not self.sheets:
-            ttk.Label(self.modes, text=f"Book pages ({len(self.pages)})", style="Paper.TLabel",
+        views = [("pages", f"Book pages ({len(self.pages)})")]
+        if self.sheets:
+            views.append(("sheets", f"Printing sheets ({len(self.sheets)} sides)"))
+        if getattr(self, "covers", None):
+            views.append(("cover", "Cover"))
+        if len(views) == 1:
+            ttk.Label(self.modes, text=views[0][1], style="Paper.TLabel",
                       font=("Segoe UI Semibold", 11)).pack(side="left")
             return
-        for key, txt in (("pages", f"Book pages ({len(self.pages)})"),
-                         ("sheets", f"Printing sheets ({len(self.sheets)} sides)")):
+        for key, txt in views:
             ttk.Button(self.modes, text=("\u25CF  " if self.mode == key else "") + txt, style="Header.TButton",
                        command=lambda k=key: self.set_mode(k)).pack(side="left", padx=(0, 6))
 
@@ -990,6 +1258,221 @@ class PreviewWindow:
             self.app.preview_win = None
 
 
+class ContentsEditor:
+    """"Edit contents": change what the contents page lists - rename, reorder, hide, add or remove entries
+    and type page numbers - before the book is made. The changes are kept with the book (and in projects);
+    page numbers that are not typed are worked out from the real layout every time the book is typeset."""
+
+    K = "front"
+
+    def __init__(self, app):
+        self.app = app
+        self.auto = contents_entries(app.book, app.collect())
+        self.rows = contents_rows(self.auto, app.book.toc)
+        w = self.w = tk.Toplevel(app)
+        w.title("Edit contents")
+        w.configure(background=th.CARD)
+        w.transient(app)
+        w.geometry("820x560")
+        w.minsize(640, 400)
+        w.protocol("WM_DELETE_WINDOW", self.close)
+        S = lambda n: f"{self.K}.{n}"                     # noqa: E731
+        fr = ttk.Frame(w, padding=12, style=S("Card.TFrame"))
+        fr.pack(fill="both", expand=True)
+        fr.columnconfigure(0, weight=1)
+        fr.rowconfigure(1, weight=1)
+        ttk.Label(fr, style=S("CardHint.TLabel"), wraplength=760, justify="left",
+                  text="Change what the contents page lists. Double-click an entry to rename it, or its page "
+                       "number to type your own. Page numbers you don't type are worked out from the finished "
+                       "layout every time the book is made, so they stay right after other changes."
+                  ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        box = ttk.Frame(fr, style=S("Card.TFrame"))
+        box.grid(row=1, column=0, sticky="nsew")
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(0, weight=1)
+        tv = self.tree = ttk.Treeview(box, columns=("show", "entry", "page"), show="headings", selectmode="browse")
+        for col, text, wd, anchor in (("show", "Show", 56, "center"), ("entry", "Entry on the contents page", 360, "w"),
+                                      ("page", "Page", 110, "e")):
+            tv.heading(col, text=text)
+            tv.column(col, width=wd, minwidth=wd if col != "entry" else 160, anchor=anchor, stretch=col == "entry")
+        tv.tag_configure("hidden", foreground=th.MUTED)
+        tv.tag_configure("edited", font=(th.UI, 10, "italic"))
+        sb = ttk.Scrollbar(box, command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+        tv.bind("<Double-1>", self._double)
+        side = ttk.Frame(fr, style=S("Card.TFrame"))
+        side.grid(row=1, column=1, sticky="ns", padx=(10, 0))
+        for text, fn in (("Rename...", self.rename), ("Page number...", self.set_page), ("Show / hide", self.toggle),
+                         ("Move up", lambda: self.move(-1)), ("Move down", lambda: self.move(1)),
+                         ("Indent / outdent", self.indent), ("Add entry...", self.add),
+                         ("Remove entry", self.remove), ("Undo all changes", self.reset)):
+            ttk.Button(side, text=text, style=S("TButton"), command=fn).pack(fill="x", pady=2)
+        bot = ttk.Frame(fr, style=S("Card.TFrame"))
+        bot.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        for text, fn in (("OK", self.ok), ("Cancel", self.close), ("Preview book", self.preview)):
+            ttk.Button(bot, text=text, style=S("TButton"), command=fn).pack(side="right", padx=2)
+        self.info = ttk.Label(bot, style=S("CardHint.TLabel"), wraplength=380, justify="left")
+        self.info.pack(side="left", fill="x", expand=True)
+        self.fill()
+
+    def alive(self):
+        try:
+            return bool(self.w.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def refresh(self):
+        """After a preview, build or a new chapter scan: show the current chapters and page numbers.
+        Changes not yet confirmed with OK are kept if the chapters are the same."""
+        book = self.app.book
+        if book is None:
+            self.close()
+            return
+        pending = rows_to_edits(self.rows, self.auto)
+        self.auto = contents_entries(book, self.app.collect())
+        known = {a["uid"] for a in self.auto}
+        same = all(r["custom"] or r["uid"] in known for r in self.rows)
+        self.rows = contents_rows(self.auto, pending if same else book.toc)
+        self.fill(self._sel())
+
+    def page_text(self, r):
+        if r["page"]:
+            return f"{r['page']}   (typed)"
+        lab = self.app.toc_labels.get(r["uid"]) if r["uid"] else None
+        return lab or "auto"
+
+    def fill(self, select=None):
+        tv = self.tree
+        tv.delete(*tv.get_children())
+        for i, r in enumerate(self.rows):
+            text = ("      " if r["level"] >= 1 else "") + (r["title"] or r["auto"])
+            tags = []
+            if not r["show"]:
+                tags.append("hidden")
+            if r["custom"] or r["title"] or r["page"]:
+                tags.append("edited")
+            tv.insert("", "end", iid=str(i), values=("\u2713" if r["show"] else "\u2014", text, self.page_text(r)),
+                      tags=tuple(tags))
+        if select is not None and 0 <= select < len(self.rows):
+            tv.selection_set(str(select))
+            tv.see(str(select))
+        known = any(self.app.toc_labels.get(r["uid"]) for r in self.rows if r["uid"])
+        self.info.configure(text=("Page numbers shown are from the last preview or build."
+                                  if known else "Page numbers appear here after you preview the book.")
+                            + "  Italic = changed by you.")
+
+    def _sel(self):
+        s = self.tree.selection()
+        return int(s[0]) if s else None
+
+    def _double(self, e):
+        col = self.tree.identify_column(e.x)
+        if not self.tree.identify_row(e.y):
+            return
+        self.tree.selection_set(self.tree.identify_row(e.y))
+        {"#1": self.toggle, "#3": self.set_page}.get(col, self.rename)()
+
+    def rename(self):
+        i = self._sel()
+        if i is None:
+            return
+        r = self.rows[i]
+        new = self.app.ask_text(self.w, "Rename entry", "Text on the contents page (leave it empty to use the "
+                                "chapter's own title):", r["title"] or r["auto"])
+        if new is None:
+            return
+        new = " ".join(new.split())
+        if r["custom"]:
+            if new:
+                r["title"] = new
+        else:
+            r["title"] = new if new and new != r["auto"] else None
+        self.fill(i)
+
+    def set_page(self):
+        i = self._sel()
+        if i is None:
+            return
+        r = self.rows[i]
+        new = self.app.ask_text(self.w, "Page number", "Page number to show for this entry. Leave it empty to "
+                                "use the number worked out from the layout.", r["page"])
+        if new is not None:
+            r["page"] = new.strip()
+            self.fill(i)
+
+    def toggle(self):
+        i = self._sel()
+        if i is not None:
+            self.rows[i]["show"] = not self.rows[i]["show"]
+            self.fill(i)
+
+    def move(self, d):
+        i = self._sel()
+        if i is None or not 0 <= i + d < len(self.rows):
+            return
+        self.rows[i], self.rows[i + d] = self.rows[i + d], self.rows[i]
+        self.fill(i + d)
+
+    def indent(self):
+        i = self._sel()
+        if i is not None:
+            self.rows[i]["level"] = 0 if self.rows[i]["level"] else 1
+            self.fill(i)
+
+    def add(self):
+        i = self._sel()
+        text = self.app.ask_text(self.w, "Add an entry", "Text of the new entry (for example \u201cMap\u201d or "
+                                 "\u201cAfterword\u201d):", "")
+        if not text or not text.strip():
+            return
+        page = self.app.ask_text(self.w, "Page number", "Page number to show (optional):", "") or ""
+        lvl = self.rows[i]["level"] if i is not None else 0
+        at = (i + 1) if i is not None else len(self.rows)
+        self.rows.insert(at, {"uid": None, "custom": True, "auto": "", "title": " ".join(text.split()),
+                              "page": page.strip(), "show": True, "level": lvl, "auto_level": lvl})
+        self.fill(at)
+
+    def remove(self):
+        i = self._sel()
+        if i is None:
+            return
+        if self.rows[i]["custom"]:
+            del self.rows[i]
+            self.fill(min(i, len(self.rows) - 1))
+            return
+        messagebox.showinfo("Remove entry", "Chapters stay in the book, so their entry is hidden from the contents "
+                            "instead (Show / hide brings it back). To take a chapter out of the book, untick it "
+                            "on the Chapters tab.", parent=self.w)
+        self.rows[i]["show"] = False
+        self.fill(i)
+
+    def reset(self):
+        if messagebox.askyesno("Undo all changes", "Go back to the automatic contents?", parent=self.w):
+            self.rows = contents_rows(self.auto, [])
+            self.fill()
+
+    def apply(self):
+        new = rows_to_edits(self.rows, self.auto)
+        if new != (self.app.book.toc or []):
+            self.app.book.toc = new
+            self.app.edited = True
+            self.app.unsaved = True
+
+    def preview(self):
+        self.apply()
+        self.app.preview_book()
+
+    def ok(self):
+        self.apply()
+        self.close()
+
+    def close(self):
+        self.app.contents_win = None
+        self.w.destroy()
+
+
 def app_dir():
     d = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), APP_NAME)
     os.makedirs(d, exist_ok=True)
@@ -1029,6 +1512,9 @@ class App(tk.Tk):
         self.unsaved = False          # edits not yet saved in a project file
         self._preview_target = None   # chapter to show when the next preview opens
         self.autofilled = {}          # title/author values BookForge filled in itself from a source
+        self.toc_labels = {}          # chapter -> page number on the contents page, from the last preview/build
+        self.contents_win = None      # the "Edit contents" window while it is open
+        self.update_info = None       # the newer release found by the update check, if any
         self.q = queue.Queue()
         self.custom_fonts = []
         self.font_combos = []
@@ -1042,6 +1528,8 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._poll_id = self.after(120, self.poll)
         threading.Thread(target=lambda: self.q.put(("fonts", bf_fonts.scan_installed())), daemon=True).start()
+        if self.var("check_updates").get() and not os.environ.get("BOOKFORGE_NO_UPDATE_CHECK"):
+            self.after(2500, self._startup_update_check)
 
     # ------------------------------------------------------------ helpers
     def var(self, key):
@@ -1060,6 +1548,13 @@ class App(tk.Tk):
 
     def S(self, name):
         return f"{self.k}.{name}"
+
+    def _trace_once(self, key, fn):
+        """Run fn() when a setting changes (registered once, although the window is rebuilt for dark mode)."""
+        done = self.__dict__.setdefault("_traced", set())
+        if key not in done:
+            done.add(key)
+            self.var(key).trace_add("write", lambda *a: fn())
 
     def lab(self, p, r, text, c=0):
         ttk.Label(p, text=text, style=self.S("Card.TLabel")).grid(row=r, column=c, sticky="w",
@@ -1093,6 +1588,56 @@ class App(tk.Tk):
         ttk.Checkbutton(p, text=text, variable=self.var(key), style=self.S("Card.TCheckbutton")).grid(
             row=r, column=c, columnspan=span, sticky="w", padx=6, pady=2)
 
+    def _blank_pages_row(self, p, r, which, text, where):
+        """A 'Blank pages at beginning/end' box: whole numbers 0..BLANK_PAGES_MAX, checked as you type."""
+        key = f"blank_pages_{which}"
+        self.spin(p, r, text, key, 0, BLANK_PAGES_MAX, 1, "pages")
+        hint = f"{where[:1].upper()}{where[1:]}. No page numbers or running heads."
+        msg = ttk.Label(p, text=hint, style=self.S("CardHint.TLabel"), wraplength=300, justify="left")
+        msg.grid(row=r + 1, column=1, sticky="we", padx=6)
+        self.wrap_to_width(msg)
+        self.blank_msgs[which] = msg
+        self.blank_hints[which] = hint
+        self._trace_once(key, lambda w=which: self._blank_pages_typed(w))
+
+    def _raw(self, key):
+        """What is typed in a setting's box, as text (a number box may hold something that isn't a number)."""
+        try:
+            return str(self.tk.globalgetvar(str(self.var(key))))
+        except tk.TclError:
+            return ""
+
+    def _blank_pages_typed(self, which):
+        msg = getattr(self, "blank_msgs", {}).get(which)
+        if msg is None:
+            return
+        try:
+            parse_blank_count(self._raw(f"blank_pages_{which}"),
+                              "Blank pages at beginning" if which == "start" else "Blank pages at end")
+            text, colour = self.blank_hints.get(which, ""), ""          # "" = the hint colour of the theme
+        except ValueError as e:
+            text, colour = str(e), "#D9534F"
+        try:
+            msg.configure(text=text, foreground=colour)
+        except tk.TclError:
+            pass
+
+    def settings_problem(self, s):
+        """A plain message if a setting can't be used for a preview or build (else None)."""
+        for which, label in (("start", "Blank pages at beginning"), ("end", "Blank pages at end")):
+            try:
+                parse_blank_count(self._raw(f"blank_pages_{which}"), label)
+            except ValueError as e:
+                return f"{e}\n\n(On the Front & back step.)"
+        if s.get("sheet_size") == "Custom" and s.get("fmt_impose"):
+            if getattr(self, "_sheet_error", ""):
+                return f"The custom paper size can't be used yet: {self._sheet_error}\n\n(Output step, Printer & paper.)"
+            try:
+                bf_impose.sheet_points(s)
+            except ValueError as e:
+                return f"{e}\n\n(Output step, Printer & paper.)"
+        return None
+
     def textbox(self, p, key, height=4, width=50):
         f = ttk.Frame(p, style=self.S("Card.TFrame"))
         t = tk.Text(f, height=height, width=width, wrap="word", font=("Segoe UI", 10),
@@ -1104,6 +1649,16 @@ class App(tk.Tk):
         sb.pack(side="right", fill="y")
         self.texts[key] = t
         return f
+
+    @staticmethod
+    def wrap_to_width(label):
+        """Let a hint/message label wrap to the width its column really gets (narrow windows included)."""
+        def fit(e):
+            w = max(40, e.width - 4)
+            if int(str(label.cget("wraplength")) or 0) != w:
+                label.configure(wraplength=w)
+        label.bind("<Configure>", fit, add="+")
+        return label
 
     def group(self, parent, text, **grid):
         g = ttk.LabelFrame(parent, text=text, padding=10, style=self.S("TLabelframe"))
@@ -1131,6 +1686,7 @@ class App(tk.Tk):
         h = tk.Menu(m, tearoff=0)
         h.add_command(label="How to use, print and bind", command=self.show_help)
         h.add_command(label="Fonts & licences", command=self.licences_window)
+        h.add_command(label="Check for updates...", command=self.check_updates_window)
         h.add_command(label="About", command=self.about_window)
         m.add_cascade(label="Help", menu=h)
         self.config(menu=m)
@@ -1155,6 +1711,9 @@ class App(tk.Tk):
         self.dark_btn = ttk.Button(head, style="Header.TButton", command=self.toggle_dark,
                                    text="\u2600  Light mode" if self.dark else "\u263E  Dark mode")
         self.dark_btn.pack(side="right", padx=(0, 8))
+        self.update_btn = ttk.Button(head, style="Header.TButton", command=self.check_updates_window,
+                                     text=self._update_label())
+        self.update_btn.pack(side="right", padx=(0, 8))
         self.shelf = th.Shelf(self, self.show_tab)
         self.shelf.pack(side="top", fill="x", padx=14)
         holder = tk.Frame(self, background=th.PAPER)
@@ -1162,9 +1721,11 @@ class App(tk.Tk):
         holder.rowconfigure(0, weight=1)
         holder.columnconfigure(0, weight=1)
         self.pages = []
-        builders = (self._tab_source, self._tab_chapters, self._tab_edit, self._tab_info, self._tab_layout, self._tab_front,
-                    self._tab_output)
-        for (key, _label, _c), build in zip(th.TABS, builders):
+        builders = {"src": self._tab_source, "chap": self._tab_chapters, "edit": self._tab_edit,
+                    "info": self._tab_info, "lay": self._tab_layout, "front": self._tab_front,
+                    "out": self._tab_output}
+        for key, _label, _c in th.TABS:          # in step order (th.TABS); each step keeps its own builder
+            build = builders[key]
             self.k = key
             page = th.ScrollPage(holder, key)
             page.grid(row=0, column=0, sticky="nsew")
@@ -1207,7 +1768,8 @@ class App(tk.Tk):
             self._commit_editor()
         self.cur_page = i
         self.pages[i].tkraise()
-        if th.TABS[i][0] in ("chap", "edit") and not self.busy:
+        # Steps that show what was read from the source (title/author, contents, chapters, text) read it first
+        if th.TABS[i][0] in ("info", "front", "chap", "edit") and not self.busy:
             self.after(50, self.auto_scan)
         if th.TABS[i][0] == "edit" and getattr(self, "editor", None) is not None:
             self.editor.on_show()
@@ -1226,7 +1788,7 @@ class App(tk.Tk):
     def _tab_source(self, t):
         t.rowconfigure(1, weight=1)
         g = self.group(t, "Make a book from...", row=0, column=0, columnspan=2)
-        ttk.Radiobutton(g, text="A file (EPUB, TXT, Markdown, HTML, Word .docx)", value="file",
+        ttk.Radiobutton(g, text="A file (EPUB, PDF, Word .docx, TXT, Markdown, HTML)", value="file",
                         variable=self.var("source_mode"), command=self._mode_changed,
                         style=self.S("Card.TRadiobutton")).grid(
             row=0, column=0, columnspan=3, sticky="w", padx=6)
@@ -1239,6 +1801,15 @@ class App(tk.Tk):
                         variable=self.var("source_mode"), command=self._mode_changed,
                         style=self.S("Card.TRadiobutton")).grid(
             row=2, column=0, columnspan=3, sticky="w", padx=6, pady=(6, 0))
+        pf = ttk.Frame(g, style=self.S("Card.TFrame"))
+        pf.grid(row=3, column=0, columnspan=3, sticky="we", padx=6, pady=(8, 0))
+        ttk.Label(pf, text="PDF files:", style=self.S("Card.TLabel")).pack(side="left")
+        ttk.Combobox(pf, textvariable=self.var("pdf_mode"), values=PDF_MODES, state="readonly", width=30,
+                     style=self.S("TCombobox")).pack(side="left", padx=6)
+        ttk.Label(pf, text="Keep = print the PDF's own pages (scans too).  Rebuild = turn its text into a book "
+                           "you can edit and restyle.", style=self.S("CardHint.TLabel"), wraplength=560,
+                  justify="left").pack(side="left", padx=4)
+        self._trace_once("pdf_mode", self._pdf_mode_changed)
 
         t.rowconfigure(1, weight=1)
         pg = ttk.LabelFrame(t, text="Paste or type text  (mark chapters with \"Chapter 1\" lines "
@@ -1255,9 +1826,15 @@ class App(tk.Tk):
                   ("Include pictures from the source", "include_images"),
                   ("Keep text before the first chapter", "keep_front_text"),
                   ("Drop empty chapters", "drop_empty"),
-                  ("Keep line breaks inside paragraphs (poetry)", "preserve_breaks")]
+                  ("Keep line breaks inside paragraphs (poetry)", "preserve_breaks"),
+                  ("Keep the source's own fonts, sizes, colours and alignment", "keep_format")]
         for i, (txt, key) in enumerate(checks):
             self.check(d, i % 4, txt, key, c=i // 4, span=1)
+        ttk.Label(d, text="Keeping the source's look: words the source set in another font, size or colour, and "
+                          "centred, right-aligned or indented paragraphs, look that way in the book too. Normal text "
+                          "follows your Layout settings. Works for Word, EPUB/HTML and rebuilt PDF files.",
+                  style=self.S("CardHint.TLabel"), wraplength=760, justify="left").grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0))
 
         sb = self.group(t, "Section breaks", row=3, column=0, columnspan=2)
         self.entry(sb, 0, "Markers this text uses", "scene_markers", 50)
@@ -1268,8 +1845,8 @@ class App(tk.Tk):
                    "scene_symbols")
         nxt = ttk.Frame(t, style=self.S("Page.TFrame"))
         nxt.grid(row=4, column=0, columnspan=2, sticky="e", padx=6, pady=(4, 8))
-        ttk.Button(nxt, text="Next: check the chapters  \u2192", style=self.S("TButton"),
-                   command=lambda: self.shelf.select(1)).pack(side="right")
+        ttk.Button(nxt, text="Next: book info  \u2192", style=self.S("TButton"),
+                   command=lambda: self.shelf.select(th.tab_index("info"))).pack(side="right")
 
     # ------------------------------------------------------------ Chapters step
     SPLIT_LABELS = [
@@ -1371,7 +1948,7 @@ class App(tk.Tk):
         self.editor = BookEditor(self, holder)
 
     def edit_tab(self):
-        return [k for k, _l, _c in th.TABS].index("edit")
+        return th.tab_index("edit")
 
     def _commit_editor(self):
         ed = getattr(self, "editor", None)
@@ -1396,6 +1973,7 @@ class App(tk.Tk):
                                          filetypes=[("BookForge project", "*.bookforge")])
         if not p:
             return False
+        self._embed_cover_art()
         try:
             bf_edit.save_project(p, self.book, self.collect(), APP_VERSION)
         except Exception as e:
@@ -1423,9 +2001,13 @@ class App(tk.Tk):
             messagebox.showerror("Open project", f"That project can't be opened: {e}.")
             return
         settings.pop("dark_mode", None)
+        for k in ("blank_pages_start", "blank_pages_end"):     # projects made before these existed: none
+            settings.setdefault(k, DEFAULTS[k])
         self.apply(settings)
         self._mode_changed()
         self.book, self.edited, self.unsaved = book, True, False
+        self._cover_thumb("front")
+        self._cover_thumb("back")
         self.book_sig = self.source_sig(self.collect())
         self.fill_list()
         self.editor.reset()
@@ -1528,12 +2110,20 @@ class App(tk.Tk):
         self.check(g, 0, "Title page", "title_page")
         self.combo(g, 1, "\"Belongs to\" bookplate", "bookplate", ["On title page", "Separate page", "None"])
         self.entry(g, 2, "Bookplate wording", "bookplate_text", 34)
+        self.blank_msgs, self.blank_hints = {}, {}
+        self._blank_pages_row(g, 3, "start", "Blank pages at beginning", "before everything else")
         c = self.group(t, "Contents page", row=1, column=0)
         self.check(c, 0, "Make a contents page with page numbers", "toc")
         self.entry(c, 1, "Contents heading", "toc_title", 34)
         self.combo(c, 2, "Numbers in front of titles", "toc_numbers", ["None", "Number (1.)", "Chapter N:"])
         self.combo(c, 3, "Contents title case", "toc_case", ["As written", "Title Case", "UPPERCASE"])
         self.check(c, 4, "Dot leaders ( ........ 12 )", "toc_dots")
+        self.combo(c, 5, "Contents spacing", "toc_spacing", TOC_SPACING, width=34)
+        ttk.Button(c, text="Edit contents...", command=self.edit_contents, style=self.S("TButton")).grid(
+            row=6, column=0, sticky="w", padx=6, pady=(6, 2))
+        ttk.Label(c, text="Rename, reorder, hide or add entries and fix page numbers.",
+                  style=self.S("CardHint.TLabel"), wraplength=300, justify="left").grid(row=6, column=1, sticky="w",
+                                                                                         padx=6)
         ff = self.group(t, "Fanfiction downloads (AO3, FanFicFare)", row=2, column=0, columnspan=2)
         self.combo(ff, 0, "Work info (rating, fandom, tags...)", "fic_info", ["Leave out", "Add a work info page"])
         self.combo(ff, 1, "Story summary", "fic_summary", ["Add a summary page", "Leave out"])
@@ -1545,8 +2135,10 @@ class App(tk.Tk):
         b = self.group(t, "Back of the book", row=0, column=1)
         self.check(b, 0, "Print \"THE END\" after the last chapter", "the_end")
         self.spin(b, 1, "Lined \"Notes\" pages at the end", "notes_pages", 0, 20, 1)
+        self._blank_pages_row(b, 2, "end", "Blank pages at end", "after everything else")
         ttk.Label(t, text="Dedication and the extra front page are on the Book info tab.",
-                  style=self.S("PageHint.TLabel")).grid(row=1, column=1, sticky="nw", padx=12, pady=12)
+                  style=self.S("PageHint.TLabel"), wraplength=320, justify="left").grid(
+            row=1, column=1, sticky="nw", padx=12, pady=12)
 
     def _tab_output(self, t):
         g = self.group(t, "Save to", row=0, column=0, columnspan=2)
@@ -1583,14 +2175,37 @@ class App(tk.Tk):
                                                          "Signature files only"], width=34)
         pr = self.group(t, "Printer & paper", row=2, column=1)
         self.combo(pr, 0, "Paper size", "sheet_size", list(SHEETS))
-        self.spin(pr, 1, "Custom width", "sheet_w", 1, 2000, 0.25)
-        self.spin(pr, 2, "Custom height", "sheet_h", 1, 2000, 0.25)
-        self.combo(pr, 3, "Custom size unit", "sheet_unit", list(UNITS))
-        self.combo(pr, 4, "Printer", "printer_type", ["Duplex (two-sided printer)",
+        self.paper_lbl = ttk.Label(pr, style=self.S("CardHint.TLabel"), wraplength=330, justify="left")
+        self.paper_lbl.grid(row=1, column=1, sticky="we", padx=6)
+        self.wrap_to_width(self.paper_lbl)
+        self.lab(pr, 2, "Display unit for paper selection")
+        self.unit_disp = tk.StringVar()
+        ucb = ttk.Combobox(pr, textvariable=self.unit_disp, values=[n for _c, n, _w in UNIT_CHOICES],
+                           state="readonly", width=16, style=self.S("TCombobox"))
+        ucb.grid(row=2, column=1, sticky="w", padx=6, pady=3)
+        ucb.bind("<<ComboboxSelected>>", lambda e: self._paper_unit_chosen())
+        self.lab(pr, 3, "Custom paper size")
+        cf = ttk.Frame(pr, style=self.S("Card.TFrame"))
+        cf.grid(row=3, column=1, sticky="w", padx=6, pady=3)
+        self.sheet_w_text, self.sheet_h_text = tk.StringVar(), tk.StringVar()
+        ttk.Entry(cf, textvariable=self.sheet_w_text, width=9, style=self.S("TEntry")).pack(side="left")
+        ttk.Label(cf, text=" \u00d7 ", style=self.S("Card.TLabel")).pack(side="left")
+        ttk.Entry(cf, textvariable=self.sheet_h_text, width=9, style=self.S("TEntry")).pack(side="left")
+        self.sheet_unit_lbl = ttk.Label(cf, style=self.S("CardHint.TLabel"))
+        self.sheet_unit_lbl.pack(side="left", padx=(6, 0))
+        self.sheet_msg = ttk.Label(pr, style=self.S("CardHint.TLabel"), wraplength=330, justify="left")
+        self.sheet_msg.grid(row=4, column=1, sticky="we", padx=6)
+        self.wrap_to_width(self.sheet_msg)
+        for v in (self.sheet_w_text, self.sheet_h_text):
+            v.trace_add("write", lambda *a: self._custom_paper_typed())
+        for k in ("sheet_size", "sheet_unit", "sheet_w", "sheet_h", "rotate_paper"):
+            self._trace_once(k, self._paper_changed)
+        self.combo(pr, 5, "Printer", "printer_type", ["Duplex (two-sided printer)",
                                                        "Single-sided (fronts and backs files)",
                                                        "Single-sided, backs in reverse order"])
-        self.check(pr, 5, "Rotate paper 90\u00b0", "rotate_paper")
-        self.check(pr, 6, "Rotate back sides 180\u00b0 (flip on the other edge)", "rotate_back")
+        self.check(pr, 6, "Rotate paper 90\u00b0", "rotate_paper")
+        self.check(pr, 7, "Rotate back sides 180\u00b0 (flip on the other edge)", "rotate_back")
+        self._paper_changed()
         pl = self.group(t, "Page placement", row=3, column=0)
         self.combo(pl, 0, "Page scaling", "imp_scaling", ["Keep proportional", "Stretch to fit", "Original size"])
         self.combo(pl, 1, "Page position", "imp_position", ["Centered", "Snug against binding edge"])
@@ -1603,7 +2218,7 @@ class App(tk.Tk):
         mk = self.group(t, "Marks", row=3, column=1)
         self.check(mk, 0, "Fold lines", "fold_marks")
         self.combo(mk, 9, "Fold lines printed on", "fold_side", FOLD_SIDES, width=30)
-        ttk.Label(mk, text="Inside = the side you see while folding (as bookbinder-js does)",
+        ttk.Label(mk, text="Inside = the side you see while folding",
                   style=self.S("CardHint.TLabel")).grid(row=10, column=0, columnspan=2, sticky="w", padx=6)
         self.check(mk, 1, "Cut lines / crop marks", "cut_marks")
         self.check(mk, 2, "Page edge marks at the spine", "edge_marks")
@@ -1615,11 +2230,40 @@ class App(tk.Tk):
         self.spin(mk, 8, "Tape width (pt)", "sewing_tape", 0, 144, 1, "0 = single holes")
         c = self.group(t, "Cover", row=1, column=1)
         self.combo(c, 0, "Paper (sets spine width)", "paper", list(PAPERS))
-        ttk.Label(c, text="Back cover text (optional):", style=self.S("Card.TLabel")).grid(row=1, column=0, columnspan=2,
+        self.spin(c, 1, "Spine width (inches)", "spine_width", 0, 4, 0.01, "0 = estimate it")
+        ttk.Label(c, text="For the best fit, measure the thickness of your printed pages and type it here.",
+                  style=self.S("CardHint.TLabel"), wraplength=250, justify="left").grid(
+            row=2, column=1, sticky="w", padx=6)
+        self.cover_thumbs = {}
+        for r, which in ((3, "front"), (4, "back")):
+            ttk.Label(c, text=f"{which.capitalize()} cover picture", style=self.S("Card.TLabel")).grid(
+                row=r, column=0, sticky="nw", padx=6, pady=(6, 3))
+            f = ttk.Frame(c, style=self.S("Card.TFrame"))
+            f.grid(row=r, column=1, sticky="we", padx=6, pady=3)
+            f.columnconfigure(0, weight=1)
+            ttk.Entry(f, textvariable=self.var(f"cover_{which}_image"), width=22, style=self.S("TEntry")).grid(
+                row=0, column=0, sticky="we")
+            ttk.Button(f, text="Browse...", style="Tool.TButton",
+                       command=lambda w=which: self.browse_cover(w)).grid(row=0, column=1, padx=(4, 0))
+            ttk.Button(f, text="Clear", style="Tool.TButton",
+                       command=lambda w=which: self.clear_cover(w)).grid(row=0, column=2, padx=(2, 0))
+            self.cover_thumbs[which] = ttk.Label(f, style=self.S("CardHint.TLabel"))
+            self.cover_thumbs[which].grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
+            self._trace_once(f"cover_{which}_image", lambda w=which: self._cover_thumb(w))
+        self.combo(c, 5, "Pictures", "cover_image_fit", bf_pictures.COVER_FITS, width=34)
+        self.check(c, 6, "Print the title and author over the front picture", "cover_text_over_art")
+        self.check(c, 7, "Also print the front picture as the first page of the book", "cover_art_in_book")
+        pv = ttk.Frame(c, style=self.S("Card.TFrame"))
+        pv.grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 2))
+        ttk.Button(pv, text="Preview cover", style=self.S("TButton"),
+                   command=lambda: self.preview_book(view="cover")).pack(side="left")
+        ttk.Label(pv, text="  real size, with the spine for your page count",
+                  style=self.S("CardHint.TLabel")).pack(side="left")
+        ttk.Label(c, text="Back cover text (optional):", style=self.S("Card.TLabel")).grid(row=9, column=0, columnspan=2,
                                                              sticky="w", padx=6)
-        self.textbox(c, "blurb", height=8, width=40).grid(row=2, column=0, columnspan=2,
+        self.textbox(c, "blurb", height=6, width=40).grid(row=10, column=0, columnspan=2,
                                                           sticky="nsew", padx=6)
-        c.rowconfigure(2, weight=1)
+        c.rowconfigure(10, weight=1)
 
     # ------------------------------------------------------------ settings
     def collect(self):
@@ -1639,6 +2283,13 @@ class App(tk.Tk):
         return s
 
     def apply(self, data):
+        self._loading_settings = True
+        try:
+            self._apply(data)
+        finally:
+            self._loading_settings = False
+
+    def _apply(self, data):
         data = bf_fonts.migrate(dict(data))
         if "custom_fonts" in data:
             self.custom_fonts = [dict(c) for c in data.get("custom_fonts") or []]
@@ -1744,6 +2395,117 @@ class App(tk.Tk):
                     subprocess.Popen(["xdg-open", path])
             except Exception:
                 messagebox.showinfo("Folder", path)
+
+    # ------------------------------------------------------------ updates
+    def _update_label(self):
+        info = getattr(self, "update_info", None)
+        return f"\u2605  Update: {info['version']}" if info else "\u21BB  Check for updates"
+
+    def _save_quietly(self):
+        try:
+            self.save_settings(os.path.join(app_dir(), "settings.json"))
+        except Exception:
+            pass
+
+    def _startup_update_check(self):
+        """Quietly ask GitHub for the newest release; only a newer version is shown (on the header button)."""
+        def work():
+            try:
+                newer, info = bf_update.check(APP_VERSION)
+                self.q.put(("update", newer, info))
+            except Exception:
+                pass                                   # offline, rate-limited... - say nothing at startup
+        threading.Thread(target=work, daemon=True).start()
+
+    def check_updates_window(self):
+        w = tk.Toplevel(self)
+        w.title("Check for updates")
+        w.configure(background=th.CARD)
+        w.transient(self)
+        w.geometry("640x460")
+        w.minsize(480, 300)
+        S = lambda n: f"src.{n}"                                      # noqa: E731
+        fr = ttk.Frame(w, padding=16, style=S("Card.TFrame"))
+        fr.pack(fill="both", expand=True)
+        fr.columnconfigure(0, weight=1)
+        fr.rowconfigure(2, weight=1)
+        title = ttk.Label(fr, text="Checking GitHub for the newest BookForge...", style=S("Card.TLabel"),
+                          font=("Segoe UI Semibold", 12))
+        title.grid(row=0, column=0, sticky="w")
+        sub = ttk.Label(fr, text=f"You have BookForge {APP_VERSION}.", style=S("CardHint.TLabel"),
+                        wraplength=580, justify="left")
+        sub.grid(row=1, column=0, sticky="w", pady=(4, 8))
+        box = ttk.Frame(fr, style=S("Card.TFrame"))
+        box.grid(row=2, column=0, sticky="nsew")
+        notes = tk.Text(box, wrap="word", height=10, padx=10, pady=8, font=("Segoe UI", 10))
+        th.style_text(notes, "src")
+        vs = ttk.Scrollbar(box, command=notes.yview)
+        notes.configure(yscrollcommand=vs.set, state="disabled")
+        notes.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        bot = ttk.Frame(fr, style=S("Card.TFrame"))
+        bot.grid(row=3, column=0, sticky="e", pady=(10, 0))
+        link = {"url": bf_update.RELEASES_PAGE}
+        open_btn = ttk.Button(bot, text="Open the releases page", style=S("TButton"),
+                              command=lambda: self._open_link(link["url"]))
+        open_btn.pack(side="left", padx=3)
+        ttk.Button(bot, text="Close", style=S("TButton"), command=w.destroy).pack(side="left", padx=3)
+        w.bind("<Escape>", lambda e: w.destroy())
+        res = {}
+
+        def work():
+            try:
+                res["ok"] = bf_update.check(APP_VERSION)
+            except bf_update.UpdateError as e:
+                res["err"] = str(e)
+            except Exception as e:                      # never let the check break the app
+                res["err"] = f"The check didn't work ({type(e).__name__})."
+
+        def show(text):
+            notes.configure(state="normal")
+            notes.delete("1.0", "end")
+            notes.insert("1.0", text)
+            notes.configure(state="disabled")
+
+        def done():
+            try:
+                if not w.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if "ok" not in res and "err" not in res:
+                w.after(150, done)
+                return
+            if "err" in res:
+                title.configure(text="Couldn't check for updates")
+                sub.configure(text=f"You have BookForge {APP_VERSION}. " + res["err"])
+                show("You can also look for new versions on the releases page:\n" + bf_update.RELEASES_PAGE)
+                return
+            newer, info = res["ok"]
+            link["url"] = info["url"]
+            when = f" (published {info['date']})" if info.get("date") else ""
+            if newer:
+                self.update_info = info
+                self.update_btn.configure(text=self._update_label())
+                title.configure(text=f"BookForge {info['version']} is available")
+                sub.configure(text=f"You have {APP_VERSION}. The new version{when} can be downloaded from its "
+                                   "release page. BookForge doesn't download or install anything itself.")
+                open_btn.configure(text="Open the download page")
+            else:
+                title.configure(text="BookForge is up to date")
+                sub.configure(text=f"You have {APP_VERSION}; the newest published release is "
+                                   f"{info['version']}{when}.")
+            show(f"What's new in {info['name']}:\n\n" + (bf_update.plain_notes(info["notes"]) or "(no notes)"))
+        threading.Thread(target=work, daemon=True).start()
+        w.after(150, done)
+
+    def _open_link(self, url):
+        import webbrowser
+        if url.startswith("https://github.com/"):
+            try:
+                webbrowser.open(url)
+            except Exception:
+                messagebox.showinfo("Open link", url)
 
     def settings_window(self):
         w = tk.Toplevel(self)
@@ -1855,7 +2617,15 @@ class App(tk.Tk):
         ttk.Button(b2, text="Font report...", style=self.S("TButton"), command=report).pack(side="left", padx=6)
         ttk.Button(b2, text="Fonts & licences...", style=self.S("TButton"), command=self.licences_window).pack(
             side="left")
-        ttk.Button(fr, text="Close", style=self.S("TButton"), command=w.destroy).grid(row=13, column=2, sticky="e",
+        head(14, "Updates")
+        ttk.Checkbutton(fr, text="Check for a new version when BookForge starts", variable=self.var("check_updates"),
+                        style=self.S("Card.TCheckbutton"), command=self._save_quietly).grid(
+            row=15, column=0, columnspan=2, sticky="w")
+        ttk.Button(fr, text="Check now...", style=self.S("TButton"), command=self.check_updates_window).grid(
+            row=15, column=2, padx=(6, 0))
+        hint(16, "BookForge only asks GitHub for the newest version number and its notes. Nothing is downloaded "
+                 "or installed - if there is a new version, you get a link to its download page.")
+        ttk.Button(fr, text="Close", style=self.S("TButton"), command=w.destroy).grid(row=17, column=2, sticky="e",
                                                                                      pady=(14, 0))
 
     def licences_window(self):
@@ -2125,13 +2895,177 @@ class App(tk.Tk):
 
     def browse_source(self):
         p = filedialog.askopenfilename(title="Choose a book or text file", filetypes=[
-            ("Books and text", "*.epub *.txt *.md *.markdown *.html *.htm *.xhtml *.docx"),
+            ("Books and text", "*.epub *.pdf *.docx *.txt *.md *.markdown *.html *.htm *.xhtml"),
             ("All files", "*.*")])
         if p:
             self.var("source_mode").set("file")
             self.var("source_path").set(p)
             self._mode_changed()
             self.scan()
+
+    def _pdf_mode_changed(self):
+        """Switching how PDFs are used reads a PDF source again (the book is a different kind)."""
+        if getattr(self, "_loading_settings", False) or self.busy:
+            return
+        p = self.var("source_path").get().strip()
+        if self.var("source_mode").get() == "file" and p.lower().endswith(".pdf") and os.path.isfile(p) \
+                and self.book is not None:
+            self.scan()
+
+    # ------------------------------------------------------------ printer paper
+    def _sheet_unit(self):
+        u = self.var("sheet_unit").get()
+        return u if u in UNITS else "in"
+
+    def _paper_changed(self):
+        """Paper, unit, custom size or rotation changed (or settings were loaded): show the paper's size."""
+        if not hasattr(self, "paper_lbl") or getattr(self, "_paper_batch", False):
+            return
+        try:
+            if not self.paper_lbl.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        unit = self._sheet_unit()
+        self.unit_disp.set(bf_impose.UNIT_NAMES[unit])
+        self.sheet_unit_lbl.configure(text=bf_impose.UNIT_WORDS[unit])
+        if not getattr(self, "_sheet_typing", False):
+            # shown from the stored size; while the user types, the boxes are left alone
+            self._sheet_typing_skip = True
+            try:
+                for var, key in ((self.sheet_w_text, "sheet_w"), (self.sheet_h_text, "sheet_h")):
+                    try:
+                        var.set(bf_impose.fmt_length(bf_impose.to_points(self.var(key).get(), unit), unit, True))
+                    except (tk.TclError, ValueError):
+                        var.set(self.tk.globalgetvar(str(self.var(key))))
+            finally:
+                self._sheet_typing_skip = False
+            self._sheet_error = ""
+            self.sheet_msg.configure(text=SHEET_CUSTOM_HINT, foreground="")
+        s = {"sheet_size": self.var("sheet_size").get(), "sheet_unit": unit}
+        try:
+            s.update(sheet_w=self.var("sheet_w").get(), sheet_h=self.var("sheet_h").get())
+        except tk.TclError:
+            s.update(sheet_w="", sheet_h="")
+        try:
+            text = "Paper size: " + bf_impose.paper_label(s)
+            if self.var("rotate_paper").get():
+                text += "  \u2013 turned 90\u00b0 when printed"
+        except ValueError as e:
+            text = f"Paper size: {bf_impose.sheet_name(s)} \u2013 {e}"
+        self.paper_lbl.configure(text=text)
+
+    def _paper_unit_chosen(self):
+        """A new display unit: show the same physical sizes in it (the custom size is converted, not re-read)."""
+        new = next((c for c, n, _w in UNIT_CHOICES if n == self.unit_disp.get()), "in")
+        old = self._sheet_unit()
+        if new == old:
+            return
+        self._paper_batch = True
+        try:
+            for key in ("sheet_w", "sheet_h"):
+                try:
+                    v = float(self.var(key).get())
+                    self.var(key).set(v * UNITS[old] / UNITS[new])      # exact: nothing rounded is stored
+                except (tk.TclError, ValueError):
+                    pass
+            self.var("sheet_unit").set(new)
+        finally:
+            self._paper_batch = False
+        self._paper_changed()
+
+    def _custom_paper_typed(self):
+        """Typing in the custom size boxes: keep the last valid size until both numbers are usable."""
+        if getattr(self, "_sheet_typing_skip", False):
+            return
+        unit = self._sheet_unit()
+        w, h = self.sheet_w_text.get(), self.sheet_h_text.get()
+        try:
+            bf_impose.custom_sheet_points(w, h, unit)
+        except ValueError as e:
+            try:
+                last = bf_impose.paper_dims_text(*bf_impose.custom_sheet_points(
+                    self.var("sheet_w").get(), self.var("sheet_h").get(), unit), unit)
+                keep = f" The last valid custom size ({last}) is kept."
+            except (ValueError, tk.TclError):
+                keep = ""
+            self._sheet_error = f"{e}{keep}"
+            self.sheet_msg.configure(text=self._sheet_error, foreground="#D9534F")
+            return
+        self._sheet_error = ""
+        self.sheet_msg.configure(text=SHEET_CUSTOM_HINT, foreground="")
+        self._sheet_typing = True
+        try:
+            self.var("sheet_w").set(bf_impose.parse_length(w))
+            self.var("sheet_h").set(bf_impose.parse_length(h))
+        finally:
+            self._sheet_typing = False
+
+    # ------------------------------------------------------------ cover pictures
+    def browse_cover(self, which):
+        p = filedialog.askopenfilename(title=f"{which.capitalize()} cover picture", filetypes=bf_pictures.PICTURE_FILES)
+        if not p:
+            return
+        try:
+            data, _name = bf_pictures.read_picture(p)
+        except ValueError as e:
+            messagebox.showerror("Cover picture", f"That picture can't be used: {e}.")
+            return
+        if self.book is not None:
+            setattr(self.book, f"cover_{which}", data)
+        self.var(f"cover_{which}_image").set(p)
+        self.unsaved = self.unsaved or self.book is not None
+
+    def clear_cover(self, which):
+        self.var(f"cover_{which}_image").set("")
+        if self.book is not None:
+            setattr(self.book, f"cover_{which}", None)
+
+    def _cover_thumb(self, which):
+        lab = getattr(self, "cover_thumbs", {}).get(which)
+        if lab is None:
+            return
+        path = self.var(f"cover_{which}_image").get().strip()
+        text, img = "", None
+        if path:
+            data = None
+            if os.path.isfile(path):
+                try:
+                    with open(path, "rb") as f:
+                        data = f.read()
+                except OSError:
+                    data = None
+            elif self.book is not None:
+                data = getattr(self.book, f"cover_{which}", None)
+                text = "  (file not found - using the copy saved in the project)" if data else \
+                    "  File not found."
+            im = bf_pictures.thumbnail(data, 120, 60) if data else None
+            if im is not None:
+                try:
+                    from PIL import ImageTk
+                    img = ImageTk.PhotoImage(im)
+                    px = bf_pictures.size(data)
+                    text = (f"  {px[0]} x {px[1]} pixels" if px else "") + text
+                except Exception:
+                    img = None
+            elif data:
+                text = "  This file isn't a picture BookForge can read."
+        lab.configure(image=img or "", text=text, compound="left")
+        lab.image = img
+
+    def _embed_cover_art(self):
+        """Keep copies of the cover pictures in the book, so a saved project still has them."""
+        if self.book is None:
+            return
+        for which in ("front", "back"):
+            path = self.var(f"cover_{which}_image").get().strip()
+            if not path:
+                setattr(self.book, f"cover_{which}", None)
+            elif os.path.isfile(path):
+                try:
+                    setattr(self.book, f"cover_{which}", bf_pictures.read_picture(path)[0])
+                except ValueError:
+                    pass
 
     def browse_out(self):
         p = filedialog.askdirectory(title="Where should books be saved?")
@@ -2179,7 +3113,7 @@ class App(tk.Tk):
 
         def work():
             try:
-                book = load_book(s, s.get("paste_text", ""))
+                book = load_book(s, s.get("paste_text", ""), log=self.log)
                 self.q.put(("scanned", book, self.source_sig(s)))
             except Exception as e:
                 self.q.put(("error", str(e), traceback.format_exc()))
@@ -2198,7 +3132,8 @@ class App(tk.Tk):
         self.split_disp.set(dict(self.SPLIT_LABELS).get(v, self.SPLIT_LABELS[0][1]))
 
     def auto_scan(self):
-        """Opening the Chapters step reads the source if it hasn't been read (or has changed)."""
+        """Opening a step that shows the book (Book info, Front & back, Chapters, Specific Text Edit) reads the
+        source if it hasn't been read (or has changed)."""
         s = self.collect()
         src_ok = (s["source_mode"] == "paste" and s.get("paste_text", "").strip()) or \
             (s["source_mode"] == "file" and os.path.exists(s.get("source_path", "")))
@@ -2209,6 +3144,12 @@ class App(tk.Tk):
         sel = self._sel()
         self.ctree.delete(*self.ctree.get_children())
         if not self.book:
+            return
+        if getattr(self.book, "fixed_pdf", ""):
+            self.chap_summary.configure(
+                text=f"This PDF's {self.book.fixed_pages} pages will be printed as they are, so there are no "
+                     "chapters to check. To change its text or fonts, choose “Rebuild as an editable book” "
+                     "next to “PDF files” on the Source tab.")
             return
         n = 0
         for i, ch in enumerate(self.book.chapters):
@@ -2370,11 +3311,77 @@ class App(tk.Tk):
                 cached = self.book
         return cached, sig
 
-    def preview_book(self):
-        """Typeset the book with the current settings and show it - nothing is saved to the output folder."""
+    # ------------------------------------------------------------ contents
+    def edit_contents(self):
+        if self.busy:
+            return
+        if self.contents_win is not None and self.contents_win.alive():
+            self.contents_win.w.deiconify()
+            self.contents_win.w.lift()
+            return
+        if not self._commit_editor():
+            return
+        if self.book is not None and getattr(self.book, "fixed_pdf", ""):
+            messagebox.showinfo("Edit contents", "This PDF's pages are printed as they are, so BookForge doesn't add "
+                                "a contents page to it. Choose “Rebuild as an editable book” for PDF files "
+                                "on the Source tab to make a new contents page.")
+            return
+        if self.book is None or not self.book.active():
+            messagebox.showinfo("Edit contents", "Pick a source and check the chapters first (Source and Chapters "
+                                "steps). The contents can be edited once BookForge knows the chapters.")
+            return
+        self.contents_win = ContentsEditor(self)
+
+    def _refresh_contents_win(self):
+        if self.contents_win is not None and self.contents_win.alive():
+            self.contents_win.refresh()
+
+    def ask_text(self, parent, title, prompt, initial=""):
+        """A small themed box asking for one line of text. Returns the text, or None if cancelled."""
+        w = tk.Toplevel(parent)
+        w.title(title)
+        w.configure(background=th.CARD)
+        w.transient(parent)
+        w.resizable(False, False)
+        fr = ttk.Frame(w, padding=14, style="front.Card.TFrame")
+        fr.pack(fill="both", expand=True)
+        ttk.Label(fr, text=prompt, wraplength=420, justify="left", style="front.Card.TLabel").pack(anchor="w")
+        v = tk.StringVar(value=initial or "")
+        e = ttk.Entry(fr, textvariable=v, width=56, style="front.TEntry")
+        e.pack(fill="x", pady=(8, 10))
+        out = {"v": None}
+
+        def ok(_e=None):
+            out["v"] = v.get()
+            w.destroy()
+        bf = ttk.Frame(fr, style="front.Card.TFrame")
+        bf.pack(anchor="e")
+        ttk.Button(bf, text="Cancel", style="front.TButton", command=w.destroy).pack(side="left", padx=3)
+        ttk.Button(bf, text="OK", style="front.TButton", command=ok).pack(side="left", padx=3)
+        e.bind("<Return>", ok)
+        w.bind("<Escape>", lambda _e: w.destroy())
+        e.focus_set()
+        e.select_range(0, "end")
+        try:
+            w.grab_set()
+        except tk.TclError:
+            pass
+        w.wait_window()
+        return out["v"]
+
+    def preview_book(self, view=None):
+        """Typeset the book with the current settings and show it - nothing is saved to the output folder.
+        view="cover" also draws the cover and opens the preview on it."""
         if self.busy or not self._commit_editor():
             return
         s = self.collect()
+        problem = self.settings_problem(s)
+        if problem:
+            messagebox.showwarning("Check a setting", problem)
+            return
+        if view == "cover":
+            s["fmt_cover"] = True
+        self._preview_view = view
         cached, sig = self._choose_book(s)
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
@@ -2387,7 +3394,7 @@ class App(tk.Tk):
                     book = copy.copy(cached)
                 else:
                     self.log("Reading the source...")
-                    book = load_book(s, s.get("paste_text", ""))
+                    book = load_book(s, s.get("paste_text", ""), log=self.log)
                     self.q.put(("scanned", book, sig))
                     book = copy.copy(book)
                 apply_info(book, s)
@@ -2400,6 +3407,10 @@ class App(tk.Tk):
         if self.busy or not self._commit_editor():
             return
         s = self.collect()
+        problem = self.settings_problem(s)
+        if problem:
+            messagebox.showwarning("Check a setting", problem)
+            return
         if not any(s[k] for k in ("fmt_pdf", "fmt_impose", "fmt_cover", "fmt_epub", "fmt_docx",
                                   "fmt_html", "fmt_txt")):
             messagebox.showwarning("Nothing to make", "Tick at least one format on the Output tab.")
@@ -2420,11 +3431,12 @@ class App(tk.Tk):
                     book = copy.copy(cached)
                 else:
                     self.log("Reading the source...")
-                    book = load_book(s, s.get("paste_text", ""))
+                    book = load_book(s, s.get("paste_text", ""), log=self.log)
                     self.q.put(("scanned", book, sig))
                     book = copy.copy(book)
                 apply_info(book, s)
                 folder, made, notes = run_build(book, s, self.log)
+                self.q.put(("toc_labels", dict(getattr(book, "_toc_labels", {}))))
                 self.q.put(("done", folder, made))
             except Exception as e:
                 self.q.put(("error", str(e), traceback.format_exc()))
@@ -2456,15 +3468,32 @@ class App(tk.Tk):
                             self.var(k).set(new)
                             self.autofilled[k] = new
                     self.fill_list()
-                    if self.mode == "scan":
+                    self.toc_labels = {}
+                    self._refresh_contents_win()
+                    if self.mode == "scan" and getattr(self.book, "fixed_pdf", ""):
+                        self._stop(f"PDF ready: {self.book.fixed_pages} pages, kept as they are. Click Preview book.")
+                    elif self.mode == "scan":
                         self._stop(f"Found {len(self.book.chapters)} chapters. Check the list, then click Preview book.")
+                elif kind == "update":
+                    newer, info = item[1], item[2]
+                    if newer:
+                        self.update_info = info
+                        self.update_btn.configure(text=self._update_label())
+                elif kind == "toc_labels":
+                    self.toc_labels = item[1]
+                    self._refresh_contents_win()
                 elif kind == "preview":
                     res = item[1]
+                    self.toc_labels = res.get("toc_labels", {})
+                    self._refresh_contents_win()
                     self._stop(f"Preview ready: {res['pages']} pages. Nothing has been saved yet.")
                     if getattr(self, "preview_win", None) is not None and self.preview_win.alive():
                         self.preview_win.load(res)
                     else:
                         self.preview_win = PreviewWindow(self, res)
+                    if getattr(self, "_preview_view", None) == "cover" and res.get("cover"):
+                        self.preview_win.set_mode("cover")
+                    self._preview_view = None
                     target, self._preview_target = self._preview_target, None
                     page = dict(res.get("chapter_pages", [])).get(target) if target else None
                     if page:

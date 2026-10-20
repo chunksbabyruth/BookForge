@@ -85,7 +85,11 @@ def trim_size(s):
     if s.get("_trim"):
         return s["_trim"]
     if s.get("fmt_impose"):
-        SW, SH = SHEET_SIZES[s["sheet_size"]]
+        # Estimate only (the build uses the size the imposition really gives): a folio on the sheet turned
+        # landscape. Any paper preset works here, not just the four oldest ones.
+        from bf_impose import sheet_points
+        W0, H0 = sheet_points(s)
+        SW, SH = max(W0, H0) / 72, min(W0, H0) / 72
         k = min((SW / 2) / pw, SH / ph)
         return pw * k, ph * k
     return pw, ph
@@ -107,17 +111,46 @@ def build_cover(book, s, out_path, n_pages):
         B = HB
     else:
         B = HR
+    from reportlab.lib.utils import ImageReader
+    from bf_pictures import cover_art, fit_box, COVER_FITS
     tw, th = trim_size(s)
-    leaves = math.ceil(n_pages / 2)
-    spine = leaves * PAPERS.get(s["paper"], 0.004)
+    spine = estimated_spine(s, n_pages)
+    if float(s.get("spine_width") or 0) > 0:
+        spine = float(s["spine_width"])                   # measured by the user
     W, H = (2 * tw + spine) * 72, th * 72
     c = canvas.Canvas(out_path, pagesize=(W, H))
     c.setTitle(f"{book.title} - cover")
+    fill = s.get("cover_image_fit", COVER_FITS[0]) == COVER_FITS[0]
+    arts = {}
+    for which, x0 in (("back", 0), ("front", (tw + spine) * 72)):
+        try:
+            data = cover_art(book, s, which)
+        except ValueError:
+            data = None
+        if not data:
+            continue
+        try:
+            img = ImageReader(io.BytesIO(data))
+            iw, ih = img.getSize()
+            bx, by, bw, bh = fit_box(iw, ih, x0, 0, tw * 72, H, fill)
+            c.saveState()
+            path = c.beginPath()
+            path.rect(x0, 0, tw * 72, H)
+            c.clipPath(path, stroke=0, fill=0)
+            c.drawImage(img, bx, by, bw, bh, mask="auto")
+            c.restoreState()
+            arts[which] = True
+        except Exception:
+            pass
     c.setStrokeColor(HexColor("#bbbbbb"))
     c.setDash(3, 3)
     c.setLineWidth(0.5)
     for x in (tw * 72, (tw + spine) * 72):
-        c.line(x, 0, x, H)
+        if arts:                                          # short marks only, so the pictures stay clean
+            c.line(x, 0, x, 0.25 * 72)
+            c.line(x, H - 0.25 * 72, x, H)
+        else:
+            c.line(x, 0, x, H)
     c.setDash()
 
     def fit(text, font, maxsize, maxw):
@@ -133,16 +166,17 @@ def build_cover(book, s, out_path, n_pages):
     t = book.title
     sz = fit(t, B, 40, tw * 72 - 2 * pad)
     c.setFillColor(black)
-    c.setFont(B, sz)
-    c.drawCentredString(cx, y, t)
-    if book.subtitle:
-        s2 = fit(book.subtitle, I, 16, tw * 72 - 2 * pad)
-        c.setFont(I, s2)
-        c.drawCentredString(cx, y - sz * 1.3, book.subtitle)
-    if book.author:
-        s3 = fit(book.author, R, 18, tw * 72 - 2 * pad)
-        c.setFont(R, s3)
-        c.drawCentredString(cx, H * 0.18, book.author)
+    if not arts.get("front") or s.get("cover_text_over_art"):
+        c.setFont(B, sz)
+        c.drawCentredString(cx, y, t)
+        if book.subtitle:
+            s2 = fit(book.subtitle, I, 16, tw * 72 - 2 * pad)
+            c.setFont(I, s2)
+            c.drawCentredString(cx, y - sz * 1.3, book.subtitle)
+        if book.author:
+            s3 = fit(book.author, R, 18, tw * 72 - 2 * pad)
+            c.setFont(R, s3)
+            c.drawCentredString(cx, H * 0.18, book.author)
     if spine * 72 >= 14:
         label = book.title + (f"    {book.author}" if book.author else "")
         ssz = min(spine * 72 * 0.55, 14)
@@ -161,7 +195,13 @@ def build_cover(book, s, out_path, n_pages):
         Frame(pad, pad, tw * 72 - 2 * pad, H * 0.75 - pad, showBoundary=0).addFromList(paras, c)
     c.showPage()
     c.save()
-    return {"trim": (tw, th), "spine": spine, "width": W / 72, "height": H / 72}
+    return {"trim": (tw, th), "spine": spine, "width": W / 72, "height": H / 72,
+            "measured": float(s.get("spine_width") or 0) > 0, "art": sorted(arts)}
+
+
+def estimated_spine(s, n_pages):
+    """Spine width in inches worked out from the page count and the paper's thickness."""
+    return math.ceil(n_pages / 2) * PAPERS.get(s["paper"], 0.004)
 
 
 # --------------------------------------------------------------------------
@@ -180,6 +220,26 @@ def chapter_heads(book, s):
         if not lbl and s["chapter_label"] not in ("None", "") and not LABELISH.match(ch.title + " "):
             lbl = auto_label(s["chapter_label"], n)
         yield ch, lbl, title
+
+
+def contents_list(book, s, heads, sep=" \u2014 "):
+    """The contents list for EPUB, HTML and plain text: [(chapter number in heads or None, text)].
+    Follows "Edit contents" (renamed, hidden, moved and added entries). Page numbers are left out
+    because these formats reflow. With no edits this is the plain list of chapter headings."""
+    items = [(i, f"{lbl}{sep}{title}" if lbl and title else (title or lbl))
+             for i, (_ch, lbl, title) in enumerate(heads, 1)]
+    if not getattr(book, "toc", None):
+        return items
+    from bf_pdf import contents_entries, apply_contents_edits
+    by_uid = {ch.uid: n for n, (ch, _l, _t) in enumerate(heads, 1)}
+    out = []
+    for e in apply_contents_edits(contents_entries(book, s), book.toc):
+        if e.get("custom"):
+            out.append((None, e["text"]))
+        elif e["uid"] in by_uid:
+            n = by_uid[e["uid"]]
+            out.append((n, e["text"] if e.get("edited") else items[n - 1][1]))
+    return out
 
 
 def an_mode(s):
@@ -201,7 +261,7 @@ def _font_span(m):
     if a.get("face"):
         css.append(f"font-family:'{a['face']}'")
     if a.get("size"):
-        css.append(f"font-size:{a['size']}pt")
+        css.append(f"font-size:{a['size']}" + ("" if a["size"].endswith("%") else "pt"))
     if a.get("color"):
         css.append(f"color:{a['color']}")
     return f'<span style="{";".join(css)}">' if css else "<span>"
@@ -217,6 +277,32 @@ def para_style(b):
     if getattr(b, "space", 0):
         css.append(f"margin-top:{int(b.space)}pt")
     return f' style="{";".join(css)}"' if css else ""
+
+
+def front_art(book, s):
+    """The front cover picture's bytes (see bf_pictures.cover_art), or None if there isn't a usable one."""
+    from bf_pictures import cover_art
+    try:
+        return cover_art(book, s, "front")
+    except ValueError:
+        return None
+
+
+def picture_html(b, src):
+    """A picture for EPUB / web pages, with the size, alignment and placement chosen in the editor."""
+    pcss, icss = [], []
+    if b.align in ("left", "center", "right"):
+        pcss.append(f"text-align:{b.align}")
+    if b.img_place == "full":
+        icss.append("width:100%")
+    elif b.img_width:
+        icss.append(f"width:{min(100, max(5, int(b.img_width)))}%")
+    if b.img_place in ("page", "full"):
+        pcss += ["page-break-before:always", "page-break-after:always"]
+        icss.append("max-height:95vh")
+    ps = f' style="{";".join(pcss)}"' if pcss else ""
+    ims = f' style="{";".join(icss)}"' if icss else ""
+    return f'<p class="img"{ps}><img src="{src}" alt=""{ims} /></p>'
 
 
 def to_xhtml(markup):
@@ -296,7 +382,7 @@ def blocks_html(blocks, imgmap, s=None):
         elif b.kind == "scene":
             out.append(f'<p class="scene">{esc(scene_text(b, s)) or "&#160;"}</p>')
         elif b.kind == "image" and id(b) in imgmap:
-            out.append(f'<p class="img"><img src="{imgmap[id(b)]}" alt="" /></p>')
+            out.append(picture_html(b, imgmap[id(b)]))
     return "\n".join(out)
 
 
@@ -342,6 +428,19 @@ def build_epub(book, s, out_path):
                     files["OEBPS/" + name] = b.image
                     manifest.append(f'<item id="img{n_img}" href="{name}" media-type="{mt}"/>')
                     imgmap[id(b)] = name
+    cover_meta = ""
+    art = front_art(book, s)
+    if art and img_type(art)[0]:
+        ext, mt = img_type(art)          # e-book readers show this picture as the book's cover
+        files[f"OEBPS/images/cover.{ext}"] = art
+        manifest.append(f'<item id="cover-image" href="images/cover.{ext}" media-type="{mt}" '
+                        'properties="cover-image"/>')
+        files["OEBPS/cover.xhtml"] = page(book.title, '<div style="text-align:center;margin:0;padding:0">'
+                                          f'<img src="images/cover.{ext}" alt="{esc(book.title)}" '
+                                          'style="max-width:100%;max-height:100vh" /></div>')
+        manifest.append('<item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>')
+        spine.append("cover")
+        cover_meta = '<meta name="cover" content="cover-image"/>'
     tp = ['<div class="titlepage">', f'<p class="t">{esc(book.title)}</p>']
     if book.subtitle:
         tp.append(f"<p><i>{esc(book.subtitle)}</i></p>")
@@ -389,11 +488,12 @@ def build_epub(book, s, out_path):
         disp = f"{lbl} \u2014 {title}" if lbl and title else (title or lbl)
         navitems.append((fn, disp))
     nav = ("<nav epub:type=\"toc\" id=\"toc\"><h2>" + esc(s.get("toc_title") or "Contents") + "</h2><ol>" +
-           "".join(f'<li><a href="{fn}">{esc(t)}</a></li>' for fn, t in navitems) + "</ol></nav>")
+           "".join(f'<li><a href="{navitems[n - 1][0]}">{esc(t)}</a></li>' if n else f"<li><span>{esc(t)}</span></li>"
+                   for n, t in contents_list(book, s, heads)) + "</ol></nav>")
     files["OEBPS/nav.xhtml"] = page("Contents", nav)
     manifest.append('<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>')
     if s.get("toc"):
-        spine.insert(1 + ("note" in spine) + ("info" in spine), "nav")
+        spine.insert(1 + ("cover" in spine) + ("note" in spine) + ("info" in spine), "nav")
     ncx = ('<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" '
            f'version="2005-1"><head><meta name="dtb:uid" content="{uid}"/></head>'
            f"<docTitle><text>{esc(book.title)}</text></docTitle><navMap>" +
@@ -410,7 +510,7 @@ def build_epub(book, s, out_path):
            f'<dc:identifier id="bookid">{uid}</dc:identifier><dc:title>{esc(book.title)}</dc:title>'
            f'<dc:language>{esc(lang)}</dc:language>' +
            (f"<dc:creator>{esc(book.author)}</dc:creator>" if book.author else "") +
-           f'<meta property="dcterms:modified">{mod}</meta></metadata><manifest>' + "".join(manifest) +
+           f'{cover_meta}<meta property="dcterms:modified">{mod}</meta></metadata><manifest>' + "".join(manifest) +
            '</manifest><spine toc="ncx">' + "".join(f'<itemref idref="{x}"/>' for x in spine) +
            "</spine></package>")
     files["OEBPS/content.opf"] = opf
@@ -430,6 +530,33 @@ def build_epub(book, s, out_path):
 # --------------------------------------------------------------------------
 WORD_FONT = {"Times (built-in)": "Times New Roman", "Helvetica (built-in)": "Arial",
              "Courier (built-in)": "Courier New"}
+
+
+def add_docx_picture(d, b, s, pw, ph):
+    """A picture in the Word file, with the size, alignment and placement chosen in the editor.
+    Word can't print to the paper's edge, so a full-page picture fills the text area of its own page."""
+    from docx.shared import Inches
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from bf_pictures import size
+    tw = pw - float(s["margin_inner"]) - float(s["margin_outer"])
+    th = ph - float(s["margin_top"]) - float(s["margin_bottom"])
+    own = b.img_place in ("page", "full")
+    if b.img_place == "full":
+        w = tw
+    elif b.img_width:
+        w = tw * min(100, max(5, int(b.img_width))) / 100
+    else:
+        w = min(tw, 5)
+    px = size(b.image)
+    if px and px[0] and w * px[1] / px[0] > th * (0.95 if own else 0.9):
+        w = th * (0.95 if own else 0.9) * px[0] / px[1]          # keep it on one page, same shape
+    if own and d.paragraphs and d.paragraphs[-1].text.strip():
+        d.add_page_break()
+    d.add_picture(io.BytesIO(b.image), width=Inches(w))
+    d.paragraphs[-1].alignment = {"left": WD_ALIGN_PARAGRAPH.LEFT, "right": WD_ALIGN_PARAGRAPH.RIGHT}.get(
+        b.align, WD_ALIGN_PARAGRAPH.CENTER)
+    if own:
+        d.add_page_break()
 
 
 def build_docx(book, s, out_path):
@@ -522,7 +649,9 @@ def build_docx(book, s, out_path):
                     r.font.name = html.unescape(f["face"]).replace(" (built-in)", "")
                 if f.get("size"):
                     try:
-                        r.font.size = Pt(float(f["size"]))
+                        v = f["size"]
+                        r.font.size = Pt(float(s["body_size"]) * float(v[:-1]) / 100 if v.endswith("%")
+                                         else float(v))
                     except ValueError:
                         pass
                 if f.get("color", "").startswith("#") and len(f["color"]) == 7:
@@ -539,6 +668,13 @@ def build_docx(book, s, out_path):
                 r.font.subscript = True
 
     ts = float(s["title_size"])
+    art = front_art(book, s) if s.get("cover_art_in_book") else None
+    if art:
+        from bf_core import Block
+        try:
+            add_docx_picture(d, Block("image", image=art, img_place="full"), s, pw, ph)
+        except Exception:
+            pass
     if s["title_page"]:
         center(book.title, max(30, ts * 1.5), bold=True, before=140, after=12)
         if book.subtitle:
@@ -670,9 +806,7 @@ def build_docx(book, s, out_path):
                 center(scene_text(b, s))
             elif b.kind == "image" and b.image:
                 try:
-                    pw_text = pw - float(s["margin_inner"]) - float(s["margin_outer"])
-                    d.add_picture(io.BytesIO(b.image), width=Inches(min(pw_text, 5)))
-                    d.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    add_docx_picture(d, b, s, pw, ph)
                 except Exception:
                     pass
         if i == len(heads) - 1 and s.get("the_end"):
@@ -711,8 +845,12 @@ def build_html(book, s, out_path):
                     imgmap[id(b)] = f"data:{mt};base64," + base64.b64encode(b.image).decode()
     out = [f'<!DOCTYPE html><html lang="{book.language or "en"}"><head><meta charset="utf-8">'
            f"<title>{esc(book.title)}</title><style>{CSS} body{{max-width:40em;margin:0 auto;padding:2em}}"
-           "</style></head><body>",
-           '<div class="titlepage">', f'<p class="t">{esc(book.title)}</p>']
+           "</style></head><body>"]
+    art = front_art(book, s) if s.get("cover_art_in_book") else None
+    if art and img_type(art)[0]:
+        out.append(f'<p class="img"><img src="data:{img_type(art)[1]};base64,{base64.b64encode(art).decode()}" '
+                   f'alt="{esc(book.title)}" style="max-width:100%" /></p>')
+    out += ['<div class="titlepage">', f'<p class="t">{esc(book.title)}</p>']
     for v, tag in ((book.subtitle, "i"), (book.author, "span"), (book.credit, "span")):
         if v:
             out.append(f"<p><{tag}>{esc(v)}</{tag}></p>")
@@ -722,9 +860,8 @@ def build_html(book, s, out_path):
         out += [f'<p class="{"meta" if c == "meta" else "quote"}">{to_xhtml(m)}</p>' for c, m in items]
     if s["toc"]:
         out.append(f"<h2>{esc(s['toc_title'])}</h2><ol>")
-        for i, (ch, lbl, title) in enumerate(heads, 1):
-            disp = f"{lbl} \u2014 {title}" if lbl and title else (title or lbl)
-            out.append(f'<li><a href="#c{i}">{esc(disp)}</a></li>')
+        for i, disp in contents_list(book, s, heads):
+            out.append(f'<li><a href="#c{i}">{esc(disp)}</a></li>' if i else f"<li>{esc(disp)}</li>")
         out.append("</ol>")
     for i, (ch, lbl, title) in enumerate(heads, 1):
         out.append(f'<hr id="c{i}">')
@@ -751,8 +888,8 @@ def build_txt(book, s, out_path):
         out += [heading] + [plain(m) for _c, m in items] + [""]
     if s["toc"]:
         out.append(s["toc_title"])
-        for ch, lbl, title in heads:
-            out.append("  " + (f"{lbl} - {title}" if lbl and title else (title or lbl)))
+        for _i, disp in contents_list(book, s, heads, sep=" - "):
+            out.append("  " + disp)
         out.append("")
     for ch, lbl, title in heads:
         out += ["", ""]

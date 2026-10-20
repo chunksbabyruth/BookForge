@@ -139,14 +139,24 @@ def blocks_to_paras(blocks):
             for line in (b.lines or [""]):
                 paras.append(Para("verse", parse_markup(line), group=gi, **common))
         elif b.kind == "image":
-            name = b.image_name or "picture"
-            paras.append(Para("image", [(f"[picture: {name}]", {})], **common))
+            paras.append(Para("image", [(picture_label(b), {})], **common))
         elif b.kind == "scene":
             paras.append(Para("scene", [(plain(b.text) or "* * *", {})], **common))
         else:
             kind = b.kind if b.kind in STYLE_NAMES else "para"
             paras.append(Para(kind, parse_markup(b.text), **common))
     return paras
+
+
+def picture_label(b):
+    """How a picture shows in the editor's text, e.g. "[picture: map.png · 60% wide · on its own page]"."""
+    bits = [b.image_name or "picture"]
+    if getattr(b, "img_width", 0) and getattr(b, "img_place", "") != "full":
+        bits.append(f"{int(b.img_width)}% wide")
+    place = {"page": "on its own page", "full": "full page, edge to edge"}.get(getattr(b, "img_place", ""))
+    if place:
+        bits.append(place)
+    return "[picture: " + " · ".join(bits) + "]"
 
 
 def paras_to_blocks(paras):

@@ -15,6 +15,7 @@ sys.path.insert(0, ROOT)
 TMP = tempfile.mkdtemp(prefix="bf_regress_")
 os.environ["APPDATA"] = os.path.join(TMP, "appdata")          # keep the user's real settings out of it
 os.environ["HOME"] = os.path.join(TMP, "home")
+os.environ["BOOKFORGE_NO_UPDATE_CHECK"] = "1"                 # no internet use in tests
 os.makedirs(os.environ["APPDATA"], exist_ok=True)
 os.makedirs(os.environ["HOME"], exist_ok=True)
 

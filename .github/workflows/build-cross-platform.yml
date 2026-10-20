@@ -8,8 +8,7 @@ on:
   push:
     branches: [main, feature/cross-platform-builds]
     tags:
-      - "v1.5"
-      - "v1.5.*"
+      - "v*"
     paths:
       - "BookForge-github-repo/BookForge/**"
       - ".github/workflows/build-cross-platform.yml"
@@ -20,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Optional existing release tag to attach packages to (for example v1.5.1)"
+        description: "Optional existing release tag to attach packages to (for example v1.6.0)"
         required: false
         default: ""
         type: string
@@ -448,7 +447,7 @@ jobs:
   publish-release:
     name: Publish platform packages to GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v1.5') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: ubuntu-24.04
     env:
       HAVE_NOTARIZATION: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' && secrets.APPLE_ID != '' }}
@@ -483,40 +482,58 @@ jobs:
             mac_note="The macOS app is not yet signed with a paid Apple Developer ID, so the first time you open it macOS asks you to allow it: open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. If macOS says the app is \"damaged\", run \`xattr -dr com.apple.quarantine /Applications/BookForge.app\` in Terminal once. The DMG includes a *How to open BookForge* note with these steps."
           fi
           cat > release-notes.md <<EOF
-          # BookForge v1.5.1 — Binding fixes and bookbinder-js matching
+          **BookForge v1.6.0 — PDFs, pictures, an editable contents page, blank pages, paper units and update checks**
 
-          A bug-fix update. The binding options now work like [bookbinder-js](https://github.com/momijizukamori/bookbinder-js), and Word import keeps everything in the document.
+          A feature update.
 
-          ## Binding (the Imposed PDF)
-          - Folio, quarto, octavo and sextodecimo print in the same order as bookbinder-js: each signature's innermost sheet first, inside face first. The folding notes explain how to nest the sheets.
-          - Octavo uses bookbinder-js's page layout. Fold 1 now brings the right edge over to the left edge.
-          - **Rotate back sides 180°** now also works with the single-sided printer options.
-          - Ledger (17 x 11), ID-1, ID-2, ID-3 and custom sizes that are wider than tall now lay out the way round they are listed, as in bookbinder-js.
-          - Small layouts: a short book now fills the sheet (empty rows on the first sheet are left out), as in bookbinder-js. Fronts and backs still line up.
-          - The one-sheet zine now warns, in the log and in the printing notes, when a book has more pages than fit on it.
+          **PDF files**
+          - PDFs can now be used as a source. **Keep the pages as they are** (the default) prints the PDF's own pages and arranges them for binding, scanned PDFs included. Pages of a different size, cropped or turned sideways are fitted, never stretched.
+          - **Rebuild as an editable book** reads the text out of the PDF (bold, italics, headings, lists and pictures; page numbers and running heads are left out) so it can be edited and restyled like any other book. Scanned PDFs have no text to read; BookForge explains this and suggests OCR.
 
-          ## Word import
-          - Tables are imported (each row becomes a line).
-          - Pictures are imported when **Include pictures** is on.
-          - Text in tracked insertions is kept (tracked deletions stay out), and so is text in smart tags and content controls.
+          **Pictures**
+          - **Insert picture…** in the Specific Text Edit step adds a PNG, JPEG, GIF, BMP, TIFF or WebP picture where the cursor is. Double-click a picture to choose its size (its shape is always kept), its alignment, and whether it sits in the text, on a page of its own, or fills the whole page edge to edge. Phone photos are turned the right way up.
+          - Front and back cover pictures on the wraparound cover, filling or fitting the panel, with the title printed over the picture if you want. Type your measured spine width for an exact fit. The front picture can also be the first page of the book, and it is the EPUB's cover.
+          - Pictures and cover pictures are saved in projects and appear in every output. The preview has a **Cover** view, and **Preview cover** is on the Output tab.
 
-          ## Typesetting
-          - With **Contents case** set to UPPERCASE, the "Chapter N:" prefix and chapter labels are upper-cased too.
-          - The lined Notes pages at the end now say "Notes" in the running head instead of the last chapter's title.
+          **Contents page**
+          - Every contents page now shows its page number (the pages after the first were missing it).
+          - Automatic spacing keeps the last few entries from sitting alone on a nearly empty page, without making the text small.
+          - **Edit contents…** renames, reorders, hides or adds entries and lets you type a page number. Numbers you don't type are worked out from the real layout every time; numbers you type are kept, and the log tells you if one doesn't match its page. The EPUB, web page and text contents follow your changes.
 
-          ## Downloads
+          **Keep the source's look**
+          - New option on the Source tab: words the source set in another font, size or colour, and centred, right-aligned or indented paragraphs, keep that look (Word, EPUB/HTML and rebuilt PDF files). Normal text still follows your layout settings.
 
-          ### Windows
+          **Steps in a new order**
+          - The seven steps are now 1 Source, 2 Book info, 3 Front & back, 4 Chapters, 5 Layout, 6 Specific Text Edit (the step that was called Edit) and 7 Output. Ctrl+1 to Ctrl+7 follow the new order. Projects saved with earlier versions open as before.
+
+          **Blank pages**
+          - **Blank pages at beginning** and **Blank pages at end** (Front & back step) add 0 to 500 empty pages before and after everything else; none by default. They are real pages of the book, folded into the signatures like any other page, with no page number or running head, and the book's own page numbers are not shifted by them. Padding to fill the last signature and flyleafs are separate and still added as before. The EPUB, Word, web page and text files leave them out.
+
+          **Printer paper**
+          - The Output tab shows the size of the chosen paper, for example Letter (8.5 × 11.0 inches). **Display unit for paper selection** shows sizes in inches, millimeters, centimeters or points.
+          - A custom paper size is typed in that unit, decimals allowed. It is checked before printing (more than 0 and at most 200 inches on each side), and switching the unit converts the numbers exactly.
+
+          **Update check**
+          - **Check for updates** (top right) shows the newest published release and what's new, with a link to its download page. BookForge also checks quietly when it starts; this can be turned off in Settings & storage. Nothing is ever downloaded or installed by BookForge.
+
+          **Fixes**
+          - Dark mode: dropdowns, such as the printer type on the Output tab, no longer turn white after choosing a value and clicking away. Checked on every dropdown in both modes.
+          - Words set bigger than the text around them no longer overlap the line above.
+          - Very tall pictures stay on one page in the Word file.
+
+          **Downloads**
+
+          *Windows*
           - **BookForge-Windows.zip** — recommended folder build.
           - **BookForge.exe** — standalone executable.
 
-          ### macOS
+          *macOS*
           - **Apple Silicon (M1, M2, M3, M4…):** \`BookForge-macOS-arm64.dmg\` (or \`.zip\`)
           - **Intel Mac:** \`BookForge-macOS-x86_64.dmg\` (or \`.zip\`)
 
           Open the DMG and drag BookForge to Applications. ${mac_note}
 
-          ### Linux (x86_64)
+          *Linux (x86_64)*
           - **BookForge-Linux-x86_64.zip** — folder build (recommended): extract it and run \`BookForge/BookForge\`.
           - **BookForge-Linux-x86_64-single-file.tar.gz** — single executable: extract it and run \`./BookForge\`.
 
@@ -524,7 +541,7 @@ jobs:
 
           macOS and Linux packages are built and checked automatically on GitHub (regression tests, the packaged app's preview window, and a full book made by the packaged app). Please report any launch, font, preview, or export problems through GitHub Issues.
 
-          **Full changelog:** https://github.com/chunksbabyruth/BookForge/compare/v1.5...v1.5.1
+          **All releases:** https://github.com/chunksbabyruth/BookForge/releases
           EOF
           cat release-notes.md
 

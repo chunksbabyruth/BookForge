@@ -13,6 +13,9 @@ import tempfile
 REQUIRED = [
     # BookForge itself
     "bf_build", "bf_core", "bf_edit", "bf_export", "bf_fonts", "bf_impose", "bf_pdf", "bf_theme",
+    "bf_pictures", "bf_pdfin", "bf_keepfmt", "bf_update",
+    # PDF reading and the update check (secure connections in the packaged app)
+    "pypdfium2.raw", "certifi", "urllib.request", "ssl", "webbrowser",
     # window, preview and the link between Pillow and Tk
     "tkinter", "tkinter.ttk", "tkinter.filedialog", "tkinter.messagebox", "tkinter.colorchooser",
     "PIL.Image", "PIL.ImageTk", "PIL._tkinter_finder", "pypdfium2",

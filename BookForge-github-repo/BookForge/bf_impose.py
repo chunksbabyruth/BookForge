@@ -1,6 +1,6 @@
 """BookForge imposition: arranges finished book pages onto printer sheets for binding.
 
-Covers the same options as the bookbinder-js imposer:
+Imposition options:
   * folio / quarto / octavo / sextodecimo (worked out by simulating the folds, so the
     folded sheet always reads in order) and the small "wacky" layouts
   * booklet / perfect bound / standard signatures / custom signature sizes, flyleafs
@@ -16,7 +16,7 @@ import re
 from bf_core import safe_name, DEFAULTS
 
 PT = 72.0
-SHEETS = {  # width, height in points; the few landscape entries (as bookbinder-js lists them) lay out turned
+SHEETS = {  # width, height in points; the few landscape entries lay out turned
     "Letter": (612, 792), "Legal": (612, 1008), "Tabloid / 11x17": (792, 1224),
     "Half Letter": (396, 612), "Executive": (522, 756), "Note": (540, 720),
     "A3": (842, 1191), "A4": (595, 842), "A5": (420, 595), "A6": (297, 420),
@@ -36,12 +36,19 @@ SHEETS = {  # width, height in points; the few landscape entries (as bookbinder-
     "Penguin Large Paperback": (365, 561),
     "Custom": None,
 }
-UNITS = {"in": 72.0, "cm": 72.0 / 2.54, "mm": 72.0 / 25.4, "pt": 1.0}
+UNITS = {"in": 72.0, "cm": 72.0 / 2.54, "mm": 72.0 / 25.4, "pt": 1.0}     # points per unit
+# Display unit for paper selection: (code, menu name, word used after a size)
+UNIT_CHOICES = [("in", "Inches", "inches"), ("mm", "Millimeters", "mm"), ("cm", "Centimeters", "cm"),
+                ("pt", "Points", "points")]
+UNIT_NAMES = {c: n for c, n, _w in UNIT_CHOICES}
+UNIT_WORDS = {c: w for c, _n, w in UNIT_CHOICES}
+# Custom paper: at least 1 pt and at most 14,400 pt (200 inches) a side - the largest page PDF readers open.
+SHEET_MIN_PT, SHEET_MAX_PT = 1.0, 14400.0
 FOLD_SIDES = ["Inside (recommended)", "Outside", "Both sides"]
 FOLD_LAYOUTS = {  # name: (rows, cols, folds, landscape sheet)
     "Folio - 2 pages per side": (1, 2, "V", True),
     "Quarto - 4 pages per side": (2, 2, "HV", False),
-    "Octavo - 8 pages per side": (2, 4, "vHV", True),   # first fold right over left, as bookbinder-js lays it out
+    "Octavo - 8 pages per side": (2, 4, "vHV", True),   # first fold: right edge over to the left
     "Sextodecimo - 16 pages per side": (4, 4, "HVHV", False),
 }
 WACKY = {
@@ -84,21 +91,103 @@ DEFAULTS["sig_sheets"] = 8
 # --------------------------------------------------------------------------
 # Small helpers
 # --------------------------------------------------------------------------
-def sheet_points(s):
+def sheet_name(s):
     name = s.get("sheet_size", "Letter")
     if name not in SHEETS:            # names used by BookForge 1.0-1.2
         name = {"Tabloid": "Tabloid / 11x17"}.get(name, "Letter")
-    v = SHEETS[name]
+    return name
+
+
+def sheet_points(s):
+    """The printer paper (sheet) as listed, in points: (width, height). Custom sizes are checked and a
+    ValueError with a plain message is raised for an unusable one (never silently replaced)."""
+    v = SHEETS[sheet_name(s)]
     if v is None:
-        u = UNITS.get(s.get("sheet_unit", "in"), 72.0)
-        v = (float(s.get("sheet_w") or 8.5) * u, float(s.get("sheet_h") or 11) * u)
+        unit = s.get("sheet_unit", "in")
+        v = custom_sheet_points(s.get("sheet_w"), s.get("sheet_h"), unit)
     return float(v[0]), float(v[1])
+
+
+# --------------------------------------------------------------------------
+# Paper sizes in other units (display only - sizes are kept in points or as the user typed them)
+# --------------------------------------------------------------------------
+def to_points(value, unit):
+    return float(value) * UNITS[unit]
+
+
+def from_points(pt, unit):
+    return float(pt) / UNITS[unit]
+
+
+_DECIMALS = {"in": 2, "mm": 1, "cm": 2, "pt": 2}
+
+
+def fmt_length(pt, unit, edit=False):
+    """A length for display: inches 8.5 / 11.0, mm 215.9, cm 21.59, points 612. edit=True keeps more
+    digits (for the boxes where a custom size is typed). Display only - never used to compute a size."""
+    v = from_points(pt, unit)
+    d = _DECIMALS[unit] + (2 if edit else 0)
+    t = f"{v:.{d}f}".rstrip("0").rstrip(".")
+    if unit in ("in", "cm", "mm") and "." not in t and not edit:
+        t += ".0"
+    return t
+
+
+def paper_dims_text(w_pt, h_pt, unit):
+    return f"{fmt_length(w_pt, unit)} \u00d7 {fmt_length(h_pt, unit)} {UNIT_WORDS[unit]}"
+
+
+def paper_label(s, unit=None):
+    """'Letter (8.5 x 11.0 inches)' for the paper chosen in s, in the display unit (s["sheet_unit"])."""
+    unit = unit or s.get("sheet_unit", "in")
+    unit = unit if unit in UNITS else "in"
+    name = sheet_name(s)
+    w, h = sheet_points(s)
+    return f"{name} ({paper_dims_text(w, h, unit)})"
+
+
+def parse_length(text):
+    """A typed number -> float. Raises ValueError with a plain message (empty, not a number, not finite)."""
+    t = str(text if text is not None else "").strip().replace(",", ".")
+    if not t:
+        raise ValueError("type a number")
+    try:
+        v = float(t)
+    except ValueError:
+        raise ValueError(f"\u201c{text}\u201d isn't a number") from None
+    if not math.isfinite(v):
+        raise ValueError("the size must be an ordinary number")
+    return v
+
+
+def custom_sheet_points(w, h, unit):
+    """Custom paper size -> (width, height) in points, checked. Raises ValueError with a plain message."""
+    if unit not in UNITS:
+        raise ValueError(f"Custom paper size: unknown unit \u201c{unit}\u201d.")
+    out = []
+    for name, v in (("width", w), ("height", h)):
+        try:
+            x = parse_length(v)
+        except ValueError as e:
+            raise ValueError(f"Custom paper {name}: {e}.") from None
+        pt = x * UNITS[unit]
+        shown = v.strip() if isinstance(v, str) else format(x, "g")
+        if pt <= 0:
+            raise ValueError(f"Custom paper {name} must be more than 0 (it is {shown}).")
+        if pt < SHEET_MIN_PT:
+            raise ValueError(f"Custom paper {name} is too small: at least 1 point "
+                             f"({fmt_length(SHEET_MIN_PT, unit, True)} {UNIT_WORDS[unit]}).")
+        if pt > SHEET_MAX_PT:
+            raise ValueError(f"Custom paper {name} must be at most {fmt_length(SHEET_MAX_PT, unit)} "
+                             f"{UNIT_WORDS[unit]} (it is {shown}).")
+        out.append(pt)
+    return tuple(out)
 
 
 def parse_range(text, n):
     """'1-8, 10, 12-' -> sorted, de-duplicated zero-based page indexes.
 
-    Like bookbinder-js: reversed ranges ('6-4') are accepted and anything that selects no
+    Reversed ranges ('6-4') are accepted and anything that selects no
     valid page falls back to the whole document. Open-ended ranges ('12-', '-5') also work.
     """
     text = (text or "").strip()
@@ -282,7 +371,7 @@ def fold_instructions(layout, nested=True):
               "H": "bring the TOP edge down to the BOTTOM edge"}[f] for f in folds]
     txt = ("Fold every sheet on its own: lay it with the side that printed FIRST facing UP (page numbers "
            "the right way up), then " + "; ".join(f"fold {i + 1}: {x}" for i, x in enumerate(steps)) +
-           (". Then nest the folded sheets of each signature. As in bookbinder-js, each signature's innermost "
+           (". Then nest the folded sheets of each signature. Each signature's innermost "
             "sheet prints first: put sheet 1 into the centre of sheet 2, those two into the centre of sheet 3, "
             "and so on, so the signature's last sheet is on the outside." if nested else
             ". Each folded sheet is its own signature: stack them in printed order (don't nest them)."))
@@ -394,7 +483,7 @@ def wacky_sides(fmt, npages, duplex):
 
 
 def drop_blank_rows(sides, fmt, duplex):
-    """Leave out the empty rows of the first sheet, as bookbinder-js does, so a short book
+    """Leave out the empty rows of the first sheet so a short book
     prints its pages larger.  A row is only left out when its strip of paper is empty on both
     sides of the sheet, so the fronts and backs keep the same page size and still line up."""
     def empty(row):
@@ -492,7 +581,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
     layout = s.get("imp_layout") if s.get("imp_layout") in LAYOUT_NAMES else LAYOUT_NAMES[0]
     rot_odd, rot_even = SOURCE_ROT.get(s.get("imp_source_rot"), (0, 0))
     W0, H0 = sheet_points(s)
-    # Like bookbinder-js, the paper keeps the way round it is listed: a landscape entry (Ledger,
+    # The paper keeps the way round it is listed: a landscape entry (Ledger,
     # ID-1/2/3, or a custom size wider than it is tall) lays out like the upright size turned 90 degrees.
     turn = bool(s.get("rotate_paper")) != (W0 > H0)
     sides = []          # each: dict(front, sig, sheet, items=[...], lines=callable)
@@ -520,7 +609,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
             chunk = order[pos:pos + nsh * per_sheet]
             pos += nsh * per_sheet
             plan = fold_plan(rows, cols, folds, nsh)
-            # Printing order as in bookbinder-js: each signature's innermost sheet first, and each sheet's
+            # Printing order: each signature's innermost sheet first, and each sheet's
             # inside face ("B") before its outside face ("F").
             for sh in reversed(range(nsh)):
                 for face in ("B", "F"):
@@ -612,7 +701,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
                     hoff = left if packed else (1 + i - (i % 2)) * left
                     voff = top if packed else top + 2 * top * r
                     x = (pw + fg) * i + hoff + fg * ((i + 1) % 2)
-                    y = ph * r + voff         # row 0 at the bottom of the sheet, as bookbinder-js prints it
+                    y = ph * r + voff         # row 0 at the bottom of the sheet
                     rects.append((x, y, pw, ph, "L" if i % 2 else "R", None))
                     if idx is None:
                         continue

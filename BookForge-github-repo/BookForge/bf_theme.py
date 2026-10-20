@@ -28,16 +28,22 @@ BUILD = "#227C79"      # build button (deep teal)
 BUILD_HOVER = "#1C6866"
 BUILD_DOWN = "#175553"
 
-# (key, tab label, spine colour) -- one bookcloth colour per tab
+# (key, tab label, spine colour) -- one bookcloth colour per tab, in the order of the steps.
+# The keys never change (code and saved settings refer to them); only the order and labels may.
 TABS = [
     ("src", "Source", "#4A6FA5"),        # slate blue
-    ("chap", "Chapters", "#3F7F86"),     # sea green
-    ("edit", "Edit", "#6A79C2"),         # periwinkle
     ("info", "Book info", "#7D5A8E"),    # dusty plum
-    ("lay", "Layout", "#5E7F3A"),        # moss green
     ("front", "Front & back", "#94691F"),  # ochre
+    ("chap", "Chapters", "#3F7F86"),     # sea green
+    ("lay", "Layout", "#5E7F3A"),        # moss green
+    ("edit", "Specific Text Edit", "#6A79C2"),   # periwinkle
     ("out", "Output", "#B0505C"),        # rose madder
 ]
+
+
+def tab_index(key):
+    """The position of a step in the tab bar."""
+    return [k for k, _l, _c in TABS].index(key)
 
 UI = "Segoe UI"
 UI_SEMI = ("Segoe UI Semibold", 10)
@@ -95,9 +101,15 @@ def apply(root):
     st = ttk.Style(root)
     st.theme_use("clam")
     root.configure(background=PAPER)
+    # Selected text: a soft teal that suits the palette (the light-mode tint was used in dark mode too,
+    # which left a white box with unreadable text in dropdowns after clicking away).
+    sel_bg = mix(BUILD, CARD, 0.8 if MODE == "light" else 0.45)
     st.configure(".", background=PAPER, foreground=INK, font=(UI, 10), bordercolor=LINE,
                  lightcolor=CARD, darkcolor=LINE, troughcolor=TROUGH, focuscolor=PAPER,
-                 selectbackground=mix(BUILD, t=0.8), selectforeground=INK)
+                 selectbackground=sel_bg, selectforeground=INK)
+    # The clam theme shows text that stays selected in a widget without focus on light grey; in dark mode
+    # that is a pale box with light, unreadable text. Use the palette's own selection colour instead.
+    st.map(".", selectbackground=[("!focus", sel_bg)], selectforeground=[("!focus", INK)])
     st.configure("Paper.TFrame", background=PAPER)
     st.configure("Paper.TLabel", background=PAPER, foreground=INK)
     st.configure("PaperHint.TLabel", background=PAPER, foreground=MUTED)
@@ -163,8 +175,11 @@ def apply(root):
             st.map(f"{key}.{w}", bordercolor=[("focus", sp)], lightcolor=[("focus", sp)],
                    fieldbackground=[("readonly", CARD), ("disabled", P["FIELD_OFF"])],
                    foreground=[("disabled", P["DISABLED"])],
-                   selectbackground=[("readonly", "focus", c["soft"]), ("focus", c["soft"])],
-                   selectforeground=[("readonly", "focus", INK), ("focus", INK)],
+                   # The chosen value stays selected after a dropdown closes; once the field loses focus the
+                   # selection must not show (no light box behind the text), in both light and dark mode.
+                   selectbackground=[("readonly", "focus", c["soft"]), ("focus", c["soft"]),
+                                     ("disabled", P["FIELD_OFF"]), ("!focus", CARD)],
+                   selectforeground=[("disabled", P["DISABLED"]), ("focus", INK), ("!focus", INK)],
                    background=[("active", c["soft"])])
         st.configure(f"{key}.TButton", background=c["soft"], foreground=c["deep"], bordercolor=c["mid"],
                      lightcolor=c["soft"], darkcolor=c["soft"], font=UI_SEMI, padding=(10, 4))
@@ -272,10 +287,18 @@ class Shelf(tk.Canvas):
         w = max(self.winfo_width(), 400)
         gap, x = 6, 10
         font = ("Segoe UI Semibold", 10)
+        texts = [f"{i + 1}  {label}" for i, (_k, label, _s) in enumerate(TABS)]
+        widths = [max(110, len(t) * 8 + 34) for t in texts]
+        room = w - 2 * x - gap * (len(TABS) - 1)
+        if sum(widths) > room:                 # narrow window: tighter tabs so every step stays visible
+            widths = [max(64, len(t) * 7 + 12) for t in texts]
+            if sum(widths) > room:
+                k = room / sum(widths)
+                widths = [max(40, int(wd * k)) for wd in widths]
         for i, (key, label, spine) in enumerate(TABS):
             c = colors(key)
-            text = f"{i + 1}  {label}"
-            tw = max(110, len(text) * 8 + 34)
+            text = texts[i]
+            tw = widths[i]
             active = i == self.current
             top = 0 if active else (6 if i == self.hover else 10)
             fill = spine if active else c["mid"] if i == self.hover else c["soft"]

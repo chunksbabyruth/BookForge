@@ -5,6 +5,7 @@ line wrapping is normalised; italics/bold/superscripts and line breaks are
 carried through as a tiny markup subset: <i> <b> <super> <sub> <br/>.
 """
 import html
+import math
 import posixpath
 import re
 import zipfile
@@ -14,7 +15,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.6.0"
 BUILD_DATE = "2026-10-19"     # shown next to the version so different builds can be told apart
 APP_AUTHOR = "ChunksBabyRuth"
 
@@ -27,6 +28,7 @@ DEFAULTS = {
     "custom_regex": "", "strip_gutenberg": True, "skip_contents": True,
     "skip_cover": True, "include_images": False, "keep_front_text": False,
     "drop_empty": True, "line_paragraphs": "Auto", "preserve_breaks": False,
+    "pdf_mode": "Keep the pages as they are", "keep_format": False,
     # Book info
     "title": "", "subtitle": "", "author": "", "credit": "",
     # Layout
@@ -54,15 +56,55 @@ DEFAULTS = {
     "title_page": True, "bookplate": "On title page",
     "bookplate_text": "This Book Belongs To", "dedication": "", "toc": True,
     "toc_title": "CONTENTS", "toc_dots": False, "toc_numbers": "None",
-    "toc_case": "Title Case", "note_title": "", "note_text": "",
+    "toc_case": "Title Case", "toc_spacing": "Automatic (avoid a nearly empty last page)",
+    "note_title": "", "note_text": "",
     "note_place": "After contents", "the_end": False, "notes_pages": 0,
+    "blank_pages_start": 0, "blank_pages_end": 0,     # blank pages before / after the book (0 = none)
     # Output
     "out_dir": "", "fmt_pdf": True, "fmt_impose": True, "fmt_cover": False,
     "fmt_epub": False, "fmt_docx": False, "fmt_html": False, "fmt_txt": False,
     "sheet_size": "Letter", "sig_sheets": 8, "fold_marks": True,
     "sig_marks": True, "rotate_back": False,
     "paper": "20 lb / 75 gsm (0.0040 in)", "blurb": "", "open_when_done": True,
+    "spine_width": 0.0, "cover_front_image": "", "cover_back_image": "",
+    "cover_image_fit": "Fill the panel (edges may be trimmed)", "cover_text_over_art": False,
+    "cover_art_in_book": False,
+    # App
+    "check_updates": True,
 }
+PDF_MODES = ["Keep the pages as they are", "Rebuild as an editable book"]
+# "Blank pages at beginning / end": at most this many each, which keeps building and imposing quick
+# (a block of 500 blank pages is far thicker than anything bound by hand).
+BLANK_PAGES_MAX = 500
+_BLANK_LABEL = {"start": "Blank pages at beginning", "end": "Blank pages at end"}
+
+
+def parse_blank_count(v, label="Blank pages"):
+    """A number of blank pages -> int. Whole numbers 0..BLANK_PAGES_MAX only; anything else raises ValueError
+    with a plain message (nothing is rounded or replaced)."""
+    if isinstance(v, bool):
+        raise ValueError(f"{label}: type a whole number from 0 to {BLANK_PAGES_MAX}.")
+    if isinstance(v, int):
+        n = v
+    elif isinstance(v, float):
+        if not math.isfinite(v) or v != int(v):
+            raise ValueError(f"{label}: use a whole number of pages (0 to {BLANK_PAGES_MAX}), not {v:g}.")
+        n = int(v)
+    else:
+        t = str(v if v is not None else "").strip()
+        if not re.fullmatch(r"[+-]?\d+", t):
+            raise ValueError(f"{label}: \u201c{t}\u201d isn't a whole number of pages (0 to {BLANK_PAGES_MAX}).")
+        n = int(t)
+    if n < 0:
+        raise ValueError(f"{label}: the number of pages can't be negative.")
+    if n > BLANK_PAGES_MAX:
+        raise ValueError(f"{label}: at most {BLANK_PAGES_MAX} pages.")
+    return n
+
+
+def blank_pages(s, which):
+    """How many blank pages to put at the 'start' or 'end' of the book (checked; see parse_blank_count)."""
+    return parse_blank_count(s.get(f"blank_pages_{which}", 0), _BLANK_LABEL[which])
 
 PAGE_SIZES = {
     "Letter (8.5 x 11 in)": (8.5, 11.0),
@@ -106,6 +148,13 @@ class Block:
     align: str = ""      # set in the editor: "" (style default) | left | center | right | justify
     indent: int = 0      # set in the editor: extra left indent, in steps of 0.25 in
     space: int = 0       # set in the editor: extra space above the paragraph, in points
+    img_width: int = 0   # pictures: width as a % of the text width (0 = automatic size)
+    img_place: str = ""  # pictures: "" in the text | "page" on a page of its own | "full" whole page, edge to edge
+
+
+def new_uid():
+    import uuid
+    return uuid.uuid4().hex[:12]
 
 
 @dataclass
@@ -116,6 +165,7 @@ class Chapter:
     blocks: list = field(default_factory=list)
     include: bool = True
     heading_kind: str = "head"   # what the heading was in the source: "head" (a heading) or "para" (a line)
+    uid: str = field(default_factory=new_uid)   # stays the same when chapters are renamed or moved
 
     def display(self):
         if self.label and self.title:
@@ -135,6 +185,15 @@ class Book:
     fic_meta: list = field(default_factory=list)      # fanfic work info lines (markup)
     fic_summary: list = field(default_factory=list)   # Blocks
     fic_notes: list = field(default_factory=list)     # Blocks (work-level author's notes)
+    # Changes made in "Edit contents": [{"uid", "title", "page", "show", "level", "custom"}] in display
+    # order. Empty = the automatic contents. Saved in projects with the book.
+    toc: list = field(default_factory=list)
+    # Copies of the cover pictures, saved in projects so they still work if the picture files move
+    cover_front: bytes = None
+    cover_back: bytes = None
+    # A PDF whose own pages are printed as they are ("Keep the pages as they are"); no chapters then
+    fixed_pdf: str = ""
+    fixed_pages: int = 0
 
     def active(self):
         return [c for c in self.chapters if c.include]
@@ -209,6 +268,12 @@ def _is_noteref(tag):
     return False
 
 
+def _keepfmt_ctx():
+    """The "keep the source's look" context while a file is read with that option on, else None."""
+    import bf_keepfmt
+    return bf_keepfmt.current()
+
+
 def inline_markup(node):
     out = []
     for c in node.children:
@@ -225,6 +290,9 @@ def inline_markup(node):
             continue
         if n == "a" and _is_backlink(c):
             continue
+        kf = _keepfmt_ctx()
+        kf_o, kf_c = kf.span_font(c) if kf is not None and n != "br" else ("", "")
+        start = len(out)
         if n == "br":
             out.append("<br/>")
         elif n == "a" and _is_noteref(c):
@@ -246,6 +314,10 @@ def inline_markup(node):
             out.append("<sub>" + inline_markup(c) + "</sub>")
         else:
             out.append(inline_markup(c))
+        if kf_o:                                   # the source's own font/size/colour for this tag
+            seg = "".join(out[start:])
+            del out[start:]
+            out.append(kf_o + seg + kf_c if seg.strip() else seg)
     return "".join(out)
 
 
@@ -406,7 +478,12 @@ def walk(node, out, strip_pg, depth=0):
                 out.append(("verse", lines))
         elif n == "p":
             m = norm_ws(inline_markup(c))
-            if m:
+            kf = _keepfmt_ctx()
+            if m and kf is not None:
+                o, cl = kf.span_font(c)
+                fmt = kf.block_fmt(c)
+                out.append(("para", o + m + cl, fmt) if fmt else ("para", o + m + cl))
+            elif m:
                 out.append(("para", m))
             for im in c.find_all("img"):
                 out.append(("image", im.get("src", "")))
@@ -416,7 +493,7 @@ def walk(node, out, strip_pg, depth=0):
             sub = []
             walk(c, sub, strip_pg, depth)
             for ev in sub:
-                out.append(("quote", ev[1]) if ev[0] == "para" else ev)
+                out.append(("quote",) + tuple(ev[1:]) if ev[0] == "para" else ev)
         elif n in ("ul", "ol"):
             try:
                 start = int(c.get("start", 1))
@@ -532,6 +609,21 @@ def is_scene(text, s, markers=None):
     if t.lower() in markers or re.sub(r"\s+", " ", t).lower() in markers:
         return True
     return bool(s.get("scene_symbols", True) and SYMBOLS_ONLY.match(t))
+
+
+def _evfmt(ev):
+    """Paragraph formatting a reader kept from the source ("keep_format"): a dict at the end of an event."""
+    f = ev[-1] if len(ev) > 2 and isinstance(ev[-1], dict) else {}
+    out = {}
+    if f.get("align") in ("left", "center", "right", "justify"):
+        out["align"] = f["align"]
+    for k in ("indent", "space"):
+        try:
+            if int(f.get(k) or 0) > 0:
+                out[k] = int(f[k])
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 def events_to_book(events, s, meta=None, images=None):
@@ -697,14 +789,14 @@ def events_to_book(events, s, meta=None, images=None):
                 continue          # AO3 "Afterword" page heading
             add_block(Block("head", esc(ev[2])))
         elif k == "para":
-            add_block(Block("para", ev[1]))
+            add_block(Block("para", ev[1], **_evfmt(ev)))
         elif k == "quote":
-            add_block(Block("quote", ev[1]))
+            add_block(Block("quote", ev[1], **_evfmt(ev)))
         elif k == "item":
-            add_block(Block("item", ev[1], bullet=ev[2], depth=ev[3]))
+            add_block(Block("item", ev[1], bullet=ev[2], depth=ev[3], **_evfmt(ev)))
         elif k == "subtitle":
             add_block(Block("subtitle", ev[1]) if cur is not None and not cur.blocks
-                      else Block("para", ev[1]))
+                      else Block("para", ev[1], **_evfmt(ev)))
         elif k == "verse":
             add_block(Block("verse", lines=ev[1]))
         elif k == "scene":
@@ -843,6 +935,22 @@ def parse_epub(path, s):
         except Exception:
             pass
     meta["toc_titles"] = toc_titles
+    if s.get("keep_format"):
+        import bf_keepfmt
+        css = ""
+        for _id, (href, mt, _props) in manifest.items():
+            if mt == "text/css" and href in names:
+                css += z.read(href).decode("utf-8", "ignore") + "\n"
+        bf_keepfmt.set_current(bf_keepfmt.Context(bf_keepfmt.css_rules(css)))
+    try:
+        return _epub_spine(z, names, opf, manifest, meta, s)
+    finally:
+        if s.get("keep_format"):
+            import bf_keepfmt
+            bf_keepfmt.set_current(None)
+
+
+def _epub_spine(z, names, opf, manifest, meta, s):
     spine = [ir.get("idref") for ir in opf.find("opf:spine", NS)
              if ir.get("linear", "yes") != "no"]
     events, images = [], {}
@@ -881,7 +989,21 @@ def parse_html_file(path, s):
     raw = open(path, "rb").read()
     soup = BeautifulSoup(raw, "html.parser")
     events = []
-    walk(soup.body or soup, events, s.get("strip_gutenberg", True))
+    if s.get("keep_format"):
+        import os
+        import bf_keepfmt
+        css = "\n".join(st.get_text() for st in soup.find_all("style"))
+        for ln in soup.find_all("link", rel=lambda v: v and "stylesheet" in (v if isinstance(v, list) else [v])):
+            cp = os.path.normpath(os.path.join(os.path.dirname(path), ln.get("href", "")))
+            if os.path.isfile(cp):
+                css += "\n" + open(cp, encoding="utf-8", errors="ignore").read()
+        bf_keepfmt.set_current(bf_keepfmt.Context(bf_keepfmt.css_rules(css)))
+    try:
+        walk(soup.body or soup, events, s.get("strip_gutenberg", True))
+    finally:
+        if s.get("keep_format"):
+            import bf_keepfmt
+            bf_keepfmt.set_current(None)
     meta = {"title": (soup.title.get_text().strip() if soup.title else "")}
     h1 = soup.find("h1")
     h1t = " ".join(h1.get_text(" ").split()) if h1 else ""
@@ -981,10 +1103,100 @@ def parse_docx(path, s):
             names.append(name)
         return names
 
+    keep = bool(s.get("keep_format"))
+
+    def chain(style, get):
+        """A style's own value, else the value of the style it is based on (and so on)."""
+        for _ in range(12):
+            if style is None:
+                return None
+            try:
+                v = get(style)
+            except Exception:
+                v = None
+            if v is not None:
+                return v
+            style = style.base_style
+        return None
+
+    def defaults():
+        face, size = "", None
+        try:
+            rpr = d.styles.element.find(qn("w:docDefaults")).find(qn("w:rPrDefault")).find(qn("w:rPr"))
+            rf, sz = rpr.find(qn("w:rFonts")), rpr.find(qn("w:sz"))
+            face = (rf.get(qn("w:ascii")) or "") if rf is not None else ""
+            size = int(sz.get(qn("w:val"))) / 2 if sz is not None else None
+        except Exception:
+            pass
+        return face, size
+    base_face, base_size = "", 11.0
+    if keep:
+        import bf_keepfmt
+        try:
+            normal = d.styles["Normal"]
+        except KeyError:
+            normal = None
+        dface, dsize = defaults()
+        base_face = chain(normal, lambda st: st.font.name) or dface or ""
+        base_size = chain(normal, lambda st: st.font.size.pt if st.font.size else None) or dsize or 11.0
+
+    def kept_font(r):
+        """('<font ...>', '</font>') where this run looks different from the document's normal text."""
+        try:
+            para = r._parent if isinstance(getattr(r, "_parent", None), Paragraph) else None
+            pstyle = para.style if para is not None else None
+        except Exception:
+            pstyle = None
+        cstyle = None
+        try:
+            cstyle = r.style if r.style is not None and r.style.name != "Default Paragraph Font" else None
+        except Exception:
+            pass
+        name = r.font.name or chain(cstyle, lambda st: st.font.name) or chain(pstyle, lambda st: st.font.name) \
+            or base_face
+        size = (r.font.size.pt if r.font.size else None) or chain(cstyle, lambda st: st.font.size.pt
+                                                                  if st.font.size else None) or \
+            chain(pstyle, lambda st: st.font.size.pt if st.font.size else None) or base_size
+        col = ""
+        try:
+            if r.font.color is not None and r.font.color.type is not None and r.font.color.rgb is not None:
+                col = bf_keepfmt.colour("#" + str(r.font.color.rgb))
+        except Exception:
+            col = ""
+        face_kept = bf_keepfmt.usable_face(name) if name and name != base_face else ""
+        return bf_keepfmt.font_open(face_kept, bf_keepfmt.pct(size, base_size), col)
+
+    def para_fmt(p, item=False):
+        """{'align', 'indent'} where this paragraph is laid out differently from normal text."""
+        out = {}
+        try:
+            al = p.alignment if p.alignment is not None else chain(p.style, lambda st: st.paragraph_format.alignment)
+            al = int(al) if al is not None else None
+        except Exception:
+            al = None
+        if al == 1:
+            out["align"] = "center"
+        elif al == 2:
+            out["align"] = "right"
+        if not item:
+            try:
+                li = p.paragraph_format.left_indent
+                if li is None:
+                    li = chain(p.style, lambda st: st.paragraph_format.left_indent)
+                n = bf_keepfmt.indent_steps(li.inches) if li is not None else 0
+                if n:
+                    out["indent"] = n
+            except Exception:
+                pass
+        return out
+
     def styled(r):
         t = esc(r.text).replace("\n", "<br/>")
         if not t:
             return ""
+        if keep:
+            o, c = kept_font(r)
+            t = o + t + c
         if r.font.strike or r.font.double_strike:
             t = f"<strike>{t}</strike>"
         if r.underline:
@@ -1078,10 +1290,12 @@ def parse_docx(path, s):
                 for k2 in [k for k in counters if k[0] == num_id and k[1] > ilvl]:
                     counters.pop(k2)
                 bullet = fmt_number(counters[key], fmt)
-            events.append(("item", m, bullet, int(ilvl)))
+            pf = para_fmt(p, item=True) if keep else {}
+            events.append(("item", m, bullet, int(ilvl), pf) if pf else ("item", m, bullet, int(ilvl)))
             events.extend(("image", name) for _pos, name in pics)
         else:
-            events.append(("para", m))
+            pf = para_fmt(p) if keep else {}
+            events.append(("para", m, pf) if pf else ("para", m))
     cp = d.core_properties
     return events_to_book(events, s, {"title": cp.title or "", "author": cp.author or ""}, pictures)
 
@@ -1290,8 +1504,9 @@ def parse_text(text, s, is_md=False, meta=None):
 # --------------------------------------------------------------------------
 # Dispatcher
 # --------------------------------------------------------------------------
-def load_book(s, paste_text=""):
+def load_book(s, paste_text="", log=None):
     import os
+    log = log or (lambda m: None)
     if s.get("source_mode") == "paste":
         if not paste_text.strip():
             raise ValueError("The paste box is empty.")
@@ -1308,6 +1523,15 @@ def load_book(s, paste_text=""):
             book = parse_html_file(p, s)
         elif ext == ".docx":
             book = parse_docx(p, s)
+        elif ext == ".pdf":
+            import bf_pdfin
+            if s.get("pdf_mode", PDF_MODES[0]) != PDF_MODES[1]:
+                meta = bf_pdfin.pdf_meta(p)          # the pages are printed as they are
+                book = Book(title=meta["title"], author=meta["author"], fixed_pdf=os.path.abspath(p),
+                            fixed_pages=meta["pages"])
+            else:
+                events, meta, images = bf_pdfin.pdf_events(p, s, log)
+                book = events_to_book(events, s, meta, images)
         else:
             raw = open(p, "rb").read()
             for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):

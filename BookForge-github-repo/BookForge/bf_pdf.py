@@ -16,10 +16,10 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (BaseDocTemplate, PageTemplate, Frame, Paragraph,
                                 Spacer, PageBreak, Flowable, Image, CondPageBreak)
 from reportlab.platypus.flowables import DocIf, ImageAndFlowables
-from reportlab.platypus.tableofcontents import TableOfContents
-from reportlab.platypus import TableStyle
+from reportlab.platypus.tableofcontents import TableOfContents, drawPageNumbers
+from reportlab.platypus import TableStyle, Table
 
-from bf_core import page_size_inches, plain, esc
+from bf_core import page_size_inches, plain, esc, blank_pages
 
 GREY = HexColor("#555555")
 
@@ -377,11 +377,11 @@ class Marker(Flowable):
 
 class Anchor(Marker):
     def __init__(self, key, outline, olevel, toc_text=None, toc_level=0, title="", opener=False,
-                 body_start=False):
+                 body_start=False, uid=None):
         Marker.__init__(self, self._run)
         self.key, self.outline, self.olevel = key, outline, olevel
         self.toc_text, self.toc_level, self.title = toc_text, toc_level, title
-        self.opener, self.body_start = opener, body_start
+        self.opener, self.body_start, self.uid = opener, body_start, uid
 
     def _run(self, canv, doc):
         p = canv.getPageNumber()
@@ -483,6 +483,75 @@ class DropLetter(Flowable):
         c.drawString(x, base, self.letter)
 
 
+def _bigger_text(markup, size):
+    """True if the markup sets some words bigger than `size` points (font size="14" or size="130%")."""
+    for v in re.findall(r'<font\b[^>]*\bsize="([^"]+)"', markup):
+        try:
+            n = size * float(v[:-1]) / 100 if v.endswith("%") else float(v)
+        except ValueError:
+            continue
+        if n > size * 1.05:
+            return True
+    return False
+
+
+class PagePicture(Flowable):
+    """A picture on a page of its own, centred in the text area - or, with full=True, covering the
+    whole page edge to edge (no page number or running head is printed on that page).
+    It takes the whole frame, so whatever follows starts on the next page."""
+
+    def __init__(self, data, pct=0, align="", full=False):
+        Flowable.__init__(self)
+        self.data, self.pct, self.align, self.full = data, int(pct or 0), align or "center", full
+        self.iw, self.ih = ImageReader(io.BytesIO(data)).getSize()
+
+    def wrap(self, aw, ah):
+        self.aw, self.ah = aw, ah
+        return aw, max(0, ah - 0.5)
+
+    def split(self, aw, ah):
+        return []
+
+    def drawOn(self, canvas, x, y, _sW=0):
+        from bf_pictures import fit_box
+        doc = canvas._doctemplate
+        p = canvas.getPageNumber()
+        img = ImageReader(io.BytesIO(self.data))
+        canvas.saveState()
+        if self.full:
+            pw, ph = doc.pagesize
+            bx, by, bw, bh = fit_box(self.iw, self.ih, 0, 0, pw, ph, fill=True)
+            path = canvas.beginPath()
+            path.rect(0, 0, pw, ph)
+            canvas.clipPath(path, stroke=0, fill=0)
+            doc.bf.setdefault("fullpage", {})[p] = True
+        else:
+            top = y + self.ah
+            bx, by, bw, bh = fit_box(self.iw, self.ih, x, top - self.ah, self.aw, self.ah - 1, fill=False)
+            if self.pct:
+                k = min(self.aw * self.pct / 100 / self.iw, (self.ah - 1) / self.ih)
+                bw, bh = self.iw * k, self.ih * k
+                by = top - self.ah + (self.ah - bh) / 2
+            bx = {"left": x, "right": x + self.aw - bw}.get(self.align, x + (self.aw - bw) / 2)
+            doc.bf.setdefault("plate", {})[p] = True
+        canvas.drawImage(img, bx, by, bw, bh, mask="auto")
+        canvas.restoreState()
+
+
+def picture_flowables(b, fw, fh):
+    """The flowables for a picture block (see Block.img_width / img_place / align)."""
+    from reportlab.platypus.flowables import PageBreakIfNotEmpty
+    if b.img_place in ("page", "full"):
+        return [PageBreakIfNotEmpty(), PagePicture(b.image, b.img_width, b.align, full=b.img_place == "full")]
+    from bf_pictures import picture_scale
+    ir = ImageReader(io.BytesIO(b.image))
+    iw, ih = ir.getSize()
+    k = picture_scale(iw, ih, int(b.img_width or 0), "", fw, fh, fw, fh)
+    img = Image(io.BytesIO(b.image), width=iw * k, height=ih * k)
+    img.hAlign = {"left": "LEFT", "right": "RIGHT"}.get(b.align, "CENTER")
+    return [Spacer(1, 6), img, Spacer(1, 8)]
+
+
 class WriteLines(Flowable):
     def __init__(self, gap):
         Flowable.__init__(self)
@@ -513,7 +582,7 @@ class BookDoc(BaseDocTemplate):
 
     def beforeDocument(self):
         # Reset every pass; the body start is only trusted once reached in THIS pass.
-        self.bf = {"body_start": None, "opener": {}, "content": {}, "nonum": {}, "cur": ""}
+        self.bf = {"body_start": None, "opener": {}, "content": {}, "nonum": {}, "cur": "", "userblank": {}}
 
     def handle_pageBegin(self):
         # Odd (right-hand) pages use the "odd" frame, even pages the "even" one, so the inside margin is
@@ -524,23 +593,259 @@ class BookDoc(BaseDocTemplate):
         BaseDocTemplate.handle_pageBegin(self)
 
     def page_label(self, p):
+        """The number printed on page p. Blank pages added before the book ("Blank pages at beginning") are
+        not counted: the book's own numbering starts after them, as it does without them."""
         mode = self.s.get("pn_mode", "")
+        fb = int(self.s.get("blank_pages_start") or 0)
+        if p <= fb:
+            return ""
         if mode.startswith("Every"):
-            return str(p)
+            return str(p - fb)
         bs = self.bf.get("body_start")
         if bs is None or p < bs:
-            return roman(p).lower() if mode.startswith("Roman") else ""
+            return roman(p - fb).lower() if mode.startswith("Roman") else ""
         return str(p - bs + 1)
 
     def afterFlowable(self, f):
         if isinstance(f, Anchor):
             if f.toc_text is not None:
+                # the contents shows the number printed on that page (1, 2... or i, ii...)
                 lab = self.page_label(self.page)
-                num = int(lab) if lab.isdigit() else 0
-                self.notify("TOCEntry", (f.toc_level, f.toc_text, num, f.key))
+                self.notify("TOCEntry", (f.toc_level, f.toc_text, lab, f.key, f.uid))
+                if f.uid:
+                    self.bf.setdefault("toc_labels", {})[f.uid] = lab
             return
-        if isinstance(f, (Paragraph, Image, TableOfContents, Rule, WriteLines, ImageAndFlowables)):
+        # Table: the contents page splits into tables when it runs over a page; those pages are not blank
+        # (their page numbers were hidden as if they were).
+        if isinstance(f, (Paragraph, Image, TableOfContents, Table, Rule, WriteLines, ImageAndFlowables,
+                          PagePicture)):
             self.bf["content"][self.page] = True
+
+
+# --------------------------------------------------------------------------
+# Contents page
+# --------------------------------------------------------------------------
+def contents_entries(book, s):
+    """The automatic contents: one entry per included part/chapter, in book order.
+    [{"uid", "level", "text"}] - text is plain (not markup), exactly as the contents page prints it."""
+    chapters = book.active()
+    has_parts = any(c.level == 0 for c in chapters)
+    out, chap_no, seen_part = [], 0, False
+    up = str.upper if s.get("toc_case") == "UPPERCASE" else str
+    for ch in chapters:
+        if ch.level == 0:
+            seen_part = True
+            title = apply_case(ch.title, s["title_case"])
+            lbl = ch.label
+            disp = f"{lbl} \u2014 {title}" if lbl and title else (title or lbl)
+            out.append({"uid": ch.uid, "level": 0, "text": apply_case(disp, s["toc_case"])})
+            continue
+        chap_no += 1
+        tn = s.get("toc_numbers", "None")
+        tt = apply_case(ch.title, s["toc_case"])
+        # The "Chapter N:" prefix and a chapter's own label follow UPPERCASE too (Title Case
+        # leaves them as they are, so labels such as "CHAPTER IV" keep their numerals).
+        if ch.label:
+            text = f"{up(ch.label)} \u2014 {tt}" if tt else up(ch.label)
+        elif tn == "Number (1.)":
+            text = f"{chap_no}. {tt}"
+        elif tn == "Chapter N:":
+            text = f"{up('Chapter')} {chap_no}: {tt}"
+        else:
+            text = tt
+        out.append({"uid": ch.uid, "level": 1 if (has_parts and seen_part) else 0, "text": text})
+    return out
+
+
+def contents_rows(auto, edits):
+    """Every entry for the "Edit contents" window, hidden ones included, in display order:
+    [{"uid", "custom", "auto", "title", "page", "show", "level", "auto_level"}].
+
+    auto: contents_entries(); edits: the book's saved changes (see Book.toc). "title"/"page" are None/""
+    unless the user typed them. Chapters added since the contents was edited appear after the chapter
+    before them; edits for chapters that no longer exist are dropped."""
+    def fresh(a):
+        return {"uid": a["uid"], "custom": False, "auto": a["text"], "title": None, "page": "",
+                "show": True, "level": a["level"], "auto_level": a["level"]}
+    if not edits:
+        return [fresh(a) for a in auto]
+    by_uid = {a["uid"]: a for a in auto}
+    rows, seen = [], set()
+    for ed in edits:
+        if ed.get("custom"):
+            if (ed.get("title") or "").strip():
+                lvl = int(ed.get("level") or 0)
+                rows.append({"uid": None, "custom": True, "auto": "", "title": ed["title"].strip(),
+                             "page": (ed.get("page") or "").strip(), "show": bool(ed.get("show", True)),
+                             "level": lvl, "auto_level": lvl})
+            continue
+        a = by_uid.get(ed.get("uid"))
+        if a is None or a["uid"] in seen:
+            continue                                   # that chapter was deleted or left out
+        seen.add(a["uid"])
+        r = fresh(a)
+        title = ed.get("title")
+        r["title"] = title.strip() if isinstance(title, str) and title.strip() else None
+        r["page"] = (ed.get("page") or "").strip()
+        r["show"] = bool(ed.get("show", True))
+        if ed.get("level") is not None:
+            r["level"] = int(ed["level"])
+        rows.append(r)
+    for i, a in enumerate(auto):                       # chapters the edits don't know about yet
+        if a["uid"] in seen:
+            continue
+        at = 0
+        for prev in reversed(auto[:i]):
+            pos = next((k for k, r in enumerate(rows) if r["uid"] == prev["uid"]), None)
+            if pos is not None:
+                at = pos + 1
+                break
+        rows.insert(at, fresh(a))
+        seen.add(a["uid"])
+    return rows
+
+
+def rows_to_edits(rows, auto):
+    """The rows of the "Edit contents" window -> what is saved in the book ([] = automatic contents)."""
+    key = lambda r: (r["uid"], r["custom"], r["title"], r["page"], r["show"], r["level"])  # noqa: E731
+    if [key(r) for r in rows] == [key(r) for r in contents_rows(auto, [])]:
+        return []
+    out = []
+    for r in rows:
+        if r["custom"]:
+            out.append({"custom": True, "title": r["title"], "page": r["page"], "level": r["level"],
+                        "show": r["show"]})
+        else:
+            out.append({"uid": r["uid"], "title": r["title"], "page": r["page"], "show": r["show"],
+                        "level": None if r["level"] == r["auto_level"] else r["level"]})
+    return out
+
+
+def apply_contents_edits(auto, edits):
+    """The entries the contents page prints: auto entries ({"uid", "level", "text", ...}) with the edits
+    applied. Typed titles get "edited": True, typed page numbers replace the automatic ones."""
+    by_uid = {a["uid"]: a for a in auto}
+    out = []
+    for r in contents_rows(auto, edits):
+        if not r["show"]:
+            continue
+        if r["custom"]:
+            out.append({"uid": None, "level": r["level"], "text": r["title"], "page": r["page"], "custom": True})
+            continue
+        e = dict(by_uid[r["uid"]])
+        e["level"] = r["level"]
+        if r["title"]:
+            e["text"], e["edited"] = r["title"], True
+        if r["page"]:
+            e["page"] = r["page"]
+        out.append(e)
+    return out
+
+
+class BookTOC(TableOfContents):
+    """The contents page: the automatic entries (reported while the chapters are typeset) with the
+    changes from "Edit contents" applied. Page numbers are printed as the page shows them (1, 2... or
+    i, ii...); a number typed in "Edit contents" replaces the automatic one."""
+
+    def __init__(self, edits=None, **kw):
+        TableOfContents.__init__(self, **kw)
+        self.edits = edits or []
+
+    def addEntry(self, level, text, page, key=None, uid=None):
+        self._entries.append((level, text, page, key, uid))
+
+    def final_entries(self):
+        auto = [{"uid": u, "level": lv, "text": tx, "page": str(pg), "key": k}
+                for lv, tx, pg, k, u in self._lastEntries]
+        out = apply_contents_edits(auto, self.edits)
+        for e in out:
+            if e.get("custom") or e.get("edited"):       # typed in "Edit contents": plain text
+                e["text"] = self.markup(esc(e["text"]))
+        return out
+
+    markup = staticmethod(lambda m: m)                 # replaced by the font-coverage helper in build_pdf
+
+    def wrap(self, availWidth, availHeight):
+        entries = self.final_entries()
+        if not self._lastEntries and not entries:
+            entries = [{"level": 0, "text": "Contents", "page": "", "key": None}]
+
+        def drawTOCEntryEnd(canvas, kind, label):
+            e = entries[int(label)]
+            if not e.get("page"):
+                return
+            style = self.getLevelStyle(e["level"])
+            dot = " . " if (self.dotsMinLevel >= 0 and e["level"] >= self.dotsMinLevel) else ""
+            drawPageNumbers(canvas, style, [(e["page"], e.get("key"))], availWidth, availHeight, dot)
+        self.canv.setNamedCB("drawTOCEntryEnd", drawTOCEntryEnd)
+        data = []
+        for i, e in enumerate(entries):
+            style = self.getLevelStyle(e["level"])
+            text = e["text"]
+            if e.get("key"):
+                text = '<a href="#%s">%s</a>' % (e["key"], text)
+            para = Paragraph('%s<onDraw name="drawTOCEntryEnd" label="%d"/>' % (text, i), style)
+            if style.spaceBefore:
+                data.append([Spacer(1, style.spaceBefore)])
+            data.append([para])
+        if not data:
+            data = [[Spacer(1, 1)]]
+        self._table = Table(data, colWidths=(availWidth,), style=self.tableStyle)
+        self.width, self.height = self._table.wrapOn(self.canv, availWidth, availHeight)
+        return self.width, self.height
+
+
+TOC_SPACING = ["Automatic (avoid a nearly empty last page)", "Normal", "Compact"]
+
+
+def contents_styles(R, B, size, variant):
+    """Paragraph and table styles of the contents page. variant 0 = normal; higher = tighter (less space
+    between entries first, then slightly smaller type - never below 8 pt)."""
+    fs = size * (0.92 if variant < 4 else 0.85)
+    leading = {0: size * 1.45, 1: size * 1.45, 2: size * 1.3, 3: size * 1.2, 4: fs * 1.2}[variant]
+    gap = 1 if variant == 0 else 0
+    ts0 = ParagraphStyle("toc0", fontName=R, fontSize=fs, leading=leading,
+                         leftIndent=0, firstLineIndent=0, spaceBefore=gap, rightIndent=0.45 * inch)
+    tsP = ParagraphStyle("tocP", parent=ts0, fontName=B, spaceBefore=8 if variant == 0 else 5)
+    ts1 = ParagraphStyle("toc1", parent=ts0, leftIndent=0.3 * inch)
+    table = TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                        ("TOPPADDING", (0, 0), (-1, -1), gap),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), gap)])
+    return ts0, tsP, ts1, table, fs
+
+
+def contents_pages(entries, styles, has_parts, width, first_h, h):
+    """How the contents table splits over pages: [entries on page 1, entries on page 2, ...]."""
+    ts0, tsP, ts1, table_style, _fs = styles
+    data, rows_entry = [], []
+    for e in entries:
+        st = ts1 if e["level"] >= 1 else (tsP if has_parts else ts0)
+        if st.spaceBefore:
+            data.append([Spacer(1, st.spaceBefore)])
+            rows_entry.append(False)
+        data.append([Paragraph(e["text"] + " 000", st)])
+        rows_entry.append(True)
+    if not data:
+        return [0]
+    tbl = Table(data, colWidths=(width,), style=table_style)
+    counts, avail, start = [], first_h, 0
+    for _ in range(500):
+        _w, ht = tbl.wrap(width, avail)
+        n_rows = len(tbl._cellvalues)
+        if ht <= avail + 0.1:
+            counts.append(sum(rows_entry[start:start + n_rows]))
+            break
+        parts = tbl.split(width, avail)
+        if len(parts) < 2:
+            counts.append(sum(rows_entry[start:start + n_rows]))
+            break
+        k = len(parts[0]._cellvalues)
+        counts.append(sum(rows_entry[start:start + k]))
+        start += k
+        tbl, avail = parts[1], h
+    return counts
 
 
 def build_pdf(book, s, out_path, log=print):
@@ -616,10 +921,6 @@ def build_pdf(book, s, out_path, log=print):
     st["ded"] = ParagraphStyle("ded", fontName=I, fontSize=size, leading=lead, alignment=TA_CENTER)
     st["toct"] = ParagraphStyle("toct", fontName=HT, fontSize=ts, leading=ts * 1.3,
                                 alignment=TA_CENTER, spaceAfter=20)
-    ts0 = ParagraphStyle("toc0", fontName=R, fontSize=size * 0.92, leading=size * 1.45,
-                         leftIndent=0, firstLineIndent=0, spaceBefore=1)
-    tsP = ParagraphStyle("tocP", parent=ts0, fontName=B, spaceBefore=8)
-    ts1 = ParagraphStyle("toc1", parent=ts0, leftIndent=0.3 * inch)
 
     covs = {}
 
@@ -673,6 +974,15 @@ def build_pdf(book, s, out_path, log=print):
     def P(markup, style, **kw):
         markup = fix_fonts(markup)
         style = with_format(style)
+        if '%"' in markup:          # sizes kept from the source are relative to the paragraph's own size
+            markup = re.sub(r'(<font\b[^>]*\bsize=")([\d.]+)%"',
+                            lambda m: f'{m.group(1)}{style.fontSize * float(m.group(2)) / 100:.1f}"', markup)
+        if 'size="' in markup and _bigger_text(markup, style.fontSize):
+            # words set bigger than the paragraph (kept from the source, or chosen in the editor) get room
+            key = (style.name, "auto")
+            if key not in styled:
+                styled[key] = ParagraphStyle(f"{style.name}_a", parent=style, autoLeading="max")
+            style = styled[key]
         if runts and style.name.split("_f")[0] in body_styles and len(markup) > 60:
             markup = no_runt(markup)
         c = cov_for(style.fontName)
@@ -689,7 +999,35 @@ def build_pdf(book, s, out_path, log=print):
         if recto:
             story.append(DocIf("doc.page % 2 == 0", [PageBreak()]))
 
+    # ---- Blank pages before the book ("Blank pages at beginning"): real pages of the book, before
+    # everything else, with nothing printed on them (no number, no running head). Signature padding and
+    # flyleafs are added later by the imposition and are separate from these.
+    n_front, n_back = blank_pages(s, "start"), blank_pages(s, "end")
+    mark_blank = lambda canv, doc: doc.bf["userblank"].__setitem__(canv.getPageNumber(), True)   # noqa: E731
+    for _ in range(n_front):
+        story.append(Marker(mark_blank))
+        story.append(PageBreak())
+
+    # ---- Front cover picture as the first page (optional)
+    started_art = False
+    if s.get("cover_art_in_book"):
+        from bf_pictures import cover_art
+        try:
+            art = cover_art(book, s, "front")
+        except ValueError as e:
+            art = None
+            log(f"Front cover picture: {e}.")
+        if art:
+            try:
+                story.append(PagePicture(art, full=True))
+                story.append(PageBreak())                  # the back of the picture stays blank
+                started_art = True
+            except Exception:
+                log("The front cover picture couldn't be used inside the book.")
+
     # ---- Title page
+    if started_art:
+        story.append(PageBreak())                      # the back of the cover picture stays blank
     if s["title_page"]:
         story.append(Spacer(1, fh * 0.2))
         story.append(P(esc(book.title), st["btitle"]))
@@ -775,21 +1113,41 @@ def build_pdf(book, s, out_path, log=print):
 
     chapters = book.active()
     has_parts = any(c.level == 0 for c in chapters)
+    auto_toc = contents_entries(book, s)
+    toc_by_uid = {e["uid"]: e for e in auto_toc}
     toc = None
     if s["toc"]:
         if started:
             new_page()
         story.append(Anchor("toc", "Contents", 0))
-        story.append(P(esc(s["toc_title"]), st["toct"]))
-        toc = TableOfContents()
+        title_p = P(esc(s["toc_title"]), st["toct"])
+        story.append(title_p)
+        # Spacing: normal, unless the last contents page would hold only a few entries - then tighten the
+        # spacing (and at most make the type a little smaller) so they fit on the pages before.
+        shown = [dict(e, text=esc(e["text"])) for e in apply_contents_edits(auto_toc, book.toc)]
+        spacing = s.get("toc_spacing", TOC_SPACING[0])
+        variant = 2 if spacing == "Compact" else 0
+        if spacing.startswith("Automatic") and len(shown) > 1:
+            first_h = fh - title_p.wrap(fw, fh)[1] - st["toct"].spaceAfter
+            base = contents_pages(shown, contents_styles(R, B, size, 0), has_parts, fw, first_h, fh)
+            cap = max(base)
+            if len(base) > 1 and base[-1] <= max(3, -(-cap // 4)):
+                for v in (1, 2, 3, 4):
+                    sty = contents_styles(R, B, size, v)
+                    if sty[4] < 8:
+                        break
+                    if len(contents_pages(shown, sty, has_parts, fw, first_h, fh)) < len(base):
+                        variant = v
+                        log(f"Contents: spacing tightened so the last {base[-1]} entr"
+                            f"{'y doesn' if base[-1] == 1 else 'ies don'}'t sit alone on a page.")
+                        break
+        ts0, tsP, ts1, toc_table, _fs = contents_styles(R, B, size, variant)
+        toc = BookTOC(edits=book.toc)
+        toc.markup = cov.apply
         toc.levelStyles = [tsP if has_parts else ts0, ts1]
         toc.dotsMinLevel = 0 if s["toc_dots"] else 99
         toc.rightColumnWidth = 0.6 * inch
-        toc.tableStyle = TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
-                                     ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                                     ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                                     ("TOPPADDING", (0, 0), (-1, -1), 1),
-                                     ("BOTTOMPADDING", (0, 0), (-1, -1), 1)])
+        toc.tableStyle = toc_table
         story.append(toc)
         started = True
 
@@ -806,13 +1164,15 @@ def build_pdf(book, s, out_path, log=print):
 
     # ---- Chapters
     chap_no = part_no = 0
-    seen_part = False
     first = True
     cont = s["chapter_start"] == "Continuous"
     for ci, ch in enumerate(chapters):
         if first:
             if started:
                 new_page()
+            elif recto and (n_front or started_art):
+                # nothing before the first chapter but blank pages: it still opens on a right-hand page
+                story.append(DocIf("doc.page % 2 == 0", [PageBreak()]))
         elif ch.level == 0 or not cont:
             new_page()
         else:
@@ -821,11 +1181,12 @@ def build_pdf(book, s, out_path, log=print):
         title = apply_case(ch.title, s["title_case"])
         if ch.level == 0:
             part_no += 1
-            seen_part = True
             lbl = ch.label
             disp = f"{lbl} \u2014 {title}" if lbl and title else (title or lbl)
-            story.append(Anchor(f"ch{ci}", plain(disp), 0, toc_text=cov.apply(esc(apply_case(disp, s["toc_case"]))),
-                                toc_level=0, title=plain(title or lbl), opener=True, body_start=first))
+            ce = toc_by_uid[ch.uid]
+            story.append(Anchor(f"ch{ci}", plain(disp), 0, toc_text=cov.apply(esc(ce["text"])),
+                                toc_level=ce["level"], title=plain(title or lbl), opener=True, body_start=first,
+                                uid=ch.uid))
             story.append(Spacer(1, fh * 0.3))
             if lbl:
                 story.append(P(esc(lbl), st["label"]))
@@ -847,22 +1208,10 @@ def build_pdf(book, s, out_path, log=print):
             lbl = ch.label
             if not lbl and s["chapter_label"] not in ("None", "") and not LABELISH.match(ch.title + " "):
                 lbl = auto_label(s["chapter_label"], chap_no)
-            tn = s["toc_numbers"]
-            tt = apply_case(ch.title, s["toc_case"])
-            # The "Chapter N:" prefix and a chapter's own label follow UPPERCASE too (Title Case
-            # leaves them as they are, so labels such as "CHAPTER IV" keep their numerals).
-            up = str.upper if s["toc_case"] == "UPPERCASE" else str
-            if ch.label:
-                toc_text = f"{up(ch.label)} \u2014 {tt}" if tt else up(ch.label)
-            elif tn == "Number (1.)":
-                toc_text = f"{chap_no}. {tt}"
-            elif tn == "Chapter N:":
-                toc_text = f"{up('Chapter')} {chap_no}: {tt}"
-            else:
-                toc_text = tt
-            lvl = 1 if (has_parts and seen_part) else 0
+            ce = toc_by_uid[ch.uid]            # contents text: see contents_entries
+            toc_text, lvl = ce["text"], ce["level"]
             story.append(Anchor(f"ch{ci}", plain(toc_text), lvl, toc_text=cov.apply(esc(toc_text)), toc_level=lvl,
-                                title=plain(ch.title), opener=True, body_start=first))
+                                title=plain(ch.title), opener=True, body_start=first, uid=ch.uid))
             first = False
             if float(s["chapter_sink"]) > 0 and not cont:
                 story.append(Spacer(1, float(s["chapter_sink"]) * inch))
@@ -950,16 +1299,9 @@ def build_pdf(book, s, out_path, log=print):
                 fresh = True
             elif b.kind == "image" and b.image:
                 try:
-                    ir = ImageReader(io.BytesIO(b.image))
-                    iw, ih = ir.getSize()
-                    k = min(fw / iw, fh * 0.65 / ih, 1.5)
-                    img = Image(io.BytesIO(b.image), width=iw * k, height=ih * k)
-                    img.hAlign = "CENTER"
-                    story.append(Spacer(1, 6))
-                    story.append(img)
-                    story.append(Spacer(1, 8))
+                    story.extend(picture_flowables(b, fw, fh))
                 except Exception:
-                    pass
+                    log(f"A picture ({b.image_name or 'unnamed'}) couldn't be used and was left out.")
         if not ch.blocks:
             story.append(Spacer(1, 1))
         if ch.level == 0 and cont:
@@ -973,10 +1315,16 @@ def build_pdf(book, s, out_path, log=print):
         story.append(Marker(lambda canv, doc: doc.bf.__setitem__("cur", "Notes")))
         story.append(P("Notes", st["sub"]))
         story.append(WriteLines(0.34 * inch))
+    # ---- Blank pages after the book ("Blank pages at end")
+    for _ in range(n_back):
+        story.append(PageBreak())
+        story.append(Marker(mark_blank))
 
     # ---- Page furniture
     def furniture(canv, doc):
         p = canv.getPageNumber()
+        if doc.bf.get("fullpage", {}).get(p) or doc.bf["userblank"].get(p):
+            return                              # a full-page picture or an added blank page: nothing on it
         blank = not doc.bf["content"].get(p)
         if blank and s["pn_hide_blank"]:
             return
@@ -1008,7 +1356,8 @@ def build_pdf(book, s, out_path, log=print):
                 else:
                     canv.drawString(mo, y, txt)
         bs = doc.bf.get("body_start")
-        if s["running_heads"] and not opener and not blank and bs and p >= bs:
+        if s["running_heads"] and not opener and not blank and bs and p >= bs and \
+                not doc.bf.get("plate", {}).get(p):
             head = book.title if not odd else (doc.bf.get("cur") or book.title)
             head = plain(head)
             if len(head) > 70:
@@ -1045,4 +1394,15 @@ def build_pdf(book, s, out_path, log=print):
                                                     else ""))
     anchors = doc.bf.get("anchors", {})
     book._chapter_pages = [(id(ch), anchors.get(f"ch{ci}")) for ci, ch in enumerate(chapters)]
+    book._toc_labels = dict(doc.bf.get("toc_labels", {}))      # chapter uid -> page number (for Edit contents)
+    if s.get("toc") and book.toc:
+        # A number typed in "Edit contents" is always printed as typed - but say so when it isn't the page
+        # the chapter really starts on, so a stale correction is noticed instead of silently printed.
+        names = {e["uid"]: e["text"] for e in contents_entries(book, s)}
+        for ed in book.toc:
+            real = book._toc_labels.get(ed.get("uid"))
+            typed = (ed.get("page") or "").strip()
+            if typed and real and typed != real and ed.get("show", True):
+                log(f"Contents: you typed page {typed} for \u201c{ed.get('title') or names.get(ed['uid'], '')}\u201d "
+                    f"- it starts on page {real}. (Edit contents > Page number, empty = automatic.)")
     return doc.page

@@ -1,6 +1,6 @@
 """Regression tests for the 1.5.1 fixes (plain Python - run:  python tests/test_regressions_151.py).
 
-Covers: "Rotate back sides 180" on single-sided printers, the zine warning, bookbinder-js print order and
+Covers: "Rotate back sides 180" on single-sided printers, the zine warning, print order and
 octavo layout, landscape paper sizes, larger pages on a short small-format book, Word tables / pictures /
 tracked changes, the Contents "Chapter N:" prefix in UPPERCASE, running heads on the Notes pages and the
 version number. Every file used is generated here, so the checks also run on GitHub Actions.
@@ -106,7 +106,7 @@ book = apply_info(load_book(s, s["paste_text"]), s)
 _folder, made, notes = run_build(book, s, lambda m: None)
 check(any("WARNING" in n and "left out" in n for n in notes), "zine warning is also in the printing notes")
 
-# ---------------------------------------------------------------- 3. print order and octavo as in bookbinder-js
+# ---------------------------------------------------------------- 3. print order and octavo layout
 # Each signature's innermost sheet first, inside face first (folio booklet of 8 pages: 4|5, 3|6, 2|7, 1|8).
 info = imp(8, imp_layout="Folio - 2 pages per side", sig_format="Booklet (one signature)")
 with pdfplumber.open(info["files"][0]) as pdf:
@@ -125,11 +125,11 @@ with pdfplumber.open(info["files"][0]) as pdf:
         ups = {(t < p.height / 2): up for n, up, x, t in cells}
         got.append((top, bottom, ups.get(True), ups.get(False)))
 want = [([7, 10, 11, 6], [2, 15, 14, 3], False, True), ([5, 12, 9, 8], [4, 13, 16, 1], False, True)]
-check(got == want, f"octavo sheet laid out as bookbinder-js lays it out {got}")
+check(got == want, f"octavo sheet laid out as expected {got}")
 check("fold 1: bring the RIGHT edge over to the LEFT edge" in info["instructions"],
       "octavo folding notes start with the right edge over to the left")
 
-# ---------------------------------------------------------------- 4. landscape paper entries (as bookbinder-js)
+# ---------------------------------------------------------------- 4. landscape paper entries
 # Ledger (17 x 11) is listed landscape, so it lays out like Tabloid with "Rotate paper 90".
 a = imp(imp_layout="Folio - 2 pages per side", sheet_size="Ledger (17 x 11)")
 b = imp(imp_layout="Folio - 2 pages per side", sheet_size="Tabloid / 11x17", rotate_paper=True)
@@ -142,7 +142,7 @@ e = imp(imp_layout="Folio - 2 pages per side", sheet_size="Custom", sheet_w=17, 
 check(e["sheet_in"] == (11.0, 17.0), f"custom 17 x 11 lays out like Ledger ({e['sheet_in']})")
 
 # ---------------------------------------------------------------- 5. short book on a small layout fills the sheet
-# As bookbinder-js: rows that are empty on both sides of the first sheet are left out, so pages print larger,
+# Rows that are empty on both sides of the first sheet are left out, so pages print larger,
 # and the fronts and backs keep the same page size (so they still line up).
 full = imp(12, imp_layout="Small book: 6 per side (3-folio signature)")
 short = imp(4, imp_layout="Small book: 6 per side (3-folio signature)")

@@ -1,10 +1,10 @@
 """Regression tests for bf_impose (plain Python - run:  python tests/test_impose.py).
 
-Fold-line rule checked here (matches bookbinder-js): each fold's guide line is printed on the face
+Fold-line rule checked here: each fold's guide line is printed on the face
 that is on top when that fold is made, i.e. on the INSIDE of the fold, unless the user picks
 Outside or Both.
 
-Printing order (matches bookbinder-js since 1.5.1): each signature's innermost sheet comes first, and
+Printing order (since 1.5.1): each signature's innermost sheet comes first, and
 each sheet's inside face is printed before its outside face.
 """
 import os
@@ -136,7 +136,7 @@ with pdfplumber.open(info["files"][0]) as f_pdf, pdfplumber.open(info["files"][1
     check(len(fold_lines(f_pdf.pages[0])) == 1 and not fold_lines(b_pdf.pages[0]),
           "single-sided: fold line is in the fronts file (inside face, printed first)")
 
-# ---------------------------------------------------------------- page range (bookbinder-js rules)
+# ---------------------------------------------------------------- page range rules
 check(parse_range("", 5) == [0, 1, 2, 3, 4], "page range: empty = all pages")
 check(parse_range("3, 1-2, 6-4", 8) == [0, 1, 2, 3, 4, 5], "page range: sorted, reversed range accepted")
 check(parse_range("abc, 99-100", 5) == [0, 1, 2, 3, 4], "page range: nothing valid -> whole document")

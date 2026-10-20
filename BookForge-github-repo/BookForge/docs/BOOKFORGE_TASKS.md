@@ -14,15 +14,13 @@ Status legend: [ ] todo  [~] in progress  [x] done  [!] blocked / needs user
   Recreate: apt install wine64; download cpython-3.12.x-x86_64-pc-windows-msvc-install_only from
   github.com/astral-sh/python-build-standalone releases; pip install pyinstaller reportlab pypdf
   beautifulsoup4 pillow python-docx pyphen fonttools. Build flags: see build_exe.bat / workflow.
-- bookbinder-js source for reference: git clone https://github.com/momijizukamori/bookbinder-js (MPL-2.0:
-  read for behaviour, do NOT copy code into MIT BookForge).
-- Test inputs uploaded by user: End_of_the_Line.epub (AO3), of_the_tales_of_ulmo_s_daughter_Momijuzukamori.pdf
-  (bookbinder-js reference output), On_the_Making_of_Man_-_Imposed_for_binding.pdf (BookForge output).
+- Test inputs uploaded by user: End_of_the_Line.epub (AO3), a reference imposed PDF,
+  On_the_Making_of_Man_-_Imposed_for_binding.pdf (BookForge output).
 
 ## Phase 1 — Inspection
 - [x] T1.1 Repo state: sandbox code == delivered v1.3 zip (all 8 .py identical). User's LOCAL git status is not visible from here -> ask user to run `git status` before applying changes.
 - [x] T1.2 Fold lines: ROOT CAUSE found (see findings log F1)
-- [x] T1.3 bookbinder-js parity audit: see F2 (live app UI + source in /tmp/bbjs)
+- [x] T1.3 Imposition parity audit: see F2 (live app UI + its source)
 - [x] T1.4 Chapter workflow: bugs B1-B3 (EPUB) and P1-P3 (pasted text) found, see F3. [!] AO3 85682851 unreachable (HTTP 525) -> need user's local copy
 - [x] T1.5 Fonts: see F4
 - [x] T1.6 No automated test suite exists (only ad-hoc scripts); packaging = PyInstaller (build_exe.bat, GitHub Actions workflow, Wine locally)
@@ -79,7 +77,7 @@ Status legend: [ ] todo  [~] in progress  [x] done  [!] blocked / needs user
 (appended as work proceeds)
 
 F1 Fold lines (verified by measuring both PDFs with pdfplumber):
-- Reference (bookbinder-js, portrait 612x792, content rotated): fold line y=396 drawn on PDF pages 1,3,... = the
+- Reference (portrait 612x792, content rotated): fold line y=396 drawn on PDF pages 1,3,... = the
   INSIDE face of each folio (pages that meet at the fold, e.g. contents 2|3). Outside faces have none.
 - BookForge v1.3 (landscape 792x612): fold line x=396 on PDF pages 1,3,... = BookForge's "front" side, which is
   the OUTSIDE face (title page + last page of the signature).
@@ -87,7 +85,7 @@ F1 Fold lines (verified by measuring both PDFs with pdfplumber):
   front side. fold_plan() lays sheets printed-first-side DOWN, so "front" = outside of every fold.
 - So root cause is not a left/right coordinate slip: fold lines are tied to the wrong FACE, and for multi-fold
   layouts all folds are drawn full-length on one face although each fold is made with a different face on top.
-- bookbinder-js rule (utils/drawing.js drawFoldlines): 1st fold on inside face full length; later folds on the
+- Reference rule: 1st fold on inside face full length; later folds on the
   other face, only over the half that is showing, distinct dash patterns per fold.
 - Planned fix: derive fold-guide segments from the fold simulation (for fold k: crease segment on the face that is
   on top of the packet just before fold k, only across the top layer's cells), convert to each face's print
@@ -95,7 +93,7 @@ F1 Fold lines (verified by measuring both PDFs with pdfplumber):
   after the overlay merge, so lines follow rotate_back / rotate_paper automatically (verify in testing).
 
 
-F2 bookbinder-js parity (reference = live app controls in index.html/src/html + source; BookForge v1.3):
+F2 Imposition parity (against a reference imposer; BookForge v1.3):
  OK (implemented; verify output in Phase 4): folio/quarto/octavo/sextodecimo; 7 small layouts incl. 8-page zine;
    booklet/perfect/standard/custom signatures; flyleafs; 5 source-rotation styles; duplex/single-sided split files;
    alternate page rotation (= BookForge "rotate back sides"); keep proportional/stretch/original; centered/binding-
@@ -296,17 +294,17 @@ reintroduced) makes both new gates fail. Windows: folder + single-file exe rebui
 command from the fixed code: full book (7 outputs, EB Garamond/Cinzel embedded, margins mirrored correctly),
 --preview-check and --preview-window-check pass. NOT verified: real macOS run, real Windows (only Wine), printer.
 
-## 2026-10-19 (later) — 1.5.1: the five reported items + bookbinder-js parity (Cowork session)
-User asked: make the binding settings work like bookbinder-js (reference URL: aggregated, LETTER, fold lines,
+## 2026-10-19 (later) — 1.5.1: the five reported items + imposition parity (Cowork session)
+User asked: make the binding settings work like the reference imposer (reference URL: aggregated, LETTER, fold lines,
 stretch, perfect, flyleafs 0), check every other option against it, fix the five "NOT CHANGED" items above, and
 bump the version to 1.5.1. For the convention questions the user asked for my recommendations ("ease of use and
-results comparable to bookbinder-js"): match print order + octavo, keep the even signature split, keep the extras.
-bookbinder-js (MPL-2.0) was read and run unchanged in Node for comparison only; none of its code is in BookForge.
+results comparable to the reference imposer"): match print order + octavo, keep the even signature split, keep the extras.
+The reference imposer was only run for comparison; none of its code is in BookForge.
 
 FIXED / CHANGED
 - bf_impose emit(): "Rotate back sides 180" now also turns the backs file for both single-sided printer types.
 - bf_impose 8_zine: warning in the log, info["warning"] and the READ ME notes when book pages don't fit (counts
-  flyleafs). Layout unchanged (bookbinder-js also drops pages after 8).
+  flyleafs). Layout unchanged (the reference imposer also drops pages after 8).
 - bf_core parse_docx: body read in document order (paragraphs AND tables; each table row -> one paragraph, cells
   joined by an em space like the HTML/EPUB importer; merged cells once; nested tables go with their cell); runs
   read through w:ins / w:moveTo / smartTag / customXml / fldSimple / sdt (tracked deletions and moveFrom left
@@ -318,21 +316,21 @@ FIXED / CHANGED
 - Version 1.5.1: APP_VERSION, version_info.txt (1.5.1.0), README (tag example + corrected release text: the
   active workflows don't check tag vs APP_VERSION, Run workflow on Windows publishes to the tag you type, no
   custom-compiled launcher), root main.yml dispatch default v1.5.1, cross-platform example tag + v1.5.1 notes.
-PARITY CHANGES (bookbinder-js behaviour)
+PARITY CHANGES
 - Folio/quarto/octavo/16mo printing order: each signature's innermost sheet first, inside face ("B") first.
   Sides carry side["face"]; fold guides use the face, crop marks stay on the outside face. Folding notes: "lay it
   with the side that printed FIRST facing UP", "put sheet 1 into the centre of sheet 2 ...". GUI help text too.
-- Octavo folds "vHV": fold 1 right edge over to the left (fold_plan supports "v"); layout now = bookbinder-js.
-- Paper: Ledger/ID-1/ID-2/ID-3 stored landscape like bookbinder-js; a landscape entry (or custom w > h) lays out
+- Octavo folds "vHV": fold 1 right edge over to the left (fold_plan supports "v"); layout now = the reference imposer.
+- Paper: Ledger/ID-1/ID-2/ID-3 stored landscape like the reference imposer; a landscape entry (or custom w > h) lays out
   like the upright size with Rotate paper 90 (turn = rotate_paper XOR w > h).
-- Small layouts: drop_blank_rows() leaves out first-sheet rows that are blank on BOTH sides (bookbinder-js drops
+- Small layouts: drop_blank_rows() leaves out first-sheet rows that are blank on BOTH sides (the reference imposer drops
   per side, which misaligns fronts/backs when a row is blank on one side only - BookForge keeps that row).
-KEPT ON PURPOSE (differences from bookbinder-js; bookbinder-js drops pages or ignores the setting)
-- Standard signature split: identical whenever bookbinder-js's own plan adds up (all sizes 2-12 x 1-40 sheets);
+KEPT ON PURPOSE (differences from the reference imposer; the reference imposer drops pages or ignores the setting)
+- Standard signature split: identical whenever the reference imposer's own plan adds up (all sizes 2-12 x 1-40 sheets);
   differs only where its formula plans more sheets than exist (e.g. 9 sheets at 8 -> 7+2; BookForge 5+4).
-- Custom signature list repeats its last size (bookbinder-js drops the remaining pages); open-ended ranges "12-";
+- Custom signature list repeats its last size (the reference imposer drops the remaining pages); open-ended ranges "12-";
   flyleafs also on small layouts; one-sided zine writes no empty backs file; rotate back also on small layouts.
-- Mark styles: BookForge "Cut lines / crop marks" = trim marks around each page on the outside face; bookbinder-js
+- Mark styles: BookForge "Cut lines / crop marks" = trim marks around each page on the outside face; the reference imposer
   "Cutlines" = short marks at the sheet's cut folds on every face. Not changed (ask the user if wanted).
 TESTS (all on this code): parity.py 184/193 SAME (9 = the kept differences above; 0 order/face notes);
 impose_check 84,199 checks, 145 = 144 by-design (alternating source rotation turns versos 180, identical before
@@ -345,3 +343,101 @@ Windows (Wine): all test_*.py pass with Windows Python, folder + single-file exe
 version resource 1.5.1.0, CLI books from a Word file (tables/pictures/insertions, EB Garamond/Cinzel), octavo
 single-sided rotate back, Ledger folio, zine warning, preview + preview-window checks pass.
 NOT VERIFIED: real Windows/macOS hardware, a real printer and hand folding of the new octavo steps.
+
+## 2026-10-19 (evening) — 1.6.0: PDFs, pictures, contents editing, update check (Cowork session)
+User asked for (spec followed as written): no mention of the reference imposer anywhere (UI, help, docs,
+changelogs, release notes; functionality kept); PDF import in two modes (default "Keep the pages as they are",
+or "Rebuild as an editable book"), plus keeping the source's own formatting for all formats where possible;
+pictures and cover art; an editable contents page with page numbers on every page and no stranded last
+entries; the dark-mode dropdown turning white; a "Check for updates" button with a quiet startup check
+(GitHub releases of chunksbabyruth/BookForge, latest published only, never download or run anything).
+
+DONE
+- Mentions removed everywhere (BookForge.py help + marks hint, bf_impose docstring/comments/fold notes,
+  README, tests, this tracker, release notes). Behaviour unchanged (same imposition results as 1.5.1).
+- Contents (bf_pdf): continuation pages are Table flowables, which were treated as blank pages, so their
+  page numbers were hidden -> now counted as content. "Contents spacing": Automatic (default) tightens the
+  spacing step by step, never below 8 pt type, when the last page would hold only a few entries; Normal;
+  Compact. Contents numbers are the printed labels (1, 2... / i, ii...). Chapters have stable ids (Chapter.uid)
+  so "Edit contents..." changes (Book.toc) survive renames/moves and are saved in projects. Typed page numbers
+  are never replaced; the log says when one doesn't match the real page. EPUB/HTML/TXT contents follow edits.
+- Pictures (bf_pictures, bf_edit, BookForge editor, bf_pdf, bf_export): Insert picture..., thumbnail in the
+  text, double-click dialog (size % of text width, alignment, in text / own page / full page edge to edge,
+  replace, remove, print size + dpi). Other formats converted to PNG/JPEG; EXIF rotation applied. Block fields
+  img_width / img_place. Full-page pictures: no folio or running head; own-page pictures: no running head.
+- Cover: front/back pictures (fill or fit), title over art optional, measured spine width (0 = estimate),
+  optional front picture as page 1 (back left blank), EPUB cover image, Cover view in the preview, Preview
+  cover button. Picture copies saved in projects (Book.cover_front/back) for when the files move.
+- PDF input (bf_pdfin): keep mode copies pages (pypdf) at the most common size, upright (rotation baked in),
+  cropped areas stay hidden, other sizes fitted and centred; preview/imposition/cover/notes use it; text
+  formats are skipped with a log note. Rebuild mode reads characters with pdfium (fonts, sizes, positions,
+  hyphen marks), drops running heads/page numbers (lines set apart at the page edges that repeat or are
+  numbers), rebuilds paragraphs (gaps, indents, short last lines, centring), headings by size or bookmarks,
+  lists, footnote lines, pictures; scanned pages kept as pictures; a scanned PDF explains OCR.
+- Keep the source's look (bf_keepfmt, optional): Word, EPUB/HTML (style sheets + inline styles) and rebuilt
+  PDFs keep other fonts (only fonts BookForge can use), relative sizes (%), colours, centred/right/indented
+  paragraphs. Sizes in % are turned into points when typeset; paragraphs with bigger words get autoLeading.
+- Dark-mode dropdown: the theme's selection colour was the light-mode tint and the clam theme shows unfocused
+  selections on light grey; fixed in bf_theme for "." and every combobox/entry (both modes).
+- Update check (bf_update): urllib + certifi (new small dependency, needed for secure connections in the
+  packaged macOS/Linux apps) with the system certificates as fallback; header button, Help menu, Settings &
+  storage toggle; startup check is silent unless a newer release exists. BOOKFORGE_NO_UPDATE_CHECK=1 turns
+  the startup check off (tests).
+- Version 1.6.0 (APP_VERSION, version_info.txt 1.6.0.0, README, main.yml default, cross-platform tags v*).
+TESTS (all on this code): new tests/test_regressions_160.py (58 checks, no internet needed); all repo tests
+0 failures (Linux and Windows Python under Wine); GUI test 0 failures + new GUI tests for contents editing,
+pictures/cover, PDF modes and the update window; dropdown colours: 64 dropdowns, 0 wrong in both modes;
+66 before/after builds identical; imposition checker identical to 1.5.1 (145 by-design); parity 184/193
+(unchanged); semantic: same 2 checker-heuristic failures as 1.5.1; matrix 2412 builds, 12 intended "margins
+too large", 0 output problems; local Linux workflow run all green; Windows folder + single-file exe rebuilt
+under Wine with main.yml's commands, all required modules + certifi inside, app launches, CLI books from PDF
+(kept and rebuilt), scanned PDF, Word with kept look, cover pictures + measured spine, preview checks pass.
+NOT VERIFIED: real Windows/macOS hardware; a live update check against GitHub (blocked in the build
+environment; tested against a local stand-in server); HTTPS from the packaged apps; OCR is not built in.
+
+## 2026-10-20 — 1.6.0 additions: step order, paper presets and units, blank pages (Cowork session)
+User asked (added to the 1.6.0 build, Windows workflow main.yml left exactly as it was):
+1. Steps in this order: 1 Source, 2 Book info, 3 Front & back, 4 Chapters, 5 Layout, 6 Specific Text Edit (the
+   old "Edit"), 7 Output; internal keys unchanged (src, info, front, chap, lay, edit, out).
+2. Every paper preset on the requested list, the selected paper's size shown next to it, a "Display unit for
+   paper selection" (inches, millimeters, centimeters, points) and a checked custom size typed in that unit.
+3. "Blank pages at beginning" / "Blank pages at end": real, empty pages of the book, before imposition.
+
+DONE
+- bf_theme.TABS holds the order (key, label, colour) and tab_index(key); every place that selected a tab by
+  number now uses the key (Next button, Edit chapter, editor commit on leaving the step). Ctrl+1..7 follow
+  the new order. Opening Book info / Front & back / Chapters / Specific Text Edit reads the source first.
+  The Shelf tab strip shrinks the tabs to fit narrow windows. Projects don't store tab numbers.
+- Paper: bf_impose.SHEETS already had all 57 names on the requested list (56 sizes: Tabloid and 11x17 are the same
+  sheet, merged as "Tabloid / 11x17"; Large Crown Octavo and Penguin Large Paperback share a size and keep
+  both names) plus A2; nothing added, nothing duplicated. Sizes stay in points. Display units:
+  in / mm / cm / pt (the requested four; no other units were asked for). New: UNIT_CHOICES, to_points / from_points,
+  fmt_length, paper_label ("Letter (8.5 × 11.0 inches)"), custom_sheet_points (1 pt .. 14,400 pt = 200 in
+  each side, finite numbers only, plain messages), sheet_points (Custom checked, never silently replaced).
+  Output tab: "Paper size: ..." line, display unit dropdown, custom W x H in that unit. Changing the unit
+  converts the stored custom size exactly (no rounding stored; 120 switches leave it unchanged); typing an
+  invalid size keeps the last valid one and says so; preview/build refuse an invalid size. The sheet
+  (printer paper) is separate from the book's page size; printing notes name the paper with its size.
+- Blank pages (bf_core.parse_blank_count / blank_pages, 0..500 whole numbers): bf_pdf adds them before
+  everything (title page, cover picture page) and after everything (notes pages, THE END); they carry no
+  folio or running head (Marker -> doc.bf["userblank"]), and page labels skip the front ones, so the book's
+  numbering is unchanged in every page-number style and the contents shows the printed labels. A kept PDF
+  gets them through add_blank_pages (pypdf). Imposition treats them as ordinary pages; padding to fill the
+  last signature and flyleafs are added on top as before. Word/EPUB/web/text files leave them out.
+  Odd front counts swap left/right pages, so running heads alternate accordingly (physical parity).
+  Saved in projects; older projects open with 0. bf_build.check_settings refuses an invalid blank count or
+  custom paper before any file is written (CLI too).
+- Fixes found on the way: the back of a front cover picture page is always blank now (it wasn't without a
+  title page); bf_export's cover trim fallback used a short paper table and failed for most presets.
+- GUI: hints under the new boxes wrap to the column's real width (narrow windows), errors show in red.
+TESTS (on this code): new tests/test_steps_paper_blanks.py (108 checks: step order, all 57 presets and their
+labels in 4 units, conversions, 342 real imposed PDFs for every preset x 3 layouts x rotation, custom sizes in
+every unit, all 11 layouts x duplex/single x rotate-back x marks, signature formats, blank pages in every page
+number style, blank pages imposed like marked pages in 92 layout/signature/count combinations, kept PDFs,
+projects, the window); all 9 repo tests 0 failures on Linux and with Windows Python under Wine; GUI test 83
+checks 0 failures; dropdown colours 88 dropdowns (incl. the unit dropdown) 0 wrong in both modes; 66
+before/after builds identical to 1.6.0; imposition checker and parity identical to 1.6.0; semantic same as
+1.6.0; matrix 2412 builds (12 "margins too large" + 8 refused 2000-inch custom paper, both intended) and a
+176-build blank-page/paper matrix with 0 problems; Linux workflow steps run locally; Windows exes rebuilt with
+main.yml's commands under Wine and used for books with blank pages and preset/custom paper.
+NOT VERIFIED: real Windows/macOS hardware, real printing and folding.
