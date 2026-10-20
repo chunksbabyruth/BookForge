@@ -1176,7 +1176,8 @@ def build_pdf(book, s, out_path, log=print):
                 # nothing before the first chapter but blank pages: it still opens on a right-hand page
                 story.append(DocIf("doc.page % 2 == 0", [PageBreak()]))
         elif ch.level == 0 or not cont:
-            new_page()
+            if not (cont and story and isinstance(story[-1], PageBreak)):
+                new_page()             # (in Continuous mode a part already ends with a page break: no empty page)
         else:
             story.append(Spacer(1, 28))
             story.append(CondPageBreak(fh * 0.28))

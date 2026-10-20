@@ -497,3 +497,10 @@ reference only; nothing copied).
       invalid values, project switching, new book, light/dark). About 900 PDFs per run.
 - Version 1.7.0 (APP_VERSION, version_info 1.7.0.0); v1.7.0 release notes in build-cross-platform.yml.
   main.yml NOT changed (its manual-run default tag still says v1.6.0: type v1.7.0 there).
+- After the first 1.7.0 upload (still 1.7.0, unreleased): the Windows CI run failed 2 window checks in
+  tests/test_page_placement.py - the test clicked New book while BookForge was still remaking the open preview
+  (slow runner; New book is ignored while busy, as always). The test now waits for BookForge to finish and for
+  redraws instead of fixed pauses (reproduced and verified with a deliberately slow preview). Reported by Robert:
+  (1) empty pages in the print PDF - in "Continuous" mode a part with its own text ends with a page break and the
+  next part added another (bf_pdf: no second break); (2) scrolling with a dropdown list open moved the page under
+  the list (App._wheel ignores the wheel while a ...popdown window is mapped). tests/test_regressions_170.py.

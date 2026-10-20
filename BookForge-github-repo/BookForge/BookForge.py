@@ -1893,10 +1893,20 @@ class App(tk.Tk):
         if th.TABS[i][0] == "edit" and getattr(self, "editor", None) is not None:
             self.editor.on_show()
 
+    def _dropdown_open(self):
+        """True while a dropdown list is open (its list is a separate little window named ...popdown)."""
+        try:
+            for p in self.tk.splitlist(self.tk.call("info", "commands", "*.popdown")):
+                if int(self.tk.call("winfo", "ismapped", p)):
+                    return True
+        except (tk.TclError, ValueError):
+            pass
+        return False
+
     def _wheel(self, e, delta=None):
         w = e.widget
-        if isinstance(w, (tk.Text, tk.Listbox, ttk.Treeview)) or str(w).endswith("popdown.f.l"):
-            return
+        if isinstance(w, (tk.Text, tk.Listbox, ttk.Treeview)) or "popdown" in str(w) or self._dropdown_open():
+            return                # never scroll the page out from under an open dropdown list
         try:
             if w.winfo_toplevel() is not self:
                 return            # wheel over another window (e.g. the preview), not over the settings pages

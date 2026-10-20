@@ -529,6 +529,8 @@ jobs:
 
           **Fixes**
           - Signature marks and sewing marks are printed on the fold, where the spine is, also when there is a binding margin (they used to follow the page edge).
+          - "Continuous" chapters: no more empty page between a part that has its own text and the next part.
+          - Scrolling while a dropdown list is open no longer moves the page (and the dropdown) under the list.
           - Dark mode: dropdowns, such as the printer type on the Output tab, no longer turn white after choosing a value and clicking away. Checked on every dropdown in both modes.
           - Words set bigger than the text around them no longer overlap the line above.
           - Very tall pictures stay on one page in the Word file.
