@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing or new release tag to publish (current release: v1.5.1)"
+        description: "Existing or new release tag to publish (current release: v1.6.0)"
         required: true
-        default: "v1.5.1"
+        default: "v1.6.0"
         type: string
 
 permissions:
