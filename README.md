@@ -413,7 +413,7 @@ BookForge is distributed under the MIT License.
 
 Copyright (c) 2026 ChunksBabyRuth.
 
-See [LICENSE](LICENSE) for the full license text.
+See [LICENSE](LICENSE.txt) for the full license text.
 
 BookForge uses third-party libraries and fonts, each subject to its own license. The bundled font license files are available under **Help → Fonts & licences**.
 
