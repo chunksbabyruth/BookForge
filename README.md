@@ -38,7 +38,7 @@ BookForge is built with PyInstaller, and some antivirus programs wrongly flag Py
 - **Builds the whole book:** title page, "This Book Belongs To" bookplate, dedication, an extra intro page, a contents page with real page numbers, chapter headings, "THE END" and lined notes pages.
 - **Blank pages at the beginning and end** (Front & back step): any number from 0 to 500 of truly blank pages before and after the book. They are real pages of the book, folded into the signatures like any other page, with no page number or running head; the book's own page numbers are not shifted by them. Signature padding and flyleafs are separate and still added as before. They are in the print PDF, the printing sheets and the preview; the EPUB, Word, web page and text files leave them out.
 - **Typography:** 14 free book and title fonts included (see *Fonts* below), any installed font, or your own font files (**My fonts…**: choose one file and BookForge finds the family's Regular, Italic, Bold and Bold Italic in the same folder) (Regular / Italic / Bold / Bold Italic, OpenType included), with separate fonts for body text, headings and drop caps. Hyphenation in 20 languages with your own dictionary for invented words, and no widows, orphans or one-word last lines.
-- **Page layout:** 9 page sizes plus custom, mirrored margins, drop caps 2–5 lines tall with rules for opening quotation marks, ornaments, running headers, and several page-numbering styles.
+- **Page layout:** 34 finished page sizes plus custom (US trade sizes such as 5 x 8, 5.5 x 8.5, 6 x 9 and 6.14 x 9.21 in; A4, A5, A6; ISO B4, B5 and B6; JIS B5 and B6; the traditional British octavo and quarto sizes and A- and B-format paperbacks), mirrored margins, drop caps 2–5 lines tall with rules for opening quotation marks, ornaments, running headers, and several page-numbering styles.
 - **Section breaks:** recognises the markers your text uses (`***`, `~`, `o0o`…) and centres them.
 - **Fanfiction downloads (AO3, FanFicFare):** optional work-info and summary pages, and author's notes set apart, kept as written, or left out.
 - **Never prints black boxes.** Characters missing from your font (accented Greek, Hebrew, symbols, CJK) are drawn with another installed font that has them.
@@ -52,10 +52,12 @@ Everything needed to print a book for hand binding, built in:
 
 - **Layouts:** folio, quarto, octavo, sextodecimo, small multi-signature layouts and the one-sheet zine
 - **Signatures:** booklet, perfect bound, standard, or custom sizes, plus flyleafs
-- **Pages:** page range, page rotation, scaling, positioning and margins
+- **Pages:** page range and page rotation
+- **Page placement:** scaling (*Keep proportional* fits the page inside the margins without changing its shape, *Stretch to fit* fills the space inside the margins, *Original size* never scales), position (*Centered* or *Snug against binding edge*), fore-edge, binding, top and bottom margins, and offsets that move every page toward the fore-edge or the top (negative: toward the spine or the bottom). Everything is in points (72 pt = 1 inch). A page bigger than its space is cut off at the edge of its space, never printed over its neighbours, and the printing notes say so
+- **Adjust page placement…:** a live view of a printing sheet drawn to scale, with the book's real pages, the margins and the spine, and the measurements of the page you click (sizes, scale, position and the white space on every side, in points). It changes as you change any setting; drag a page, or use the arrow keys, to set the offsets. The printing files use exactly the same placement
 - **Marks:** fold lines, cut lines, spine edge marks, signature order marks and sewing marks
 - **Printing:** duplex or single-sided printing, and aggregated and/or per-signature files
-- **Printer paper:** 57 paper sizes (US, ISO A and B, JIS B, architectural, foolscap, ID card, book and paperback sizes) or a custom size. The chosen paper's size is shown next to it in the **display unit for paper selection** (inches, millimetres, centimetres or points); a custom size is typed in that unit (decimals allowed), keeps its real size when you change the unit, and is checked (more than 0, at most 200 inches a side) before anything is made
+- **Printer paper:** 68 paper sizes, at their exact standard sizes (US Letter, Legal, Tabloid, Ledger, ANSI C to E; ISO A0 to A10 and B0 to B10; JIS B0 to B10; SRA3, SRA4 and Super B / A3+; Arch A to E1; foolscap, ID card, book and paperback sizes) or a size of your own: tick **Use a custom paper size** (Paper size then says Custom; untick it to go back to the paper you had). The chosen paper's size is shown next to it in the **display unit for paper selection** (inches, millimetres, centimetres or points); a custom size is typed in that unit (decimals allowed), keeps its real size when you change the unit, and is checked (more than 0, at most 200 inches a side) before anything is made
 
 ### Output formats
 
@@ -94,11 +96,11 @@ Alegreya, Baskervville, Crimson Pro, EB Garamond, Gelasio, Libre Baskerville, Li
 Versions go up by 0.1 for each minor update (1.5.0, 1.6.0, 1.7.0 ...) and by 0.0.1 for a bug-fix update (1.5.1). To publish one, set `APP_VERSION` in `bf_core.py` (and the numbers in `version_info.txt`), commit, then push a matching tag:
 
 ```
-git tag v1.6.0
-git push origin v1.6.0
+git tag v1.7.0
+git push origin v1.7.0
 ```
 
-GitHub then runs the tests, builds the program, checks that the fonts, their licences and the preview engine are inside it, and attaches `BookForge-Windows.zip` and `BookForge.exe` to the v1.6.0 release; the macOS and Linux workflow attaches its packages and the release notes to the same release. Check that the tag matches `APP_VERSION` before pushing it (the workflows don't check). **Run workflow** on the Actions tab also works: the Windows build asks for a release tag and attaches the files to that release (making the release if it doesn't exist yet), and the macOS and Linux build only attaches to a release when you type a tag; otherwise its packages stay downloadable from that run.
+GitHub then runs the tests, builds the program, checks that the fonts, their licences and the preview engine are inside it, and attaches `BookForge-Windows.zip` and `BookForge.exe` to the v1.7.0 release; the macOS and Linux workflow attaches its packages and the release notes to the same release. Check that the tag matches `APP_VERSION` before pushing it (the workflows don't check). **Run workflow** on the Actions tab also works: the Windows build asks for a release tag and attaches the files to that release (making the release if it doesn't exist yet), and the macOS and Linux build only attaches to a release when you type a tag; otherwise its packages stay downloadable from that run.
 
 ## Command line
 
@@ -124,14 +126,15 @@ build_exe.bat                    # or build the program folder (appears in dist\
 | `bf_export.py` | cover, EPUB, DOCX, HTML, TXT |
 | `bf_edit.py` | the editing model: paragraphs ⇄ formatted text, project files |
 | `bf_build.py` | the one-click build pipeline |
-| `bf_impose.py` | imposition: layouts, signatures, marks |
+| `bf_impose.py` | imposition: layouts, signatures, marks, paper sizes, page placement (one function places the pages for both the PDF and the placement window) |
+| `bf_placement.py` | the Adjust page placement window |
 | `bf_pdfin.py` | PDF files as sources: pages kept as they are, or text rebuilt into an editable book |
 | `bf_pictures.py` | pictures: reading, converting, sizes, cover pictures |
 | `bf_keepfmt.py` | keeping the source's own fonts, sizes, colours and alignment |
 | `bf_update.py` | the update check (reads GitHub's newest release; downloads nothing) |
 | `bf_fonts.py` | font discovery, custom families, OpenType conversion |
 | `bf_theme.py` | the colour theme |
-| `tests/` | regression tests: `python tests/test_impose.py`, `test_preview.py`, `test_editor.py`, `test_chapters.py`, `test_build.py`. Tests that need real books look for your own copies in `tests/inputs/` (never committed) named `ao3_story.epub`, `ao3_oneshot.html`, `gutenberg.epub` and `standard_ebooks.epub`, and skip themselves when they're missing |
+| `tests/` | regression tests: `python tests/test_impose.py`, `test_preview.py`, `test_editor.py`, `test_chapters.py`, `test_build.py`, `test_page_placement.py` and the others in the folder. Tests that need real books look for your own copies in `tests/inputs/` (never committed) named `ao3_story.epub`, `ao3_oneshot.html`, `gutenberg.epub` and `standard_ebooks.epub`, and skip themselves when they're missing |
 
 ## License
 
