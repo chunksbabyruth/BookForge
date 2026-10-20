@@ -7,79 +7,13 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 
-from bf_core import SHEET_SIZES, PAPERS, page_size_inches, plain, esc
+from bf_core import PAPERS, page_size_inches, plain, esc
 from bf_pdf import font_roles, apply_case, auto_label, LABELISH
 
 
 # --------------------------------------------------------------------------
-# Imposition: 2-up folio signatures on landscape sheets (perfect binding)
+# Finished page size on the printed sheets (for the cover)
 # --------------------------------------------------------------------------
-def impose(pdf_in, out_path, s, log=print):
-    from pypdf import PdfReader, PdfWriter, Transformation
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.colors import black
-
-    r = PdfReader(pdf_in)
-    pages = list(r.pages)
-    n = len(pages)
-    SW, SH = (v * 72 for v in SHEET_SIZES[s["sheet_size"]])
-    half = SW / 2
-    sheets = int(s["sig_sheets"])
-    sig_pages = (math.ceil(n / 4) * 4) if sheets <= 0 else sheets * 4
-    sigs, i = [], 0
-    while i < n:
-        chunk = list(range(i, min(i + sig_pages, n)))
-        while len(chunk) % 4:
-            chunk.append(None)
-        sigs.append(chunk)
-        i += sig_pages
-    sides = []
-    for si, sig in enumerate(sigs):
-        m = len(sig)
-        for j in range(m // 4):
-            sides.append((sig[m - 1 - 2 * j], sig[2 * j], si, j, True))
-            sides.append((sig[2 * j + 1], sig[m - 2 - 2 * j], si, j, False))
-    blanks = sum(1 for sig in sigs for x in sig if x is None)
-
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(SW, SH))
-    step = 16
-    usable = max(1, int((SH - 72) // step))
-    for (_, _, si, j, front) in sides:
-        if front and s["fold_marks"]:
-            c.setLineWidth(0.4)
-            c.line(half, SH, half, SH - 14)
-            c.line(half, 0, half, 14)
-        if front and j == 0 and s["sig_marks"]:
-            y = SH - 36 - (si % usable) * step
-            c.setFillColor(black)
-            c.rect(half - 3, y - 6, 6, 12, fill=1, stroke=0)
-            c.setFont("Helvetica", 6)
-            c.drawString(half + 5, y - 2, str(si + 1))
-        c.showPage()
-    c.save()
-    ov = PdfReader(io.BytesIO(buf.getvalue()))
-
-    w = PdfWriter()
-    for k, side in enumerate(sides):
-        pg = w.add_blank_page(SW, SH)
-        for slot, pi in enumerate(side[:2]):
-            if pi is None:
-                continue
-            src = pages[pi]
-            sw_, sh_ = float(src.mediabox.width), float(src.mediabox.height)
-            kk = min(half / sw_, SH / sh_)
-            tx = slot * half + (half - sw_ * kk) / 2
-            ty = (SH - sh_ * kk) / 2
-            pg.merge_transformed_page(src, Transformation().scale(kk).translate(tx, ty))
-        pg.merge_page(ov.pages[k])
-        if not side[4] and s["rotate_back"]:
-            pg.rotate(180)
-    with open(out_path, "wb") as f:
-        w.write(f)
-    return {"sheets": len(sides) // 2, "signatures": len(sigs), "blanks": blanks}
-
-
 def trim_size(s):
     pw, ph = page_size_inches(s)
     if s.get("_trim"):

@@ -451,3 +451,49 @@ Released to Robert's folders as 1.6.1 (APP_VERSION 1.6.1, version_info.txt 1.6.1
 v1.6.1 release notes in build-cross-platform.yml cover everything since 1.5.1, as 1.6.0 was never published).
 main.yml was left exactly as it was: its manual "Run workflow" default tag still says v1.6.0, so type v1.6.1 there
 (pushing the tag v1.6.1 needs nothing typed).
+
+## 2026-10-20 — 1.7.0: paper sizes, page scaling and positioning audit, live page placement view (Cowork session)
+
+Request: audit the paper sizes, scaling, positioning and live preview, trace every dimension from the window to
+the PDF, make the preview and the PDF share one geometry, add a live "Adjust page placement" window with
+diagnostics, test it all with real PDFs. Never name the reference imposer anywhere (it was used as a local
+reference only; nothing copied).
+
+- [x] Paper catalogue (bf_impose.SHEETS): exact sizes (ISO/JIS/ID/book sizes from millimetres, US/Arch from
+      inches; before, they were whole points from a rounded list, up to 0.5 pt off). "Large Crown Octavo" and
+      "Penguin Large Paperback" (the same size) merged into "Large Crown Octavo / Penguin Large Paperback";
+      SHEET_ALIASES keeps old names (and Tabloid/11x17) opening the same paper. New: A10, JIS B8-B10, ANSI C/D/E,
+      Arch D, Arch E1, SRA3, SRA4, Super B / A3+. 68 presets + Custom. Postcard kept at 283 x 416 pt (no single
+      standard has that size; unchanged so old projects print the same).
+- [x] Finished page sizes (bf_core.PAGE_SIZES, inches): A4/A5 exact (were 8.27 x 11.69 / 5.83 x 8.27 in);
+      26 new presets (US trade, square, A6, ISO B4-B6, JIS B5/B6, British octavo/quarto, A/B-format paperbacks);
+      34 + Custom. Every preset typesets with the default margins. Custom page size checked (0.1-200 in, finite)
+      in core and in the window (typed text, never silently replaced). Dead bf_export.impose()/SHEET_SIZES removed.
+- [x] One geometry: bf_impose.place_page / plan_imposition / Placement. impose() (the PDF) and the new
+      bf_placement.PlacementWindow both use plan_imposition; the window only converts points to pixels.
+      Formulas: area = cell - margins (from the page's own spine/fore-edge/head/foot); Keep proportional
+      s = min(aw/w, ah/h); Stretch sx = aw/w, sy = ah/h; Original 1; Centered / Snug (against the spine-side
+      margin); offsets + toward fore-edge / head. A page bigger than its cell is clipped to its cell (cropbox
+      on the source page before merging) and the notes/window warn. Each page is fitted by its own size.
+- [x] Offsets imp_offset_x / imp_offset_y (points, -10000..10000; margins 0..10000), checked by
+      bf_impose.placement_settings (finite numbers, decimal comma, unicode minus); bf_build.check_settings
+      refuses bad values before writing anything; settings_problem in the window; collect() reads the typed text.
+      Old projects/settings: offsets 0; old paper names mapped in App._apply.
+- [x] Marks: signature-order and sewing marks drawn on the fold (the cell's spine edge), not the page edge.
+- [x] Output tab: offsets rows, hint/validation message, "Adjust page placement..." button. Window: sheet to scale,
+      real typeset pages (typeset in a thread with the same bf_build.typeset), placeholders while setting,
+      margins shaded, spine red, diagnostics (points), drag/arrow keys set offsets, Reset offsets, Escape closes.
+      Live on every setting (var traces), 1.5 s watch for text boxes/book edits (App.book_rev counts edits).
+      Its timers are cancelled when it closes.
+- [x] Project switching: open project / new book / new source mark an open Preview window "Out of date" and make
+      it again (when there is a book); the placement window sets the new pages.
+- [x] tests/test_page_placement.py (new): catalogues, every finished preset typeset + imposed, every paper preset
+      imposed (matrix and drawn content), the worked example (612 x 792 in 2004 x 2834: 3.27451, 2004 x 2593.41,
+      120.29; stretch 3.27451 x 3.57828), a landscape page with margins, 360 scaling/position/margin/offset
+      combinations on 4 fold layouts x 5 page shapes, source rotations, turned paper, large B sheets, clipping
+      (rendered), mixed sizes, 96 imposition paths with all marks, marks on the fold, small layouts, typed-value
+      checks, notes, projects, kept/rebuilt PDFs, and the window (8 configurations compared side by side with
+      the preview/build PDF on every side, worked example in the window, live updates, drag, keys, reset,
+      invalid values, project switching, new book, light/dark). About 900 PDFs per run.
+- Version 1.7.0 (APP_VERSION, version_info 1.7.0.0); v1.7.0 release notes in build-cross-platform.yml.
+  main.yml NOT changed (its manual-run default tag still says v1.6.0: type v1.7.0 there).

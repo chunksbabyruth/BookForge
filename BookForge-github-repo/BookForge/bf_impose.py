@@ -16,26 +16,44 @@ import re
 from bf_core import safe_name, DEFAULTS
 
 PT = 72.0
-SHEETS = {  # width, height in points; the few landscape entries lay out turned
-    "Letter": (612, 792), "Legal": (612, 1008), "Tabloid / 11x17": (792, 1224),
-    "Half Letter": (396, 612), "Executive": (522, 756), "Note": (540, 720),
-    "A3": (842, 1191), "A4": (595, 842), "A5": (420, 595), "A6": (297, 420),
-    "B4": (708, 1000), "B5": (498, 708), "JIS B4": (729, 1032), "JIS B5": (516, 729),
-    "Postcard": (283, 416),
-    "Ledger (17 x 11)": (1224, 792), "US Foolscap (8.5 x 13)": (612, 936), "Foolscap (9 x 13)": (648, 936),
-    "A0": (2384, 3370), "A1": (1684, 2384), "A2": (1191, 1684), "A7": (210, 297), "A8": (148, 210),
-    "A9": (105, 148), "B0": (2834, 4008), "B1": (2004, 2834), "B2": (1417, 2004), "B3": (1000, 1417),
-    "B6": (354, 498), "B7": (249, 354), "B8": (175, 249), "B9": (124, 175), "B10": (87, 124),
-    "JIS B0": (2920, 4127), "JIS B1": (2064, 2920), "JIS B2": (1460, 2064), "JIS B3": (1032, 1460),
-    "JIS B6": (363, 516), "JIS B7": (258, 363), "Arch A": (648, 864), "Arch B": (864, 1296),
-    "Arch C": (1296, 1728), "Arch E": (2592, 3456), "ID-1": (242.65, 153), "ID-2": (297, 210),
-    "ID-3": (354, 249), "Crown Quarto": (535, 697), "Large Crown Quarto": (569, 731),
-    "Demy Quarto": (620, 782), "Royal Quarto": (671, 884), "Crown Octavo": (348, 527),
-    "Large Crown Octavo": (365, 561), "Demy Octavo": (391, 612), "Royal Octavo": (442, 663),
-    "Small Paperback": (314, 504), "Penguin Small Paperback": (314, 513),
-    "Penguin Large Paperback": (365, 561),
+
+
+def _mm(w, h):
+    """A size given in millimetres, as points (exact; 1 pt = 1/72 inch, 1 inch = 25.4 mm)."""
+    return (w * PT / 25.4, h * PT / 25.4)
+
+
+# Printer paper (sheets), width x height in points, the way round they are usually listed: the few landscape
+# entries (Ledger, ID cards) lay out turned. US and architectural sizes are exact inches; ISO, JIS, ID-card and
+# book sizes are exact millimetres (the names show them rounded and are never read back).
+SHEETS = {
+    "Letter": (612.0, 792.0), "Legal": (612.0, 1008.0), "Tabloid / 11x17": (792.0, 1224.0),
+    "Half Letter": (396.0, 612.0), "Executive": (522.0, 756.0), "Note": (540.0, 720.0),
+    "A3": _mm(297, 420), "A4": _mm(210, 297), "A5": _mm(148, 210), "A6": _mm(105, 148),
+    "B4": _mm(250, 353), "B5": _mm(176, 250), "JIS B4": _mm(257, 364), "JIS B5": _mm(182, 257),
+    "Postcard": (283.0, 416.0),
+    "Ledger (17 x 11)": (1224.0, 792.0), "US Foolscap (8.5 x 13)": (612.0, 936.0), "Foolscap (9 x 13)": (648.0, 936.0),
+    "ANSI C (17 x 22)": (1224.0, 1584.0), "ANSI D (22 x 34)": (1584.0, 2448.0), "ANSI E (34 x 44)": (2448.0, 3168.0),
+    "Super B / A3+ (13 x 19)": (936.0, 1368.0), "SRA3": _mm(320, 450), "SRA4": _mm(225, 320),
+    "A0": _mm(841, 1189), "A1": _mm(594, 841), "A2": _mm(420, 594), "A7": _mm(74, 105), "A8": _mm(52, 74),
+    "A9": _mm(37, 52), "A10": _mm(26, 37), "B0": _mm(1000, 1414), "B1": _mm(707, 1000), "B2": _mm(500, 707), "B3": _mm(353, 500),
+    "B6": _mm(125, 176), "B7": _mm(88, 125), "B8": _mm(62, 88), "B9": _mm(44, 62), "B10": _mm(31, 44),
+    "JIS B0": _mm(1030, 1456), "JIS B1": _mm(728, 1030), "JIS B2": _mm(515, 728), "JIS B3": _mm(364, 515),
+    "JIS B6": _mm(128, 182), "JIS B7": _mm(91, 128), "JIS B8": _mm(64, 91), "JIS B9": _mm(45, 64),
+    "JIS B10": _mm(32, 45), "Arch A": (648.0, 864.0), "Arch B": (864.0, 1296.0),
+    "Arch C": (1296.0, 1728.0), "Arch D": (1728.0, 2592.0), "Arch E": (2592.0, 3456.0),
+    "Arch E1 (30 x 42)": (2160.0, 3024.0),
+    "ID-1": _mm(85.6, 53.98), "ID-2": _mm(105, 74), "ID-3": _mm(125, 88),
+    "Crown Quarto": _mm(189, 246), "Large Crown Quarto": _mm(201, 258),
+    "Demy Quarto": _mm(219, 276), "Royal Quarto": _mm(237, 312), "Crown Octavo": _mm(123, 186),
+    "Large Crown Octavo / Penguin Large Paperback": _mm(129, 198), "Demy Octavo": _mm(138, 216),
+    "Royal Octavo": _mm(156, 234), "Small Paperback": _mm(111, 178), "Penguin Small Paperback": _mm(111, 181),
     "Custom": None,
 }
+# Names used by earlier BookForge versions (kept so their projects and settings still open the same paper).
+SHEET_ALIASES = {"Tabloid": "Tabloid / 11x17", "11x17": "Tabloid / 11x17",
+                 "Large Crown Octavo": "Large Crown Octavo / Penguin Large Paperback",
+                 "Penguin Large Paperback": "Large Crown Octavo / Penguin Large Paperback"}
 UNITS = {"in": 72.0, "cm": 72.0 / 2.54, "mm": 72.0 / 25.4, "pt": 1.0}     # points per unit
 # Display unit for paper selection: (code, menu name, word used after a size)
 UNIT_CHOICES = [("in", "Inches", "inches"), ("mm", "Millimeters", "mm"), ("cm", "Centimeters", "cm"),
@@ -77,6 +95,7 @@ IMPOSE_DEFAULTS = {
     "printer_type": "Duplex (two-sided printer)", "rotate_paper": False, "rotate_back": False,
     "imp_scaling": "Keep proportional", "imp_position": "Centered",
     "imp_fore": 0.0, "imp_binding": 0.0, "imp_top": 0.0, "imp_bottom": 0.0,
+    "imp_offset_x": 0.0, "imp_offset_y": 0.0,      # page offsets (pt): toward the fore-edge / toward the top
     "fold_marks": True, "fold_side": "Inside (recommended)", "cut_marks": False, "edge_marks": False, "sig_marks": True,
     "sewing_marks": False, "sewing_where": "Center of every folio", "sewing_margin": 72.0,
     "sewing_count": 3, "sewing_tape": 36.0, "imp_files": "Aggregated file only",
@@ -93,8 +112,8 @@ DEFAULTS["sig_sheets"] = 8
 # --------------------------------------------------------------------------
 def sheet_name(s):
     name = s.get("sheet_size", "Letter")
-    if name not in SHEETS:            # names used by BookForge 1.0-1.2
-        name = {"Tabloid": "Tabloid / 11x17"}.get(name, "Letter")
+    if name not in SHEETS:            # names used by earlier versions; anything unknown is Letter
+        name = SHEET_ALIASES.get(name, "Letter")
     return name
 
 
@@ -563,16 +582,266 @@ def _crop_marks(c, x, y, w, h, off=3, ln=9):
 # --------------------------------------------------------------------------
 # Main entry
 # --------------------------------------------------------------------------
-def impose(pdf_in, out_dir, base_name, s, log=print):
-    from pypdf import PdfReader, PdfWriter
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.colors import black
+# --------------------------------------------------------------------------
+# Page placement: where one page goes in its space on the sheet. The PDF (impose) and the page placement
+# preview both use place_page / wacky_place through plan_imposition, so they can never disagree.
+# All lengths are in points (1 pt = 1/72 inch), origin at the bottom left of the sheet.
+# --------------------------------------------------------------------------
+SCALINGS = ["Keep proportional", "Stretch to fit", "Original size"]
+POSITIONS = ["Centered", "Snug against binding edge"]
+MARGIN_MAX_PT = 10000.0          # margins: 0 .. 10,000 pt (139 inches) - more than the largest sheet's half
+OFFSET_MAX_PT = 10000.0          # offsets: -10,000 .. 10,000 pt
+_EPS = 1e-6
+_MARGIN_LABELS = (("imp_fore", "Fore-edge margin"), ("imp_binding", "Binding margin"),
+                  ("imp_top", "Top margin"), ("imp_bottom", "Bottom margin"))
+_OFFSET_LABELS = (("imp_offset_x", "Offset toward the fore-edge"), ("imp_offset_y", "Offset toward the top"))
 
+
+def parse_points(value, label, lo, hi):
+    """A margin or offset in points -> float, checked (a number, finite, within lo..hi). ValueError otherwise."""
+    if isinstance(value, bool):
+        raise ValueError(f"{label}: type a number of points.")
+    if isinstance(value, (int, float)):
+        v = float(value)
+        shown = format(v, "g")
+    else:
+        shown = str(value if value is not None else "").strip()
+        if not shown:
+            raise ValueError(f"{label}: type a number of points (0 for none).")
+        try:
+            v = float(shown.replace(",", ".").replace("\u2212", "-"))
+        except ValueError:
+            raise ValueError(f"{label}: \u201c{shown}\u201d isn't a number of points.") from None
+    if not math.isfinite(v):
+        raise ValueError(f"{label}: \u201c{shown}\u201d isn't an ordinary number of points.")
+    if v < lo or v > hi:
+        raise ValueError(f"{label} must be between {lo:g} and {hi:g} points (it is {shown}).")
+    return v
+
+
+def placement_settings(s):
+    """The page scaling, position, margins and offsets from the settings, checked (ValueError with a plain
+    message for a margin or offset that isn't an ordinary number in range)."""
+    vals = {}
+    for key, label in _MARGIN_LABELS:
+        vals[key] = parse_points(s.get(key, 0.0) if s.get(key) is not None else 0.0, label, 0.0, MARGIN_MAX_PT)
+    for key, label in _OFFSET_LABELS:
+        vals[key] = parse_points(s.get(key, 0.0) if s.get(key) is not None else 0.0, label,
+                                 -OFFSET_MAX_PT, OFFSET_MAX_PT)
+    scaling = s.get("imp_scaling") or SCALINGS[0]
+    if not any(scaling.startswith(x.split()[0]) for x in SCALINGS):
+        scaling = SCALINGS[0]
+    return {"scaling": scaling, "snug": (s.get("imp_position") or "Centered").startswith("Snug"),
+            "position": "Snug against binding edge" if (s.get("imp_position") or "").startswith("Snug") else "Centered",
+            "fore": vals["imp_fore"], "binding": vals["imp_binding"], "top": vals["imp_top"],
+            "bottom": vals["imp_bottom"], "offset_x": vals["imp_offset_x"], "offset_y": vals["imp_offset_y"]}
+
+
+class Placement:
+    """One page in its space ("cell") on the sheet. Lengths in points, sheet origin at the bottom left.
+
+    cell: (x0, y0, width, height) - the page's share of the sheet; area: the cell less the margins;
+    bind: the side of the cell where the spine is, "L" or "R" (as seen on the printed sheet);
+    rot: 0 = the page's head is up, 180 = upside down; ang: how far the source page is turned (degrees,
+    counter-clockwise: the cell's 180 plus any source rotation); src: source page size; sx, sy: scale;
+    x, y, w, h: where the page lands. gaps: white space between the page and its cell edges, named from
+    the page's point of view (spine, fore-edge, top, bottom); a negative gap means the page sticks out."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    @property
+    def rotated(self):
+        return self.ang % 360 != 0
+
+    def clip_box(self, page):
+        """None when the page stays inside its cell; otherwise the part of the source page (source page
+        coordinates) that lies inside the cell, so nothing is printed over the neighbouring pages."""
+        if self.fits_cell:
+            return None
+        mb = page.mediabox
+        cx = float(mb.left) + float(mb.width) / 2
+        cy = float(mb.bottom) + float(mb.height) / 2
+        tx, ty = self.x + self.w / 2, self.y + self.h / 2
+        a = math.radians(-self.ang)
+        ca, sa = math.cos(a), math.sin(a)
+        pts = []
+        x0, y0, cw, ch = self.cell
+        for px, py in ((x0, y0), (x0 + cw, y0), (x0, y0 + ch), (x0 + cw, y0 + ch)):
+            qx, qy = (px - tx) / self.sx, (py - ty) / self.sy           # undo translate + scale
+            pts.append((qx * ca - qy * sa + cx, qx * sa + qy * ca + cy))    # undo the turn
+        cb = page.cropbox
+        left = max(min(p[0] for p in pts), float(cb.left))
+        right = min(max(p[0] for p in pts), float(cb.right))
+        bottom = max(min(p[1] for p in pts), float(cb.bottom))
+        top = min(max(p[1] for p in pts), float(cb.top))
+        if right <= left or top <= bottom:
+            return (float(cb.left), float(cb.bottom), float(cb.left), float(cb.bottom))   # nothing visible
+        return (left, bottom, right, top)
+
+
+def _clip_source(page, box):
+    from pypdf.generic import RectangleObject
+    page.cropbox = RectangleObject(box)
+    page.trimbox = RectangleObject(box)
+
+
+def _gaps(x, y, w, h, cell, bind, rot):
+    x0, y0, cw, ch = cell
+    left, right = x - x0, (x0 + cw) - (x + w)
+    bottom, top = y - y0, (y0 + ch) - (y + h)
+    spine, fore = (left, right) if bind == "L" else (right, left)
+    head, foot = (top, bottom) if rot == 0 else (bottom, top)
+    return {"spine": spine, "fore": fore, "top": head, "bottom": foot}
+
+
+def place_page(cell, bind, rot, pw, ph, ang, ps):
+    """Scale and position a pw x ph source page (turned by ang degrees) in its cell, following the page
+    scaling, position, margins and offsets in ps (see placement_settings).
+
+    Margins: whitespace kept free inside the cell at the spine (binding), fore-edge, top and bottom,
+    measured from the page's point of view (the spine side is `bind`, the top is down when rot == 180).
+    Keep proportional: one scale, min(usable width / page width, usable height / page height).
+    Stretch to fit: usable width / page width across, usable height / page height down.
+    Original size: scale 1. Centered: the page sits in the middle of the usable area; Snug: against the
+    usable area's spine side, centered up and down. Offsets then move the page: offset_x toward the
+    fore-edge (negative: toward the spine), offset_y toward the top (negative: toward the bottom)."""
+    x0, y0, cw, ch = cell
+    m_fore, m_bind, m_top, m_bot = ps["fore"], ps["binding"], ps["top"], ps["bottom"]
+    ml = m_bind if bind == "L" else m_fore
+    mr = m_fore if bind == "L" else m_bind
+    mt, mb = (m_top, m_bot) if rot == 0 else (m_bot, m_top)
+    aw, ah = cw - ml - mr, ch - mt - mb
+    if aw <= 0 or ah <= 0:
+        raise ValueError(f"The margins leave no room for the pages: each page has {cw:.2f} × {ch:.2f} pt "
+                         f"on the sheet, and the margins take {ml + mr:.2f} pt across and {mt + mb:.2f} pt "
+                         "down. Make the margins smaller.")
+    ax, ay = x0 + ml, y0 + mb
+    rw, rh = (ph, pw) if ang in (90, 270) else (pw, ph)
+    mode = ps["scaling"]
+    if mode.startswith("Original"):
+        sx = sy = 1.0
+    elif mode.startswith("Stretch"):
+        sx, sy = aw / rw, ah / rh
+    else:
+        sx = sy = min(aw / rw, ah / rh)
+    w, h = rw * sx, rh * sy
+    x = (ax if bind == "L" else ax + aw - w) if ps["snug"] else ax + (aw - w) / 2
+    y = ay + (ah - h) / 2
+    x += ps["offset_x"] if bind == "L" else -ps["offset_x"]
+    y += ps["offset_y"] if rot == 0 else -ps["offset_y"]
+    gaps = _gaps(x, y, w, h, cell, bind, rot)
+    need = {"spine": m_bind, "fore": m_fore, "top": m_top, "bottom": m_bot}
+    return Placement(kind="fold", cell=cell, area=(ax, ay, aw, ah), bind=bind, rot=rot, ang=ang % 360,
+                     src=(pw, ph), rsize=(rw, rh), sx=sx, sy=sy, x=x, y=y, w=w, h=h, mode=mode,
+                     snug=ps["snug"], margins=need, offset=(ps["offset_x"], ps["offset_y"]), gaps=gaps,
+                     fits_area=all(gaps[k] >= need[k] - _EPS for k in gaps),
+                     fits_cell=all(v >= -_EPS for v in gaps.values()))
+
+
+def wacky_geometry(W, H, nrows, ncols, pw0, ph0, s):
+    """The small layouts' own spacing: every page the same size, as large as the grid allows (keep
+    proportional), with the fore-edge padding between folios; page scaling, position, margins and offsets
+    don't apply to them."""
+    fore = float(s.get("wacky_fore") or 0)
+    scale = min(W / (ncols * (pw0 + fore)), H / (nrows * ph0))
+    pw, ph, fg = pw0 * scale, ph0 * scale, fore * scale
+    packed = (s.get("wacky_spacing") or "Packed").startswith("Packed")
+    left = (W - ncols * (pw + fg)) / (2 if packed else ncols)
+    top = (H - nrows * ph) / (2 if packed else 2 * nrows)
+    return {"nrows": nrows, "ncols": ncols, "pw0": pw0, "ph0": ph0, "pw": pw, "ph": ph, "fg": fg,
+            "left": left, "top": top, "packed": packed, "fore": fore}
+
+
+def wacky_cell_xy(g, r, i):
+    hoff = g["left"] if g["packed"] else (1 + i - (i % 2)) * g["left"]
+    voff = g["top"] if g["packed"] else g["top"] + 2 * g["top"] * r
+    x = (g["pw"] + g["fg"]) * i + hoff + g["fg"] * ((i + 1) % 2)
+    y = g["ph"] * r + voff         # row 0 at the bottom of the sheet
+    return x, y
+
+
+def wacky_place(g, x, y, ang, bind, size=None):
+    """A page in its small-layout space. Pages of the first page's size fill the space exactly; a page of
+    another size (only possible in a PDF that wasn't made by BookForge) keeps its proportions, centered."""
+    pw, ph = g["pw"], g["ph"]
+    cell = (x, y, pw, ph)
+    sw, sh = (float(v) for v in size) if size else (g["pw0"], g["ph0"])
+    if (sw, sh) == (g["pw0"], g["ph0"]):
+        sx, sy, w, h, px, py = pw / sw, ph / sh, pw, ph, x, y
+    else:
+        sx = sy = min(pw / sw, ph / sh)
+        w, h = sw * sx, sh * sy
+        px, py = x + (pw - w) / 2, y + (ph - h) / 2
+    return Placement(kind="small", cell=cell, area=cell, bind=bind, rot=ang, ang=ang, src=(sw, sh),
+                     rsize=(sw, sh), sx=sx, sy=sy, x=px, y=py, w=w, h=h,
+                     mode="Keep proportional (small layouts)", snug=False,
+                     margins={"spine": 0.0, "fore": 0.0, "top": 0.0, "bottom": 0.0}, offset=(0.0, 0.0),
+                     gaps=_gaps(px, py, w, h, cell, bind, ang), fits_area=True, fits_cell=True)
+
+
+def first_placement(sides):
+    for side in sides:
+        for _si, g in side.get("places", []):
+            return g
+    return None
+
+
+def placement_summary(sides):
+    """One line for the printing notes: how the pages are scaled and placed (points)."""
+    g = first_placement(sides)
+    if g is None:
+        return ""
+    if g.kind == "small":
+        return (f"Page placement: small layout, every page {g.w:.2f} \u00d7 {g.h:.2f} pt (scale {g.sx:.4f}); "
+                "page scaling, position, margins and offsets don't apply to small layouts.")
+    m = g.margins
+    return (f"Page placement: {g.mode}, {'snug against the binding edge' if g.snug else 'centered'}; source page "
+            f"{g.src[0]:.2f} \u00d7 {g.src[1]:.2f} pt, on the sheet {g.w:.2f} \u00d7 {g.h:.2f} pt (scale "
+            f"{g.sx:.4f} \u00d7 {g.sy:.4f}) in a {g.cell[2]:.2f} \u00d7 {g.cell[3]:.2f} pt space; margins fore-edge "
+            f"{m['fore']:g}, binding {m['spine']:g}, top {m['top']:g}, bottom {m['bottom']:g} pt; offsets "
+            f"{g.offset[0]:g} pt toward the fore-edge, {g.offset[1]:g} pt toward the top.")
+
+
+def placement_problems(sides):
+    """A plain warning when pages don't fit their space (or their margins), else ''."""
+    worst_cell, worst_area, original, offsets = 0.0, 0.0, False, False
+    for side in sides:
+        for _si, g in side.get("places", []):
+            if g.kind != "fold":
+                continue
+            over_cell = -min(g.gaps.values())
+            over_area = max(g.margins[k] - g.gaps[k] for k in g.gaps)
+            worst_cell, worst_area = max(worst_cell, over_cell), max(worst_area, over_area)
+            if over_area > _EPS:
+                original = original or g.mode.startswith("Original")
+                offsets = offsets or any(abs(v) > _EPS for v in g.offset)
+    fixes = []
+    if original:
+        fixes.append("choose Keep proportional or Stretch to fit (Original size never shrinks pages)")
+    if offsets:
+        fixes.append("make the offsets smaller")
+    fix = (" To fix it, " + " or ".join(fixes) + ".") if fixes else ""
+    if worst_cell > _EPS:
+        return (f"Pages don't fit their space on the sheet: they stick out by up to {worst_cell:.2f} pt, so "
+                f"that part is cut off (nothing is printed over the neighbouring pages).{fix or ' Use a larger paper size.'}")
+    if worst_area > _EPS:
+        return (f"Pages run into the margins by up to {worst_area:.2f} pt (they still fit their space on "
+                f"the sheet).{fix}")
+    return ""
+
+
+def plan_imposition(sizes, s, log=print):
+    """Where every page goes - shared by impose() (the PDF) and the page placement preview, so both
+    always agree. Reads and writes no PDF. sizes: (width, height) in points of every source page.
+
+    Returns (info, sides). Each side has "rects" [(x, y, w, h, bind, item)] (used for the marks) and
+    "places" [(source page index, Placement)] in sheet points (origin at the bottom left)."""
     for k, v in IMPOSE_DEFAULTS.items():
         s.setdefault(k, v)
-    reader = PdfReader(pdf_in)
-    src = list(reader.pages)
-    chosen = parse_range(s.get("imp_range"), len(src))
+    if not sizes:
+        raise ValueError("There are no pages to arrange.")
+    chosen = parse_range(s.get("imp_range"), len(sizes))
     if not chosen:
         raise ValueError("The page range doesn't include any pages.")
     order = [("b", None)] * (2 * int(s.get("flyleafs") or 0)) + [("p", i) for i in chosen] + \
@@ -587,8 +856,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
     sides = []          # each: dict(front, sig, sheet, items=[...], lines=callable)
     info = {"layout": layout}
 
-    sp = src[chosen[0]]
-    pw0, ph0 = float(sp.mediabox.width), float(sp.mediabox.height)
+    pw0, ph0 = (float(v) for v in sizes[chosen[0]])
 
     if layout in FOLD_LAYOUTS:
         rows, cols, folds, landscape = FOLD_LAYOUTS[layout]
@@ -642,18 +910,14 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
         info.update(sheets=math.ceil(len(wsides) / 2), signatures=0, plan=[], blanks=0, sheet=(W, H),
                     instructions=WACKY_HELP.get(fmt, ""), refs=refs)
 
-    scaling = s.get("imp_scaling", "Keep proportional")
-    snug = s.get("imp_position", "Centered").startswith("Snug")
-    m_fore, m_bind = float(s.get("imp_fore") or 0), float(s.get("imp_binding") or 0)
-    m_top, m_bot = float(s.get("imp_top") or 0), float(s.get("imp_bottom") or 0)
+    ps = placement_settings(s)
 
     def src_angle(ref):
         if ref[0] != "p":
             return 0
         return rot_odd if (ref[1] + 1) % 2 else rot_even
 
-    # ---- lay out every side: placements + marks
-    rendered = []           # (side, [(src_index, transform)], marks_draw_fn)
+    # ---- lay out every side: where each page goes (the same numbers drive the PDF and the preview)
     trim = None
     for side in sides:
         places = []
@@ -664,55 +928,57 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
             for it in side["items"]:
                 x0 = it["c"] * cw
                 y0 = H - (it["r"] + 1) * ch
-                rot, bind = it["rot"], it["bind"]
-                ml = m_bind if bind == "L" else m_fore
-                mr = m_fore if bind == "L" else m_bind
-                mt, mb = (m_top, m_bot) if rot == 0 else (m_bot, m_top)
-                ax, ay, aw, ah = x0 + ml, y0 + mb, max(1, cw - ml - mr), max(1, ch - mt - mb)
-                ang = (src_angle(it["ref"]) + rot) % 360
-                rw, rh = (ph0, pw0) if ang in (90, 270) else (pw0, ph0)
-                if scaling.startswith("Original"):
-                    sx = sy = 1.0
-                elif scaling.startswith("Stretch"):
-                    sx, sy = aw / rw, ah / rh
-                else:
-                    sx = sy = min(aw / rw, ah / rh)
-                w_, h_ = rw * sx, rh * sy
-                x = (ax if bind == "L" else ax + aw - w_) if snug else ax + (aw - w_) / 2
-                y = ay + (ah - h_) / 2
-                trim = trim or (w_ / PT, h_ / PT)
-                rect = (x, y, w_, h_, bind, it)
-                rects.append(rect)
+                ang = (src_angle(it["ref"]) + it["rot"]) % 360
+                ref = it["ref"]
+                pw, ph = (float(v) for v in sizes[ref[1]]) if ref[0] == "p" else (pw0, ph0)
+                g = place_page((x0, y0, cw, ch), it["bind"], it["rot"], pw, ph, ang, ps)
+                it["geo"] = g
+                trim = trim or (g.w / PT, g.h / PT)
+                rects.append((g.x, g.y, g.w, g.h, it["bind"], it))
                 if it["ref"][0] == "p":
-                    places.append((it["ref"][1], _transform(src[it["ref"][1]], ang, x, y, w_, h_, sx, sy)))
+                    places.append((it["ref"][1], g))
         else:
             grid = side["rows"]
-            nrows = len(grid)
-            ncols = max(len(r) for r in grid)
-            fore = float(s.get("wacky_fore") or 0)
-            scale = min(W / (ncols * (pw0 + fore)), H / (nrows * ph0))
-            pw, ph, fg = pw0 * scale, ph0 * scale, fore * scale
-            packed = s.get("wacky_spacing", "Packed").startswith("Packed")
-            left = (W - ncols * (pw + fg)) / (2 if packed else ncols)
-            top = (H - nrows * ph) / (2 if packed else 2 * nrows)
-            trim = trim or (pw / PT, ph / PT)
+            wg = wacky_geometry(W, H, len(grid), max(len(r) for r in grid), pw0, ph0, s)
+            trim = trim or (wg["pw"] / PT, wg["ph"] / PT)
             for r, row in enumerate(grid):
                 for i, (idx, flip) in enumerate(row):
-                    hoff = left if packed else (1 + i - (i % 2)) * left
-                    voff = top if packed else top + 2 * top * r
-                    x = (pw + fg) * i + hoff + fg * ((i + 1) % 2)
-                    y = ph * r + voff         # row 0 at the bottom of the sheet
-                    rects.append((x, y, pw, ph, "L" if i % 2 else "R", None))
+                    x, y = wacky_cell_xy(wg, r, i)
+                    rects.append((x, y, wg["pw"], wg["ph"], "L" if i % 2 else "R", None))
                     if idx is None:
                         continue
                     ref = info["refs"][idx]
                     if ref[0] != "p":
                         continue
-                    ang = 180 if flip else 0
-                    places.append((ref[1], _transform(src[ref[1]], ang, x, y, pw, ph, pw / pw0, ph / ph0)))
-            side["geom"] = (nrows, ncols, pw, ph, fg, left, top, packed)
-        rendered.append((side, places, rects))
+                    places.append((ref[1], wacky_place(wg, x, y, 180 if flip else 0, "L" if i % 2 else "R",
+                                                       sizes[ref[1]])))
+            side["geom"] = (wg["nrows"], wg["ncols"], wg["pw"], wg["ph"], wg["fg"], wg["left"], wg["top"],
+                            wg["packed"])
+        side["places"], side["rects"] = places, rects
     info["trim"] = trim or (pw0 / PT, ph0 / PT)
+    info.update(layout=layout, page=(pw0, ph0), sheet=(W, H), placement=ps, duplex=duplex,
+                fold=layout in FOLD_LAYOUTS)
+    problems = placement_problems(sides)
+    if problems:
+        info["placement_warning"] = problems
+        log("Note: " + problems)
+    info["placement_note"] = placement_summary(sides)
+    return info, sides
+
+
+def impose(pdf_in, out_dir, base_name, s, log=print):
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.colors import black
+
+    reader = PdfReader(pdf_in)
+    src = list(reader.pages)
+    info, sides = plan_imposition([(float(p.mediabox.width), float(p.mediabox.height)) for p in src], s, log)
+    layout = info["layout"]
+    W, H = info["sheet"]
+    duplex = info["duplex"]
+    rendered = [(side, [(si, _transform(src[si], g.ang, g.x, g.y, g.w, g.h, g.sx, g.sy), g.clip_box(src[si]))
+                        for si, g in side["places"]], side["rects"]) for side in sides]
 
     # ---- marks overlay (one reportlab page per side)
     buf = io.BytesIO()
@@ -731,7 +997,9 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
             for (x, y, w_, h_, bind, it) in rects:
                 if s["cut_marks"] and side["face"] == "F":         # crop marks on the outside face
                     _crop_marks(cv, x, y, w_, h_)
-                ex = x if bind == "L" else x + w_
+                ex = x if bind == "L" else x + w_                  # the page's spine-side edge
+                cx0, _cy0, ccw, _cch = it["geo"].cell
+                fx = cx0 if bind == "L" else cx0 + ccw              # the fold (the cell's spine edge)
                 d = -1 if bind == "L" else 1
                 if s["edge_marks"] and it["outer"]:
                     _cut(cv, ex, y + h_, ex + d * 6, y + h_, 0.6)
@@ -740,9 +1008,9 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
                     usable = max(1, int((h_ - 24) // step))
                     my = y + h_ - 18 - (side["sig"] % usable) * step
                     cv.setFillColor(black)
-                    cv.rect(ex - 3, my - 6, 6, 12, fill=1, stroke=0)
+                    cv.rect(fx - 3, my - 6, 6, 12, fill=1, stroke=0)      # on the fold, where the spine is
                     cv.setFont("Helvetica", 6)
-                    cv.drawString(ex + (4 if bind == "R" else -9), my - 2, str(side["sig"] + 1))
+                    cv.drawString(fx + (4 if bind == "R" else -9), my - 2, str(side["sig"] + 1))
                 if s["sewing_marks"] and bind == "L":
                     where = s.get("sewing_where", SEWING_WHERE[0])
                     first = it["sigpage"] == 0
@@ -762,7 +1030,7 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
                         cv.setFillColor(black)
                         for p in pts:
                             if 0 <= p <= h_:
-                                cv.circle(ex, y + p, 1.1, stroke=0, fill=1)
+                                cv.circle(fx, y + p, 1.1, stroke=0, fill=1)   # sewn through the fold
         else:
             nrows, ncols, pw, ph, fg, left, top, packed = side["geom"]
             if s["fold_marks"] or s["cut_marks"]:
@@ -791,7 +1059,9 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
         for idx in side_list:
             side, places, _r = rendered[idx]
             pg = wr.add_blank_page(W, H)
-            for si, tf in places:
+            for si, tf, clip in places:
+                if clip is not None:            # a page bigger than its space: keep it inside its own space
+                    _clip_source(src[si], clip)
                 pg.merge_transformed_page(src[si], tf)
             pg.merge_page(overlay.pages[idx])
             r = rot_paper + (180 if (back_rotate and not side["front"]) else 0)

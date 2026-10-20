@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Optional existing release tag to attach packages to (for example v1.6.1)"
+        description: "Optional existing release tag to attach packages to (for example v1.7.0)"
         required: false
         default: ""
         type: string
@@ -482,9 +482,20 @@ jobs:
             mac_note="The macOS app is not yet signed with a paid Apple Developer ID, so the first time you open it macOS asks you to allow it: open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. If macOS says the app is \"damaged\", run \`xattr -dr com.apple.quarantine /Applications/BookForge.app\` in Terminal once. The DMG includes a *How to open BookForge* note with these steps."
           fi
           cat > release-notes.md <<EOF
-          **BookForge v1.6.1 — PDFs, pictures, an editable contents page, blank pages, paper units and update checks**
+          **BookForge v1.7.0 — page placement you can see, exact paper sizes, PDFs, pictures, an editable contents page, blank pages and update checks**
 
           A feature update.
+
+          **Page placement**
+          - **Adjust page placement…** (Output tab) opens a live view of a printing sheet, drawn to scale, with the book's real pages, the margins and the spine. Click a page to see its numbers in points: the paper and sheet size, the layout, the page's space, its size and scale, its position and the white space at the spine, top, fore-edge and bottom. The view changes as you change any setting, and you can drag a page (or use the arrow keys) to move the pages. The printing files place the pages exactly as the view shows them.
+          - Page scaling: **Keep proportional** makes each page as large as fits inside the margins without changing its shape; **Stretch to fit** fills the space inside the margins (width and height scaled separately); **Original size** never scales.
+          - Page position: **Centered** or **Snug against binding edge**. Fore-edge, binding, top and bottom margins, and new offsets that move every page toward the fore-edge or the top (negative: toward the spine or the bottom). All in points (72 pt = 1 inch); values that aren't ordinary numbers are pointed out before anything is made. Saved in projects; older projects open with no offsets.
+          - A page bigger than its space (Original size, or a large offset) is cut off at the edge of its own space instead of being printed over the next page, and the printing notes say so.
+
+          **Paper and page sizes**
+          - Printer paper sizes are now exact: ISO A and B, JIS B and the book sizes use their exact millimetre sizes (A4 is 210 × 297 mm), US and architectural sizes their exact inch sizes.
+          - New printer papers: A10, JIS B8 to B10, ANSI C, D and E, Arch D and E1, SRA3, SRA4 and Super B / A3+ (68 in all, plus Custom).
+          - New finished page sizes: 4 × 6, 5.25 × 8, 5.06 × 7.81, 6.69 × 9.61, 7 × 10, 7.5 × 9.25, 8 × 10, 8.25 × 11, 8 × 8 and 8.5 × 8.5 in; A6, ISO B4, B5 and B6, JIS B5 and B6; A- and B-format paperbacks and the traditional octavo and quarto sizes (34 in all, plus Custom).
 
           **PDF files**
           - PDFs can now be used as a source. **Keep the pages as they are** (the default) prints the PDF's own pages and arranges them for binding, scanned PDFs included. Pages of a different size, cropped or turned sideways are fitted, never stretched.
@@ -517,6 +528,7 @@ jobs:
           - **Check for updates** (top right) shows the newest published release and what's new, with a link to its download page. BookForge also checks quietly when it starts; this can be turned off in Settings & storage. Nothing is ever downloaded or installed by BookForge.
 
           **Fixes**
+          - Signature marks and sewing marks are printed on the fold, where the spine is, also when there is a binding margin (they used to follow the page edge).
           - Dark mode: dropdowns, such as the printer type on the Output tab, no longer turn white after choosing a value and clicking away. Checked on every dropdown in both modes.
           - Words set bigger than the text around them no longer overlap the line above.
           - Very tall pictures stay on one page in the Word file.

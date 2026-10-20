@@ -855,7 +855,9 @@ def build_pdf(book, s, out_path, log=print):
     mi, mo = float(s["margin_inner"]) * inch, float(s["margin_outer"]) * inch
     fw, fh = W - mi - mo, H - mt - mb
     if fw < 1.5 * inch or fh < 2 * inch:
-        raise ValueError("Margins are too large for this page size.")
+        raise ValueError(f"Margins are too large for this page size: they leave {max(0.0, fw) / inch:.2f} \u00d7 "
+                         f"{max(0.0, fh) / inch:.2f} inches for the text, and at least 1.5 \u00d7 2 inches is needed. "
+                         "Make the margins smaller (Layout step).")
     (R, B, I, BI), (HR, HB, HI, HBI), (DR, _db, _di, _dbi) = font_roles(s, log)
     HT = HB if s.get("heading_bold", True) else HR      # font for titles and headings
     hyph = make_hyphenator(s)

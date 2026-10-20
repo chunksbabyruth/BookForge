@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.7.0"
 BUILD_DATE = "2026-10-20"     # shown next to the version so different builds can be told apart
 APP_AUTHOR = "ChunksBabyRuth"
 
@@ -106,19 +106,51 @@ def blank_pages(s, which):
     """How many blank pages to put at the 'start' or 'end' of the book (checked; see parse_blank_count)."""
     return parse_blank_count(s.get(f"blank_pages_{which}", 0), _BLANK_LABEL[which])
 
+# Finished book page sizes (the trimmed book page), width x height in INCHES, always upright (portrait or
+# square). Sizes defined in millimetres are stored exactly (mm / 25.4); the name only shows them rounded and
+# is never read back. Names are what projects store, so existing names never change.
+_MM = 25.4
 PAGE_SIZES = {
     "Letter (8.5 x 11 in)": (8.5, 11.0),
     "Half Letter / Digest (5.5 x 8.5 in)": (5.5, 8.5),
     "Trade Paperback (6 x 9 in)": (6.0, 9.0),
     "Paperback (5 x 8 in)": (5.0, 8.0),
     "Mass Market (4.25 x 6.87 in)": (4.25, 6.87),
-    "A4 (8.27 x 11.69 in)": (8.27, 11.69),
-    "A5 (5.83 x 8.27 in)": (5.83, 8.27),
+    "A4 (8.27 x 11.69 in)": (210 / _MM, 297 / _MM),
+    "A5 (5.83 x 8.27 in)": (148 / _MM, 210 / _MM),
     "Legal (8.5 x 14 in)": (8.5, 14.0),
+    # more US trade sizes
+    "Pocket (4 x 6 in)": (4.0, 6.0),
+    "Trade (5.25 x 8 in)": (5.25, 8.0),
+    "Textbook (7 x 10 in)": (7.0, 10.0),
+    "Large (8 x 10 in)": (8.0, 10.0),
+    "Square (8 x 8 in)": (8.0, 8.0),
+    "Square (8.5 x 8.5 in)": (8.5, 8.5),
+    "5.06 x 7.81 in": (5.06, 7.81),
+    "6.69 x 9.61 in": (6.69, 9.61),
+    "7.5 x 9.25 in": (7.5, 9.25),
+    "8.25 x 11 in": (8.25, 11.0),
+    # ISO and JIS
+    "A6 (105 x 148 mm)": (105 / _MM, 148 / _MM),
+    "B4 (250 x 353 mm)": (250 / _MM, 353 / _MM),
+    "B5 (176 x 250 mm)": (176 / _MM, 250 / _MM),
+    "B6 (125 x 176 mm)": (125 / _MM, 176 / _MM),
+    "JIS B5 (182 x 257 mm)": (182 / _MM, 257 / _MM),
+    "JIS B6 (128 x 182 mm)": (128 / _MM, 182 / _MM),
+    # traditional British book sizes (metric) and paperbacks
+    "A-format Paperback (111 x 178 mm)": (111 / _MM, 178 / _MM),
+    "Penguin Small Paperback (111 x 181 mm)": (111 / _MM, 181 / _MM),
+    "Crown Octavo (123 x 186 mm)": (123 / _MM, 186 / _MM),
+    "Large Crown Octavo / B-format (129 x 198 mm)": (129 / _MM, 198 / _MM),
+    "Demy Octavo (138 x 216 mm)": (138 / _MM, 216 / _MM),
+    "Royal Octavo (156 x 234 mm, 6.14 x 9.21 in)": (156 / _MM, 234 / _MM),
+    "Crown Quarto (189 x 246 mm, 7.44 x 9.69 in)": (189 / _MM, 246 / _MM),
+    "Large Crown Quarto (201 x 258 mm)": (201 / _MM, 258 / _MM),
+    "Demy Quarto (219 x 276 mm)": (219 / _MM, 276 / _MM),
+    "Royal Quarto (237 x 312 mm)": (237 / _MM, 312 / _MM),
     "Custom": None,
 }
-SHEET_SIZES = {"Letter": (11.0, 8.5), "Legal": (14.0, 8.5),
-               "Tabloid / 11x17": (17.0, 11.0), "A4": (11.69, 8.27)}
+CUSTOM_PAGE_MIN_IN, CUSTOM_PAGE_MAX_IN = 0.1, 200.0     # a custom finished page: 0.1 to 200 inches a side (PDF limit)
 PAPERS = {"20 lb / 75 gsm (0.0040 in)": 0.0040,
           "24 lb / 90 gsm (0.0045 in)": 0.0045,
           "28 lb / 105 gsm (0.0050 in)": 0.0050,
@@ -126,10 +158,26 @@ PAPERS = {"20 lb / 75 gsm (0.0040 in)": 0.0040,
 
 
 def page_size_inches(s):
+    """The finished book page (width, height) in inches: a preset, or the custom size (checked)."""
     v = PAGE_SIZES.get(s["page_size"])
     if v is None:
-        return float(s["custom_w"]), float(s["custom_h"])
+        return custom_page_inches(s.get("custom_w"), s.get("custom_h"))
     return v
+
+
+def custom_page_inches(w, h):
+    """A custom finished page size in inches, checked: ordinary numbers from CUSTOM_PAGE_MIN_IN to CUSTOM_PAGE_MAX_IN."""
+    out = []
+    for name, v in (("width", w), ("height", h)):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"Custom page {name}: \u201c{v}\u201d isn't a number of inches.") from None
+        if not math.isfinite(x) or not CUSTOM_PAGE_MIN_IN <= x <= CUSTOM_PAGE_MAX_IN:
+            raise ValueError(f"Custom page {name} must be between {CUSTOM_PAGE_MIN_IN:g} and "
+                             f"{CUSTOM_PAGE_MAX_IN:g} inches (it is {v}).")
+        out.append(x)
+    return tuple(out)
 
 
 # --------------------------------------------------------------------------

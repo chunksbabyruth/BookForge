@@ -53,27 +53,35 @@ check([k for k, _l, _c in th.TABS] == ["src", "info", "front", "chap", "lay", "e
       th.tab_index("edit") == 5 and th.tab_index("chap") == 3, "the steps keep their internal names")
 
 # ---------------------------------------------------------------- 2. paper presets
-# Every standard paper size BookForge offers, with its size in points (width x height, as listed).
-EXPECTED = {
-    "Letter": (612, 792), "Note": (540, 720), "Legal": (612, 1008), "Tabloid / 11x17": (792, 1224),
-    "Executive": (522, 756), "Postcard": (283, 416), "A0": (2384, 3370), "A1": (1684, 2384), "A2": (1191, 1684),
-    "A3": (842, 1191), "A4": (595, 842), "A5": (420, 595), "A6": (297, 420), "A7": (210, 297), "A8": (148, 210),
-    "A9": (105, 148), "B0": (2834, 4008), "B1": (2004, 2834), "B2": (1417, 2004), "B3": (1000, 1417),
-    "B4": (708, 1000), "B5": (498, 708), "B6": (354, 498), "B7": (249, 354), "B8": (175, 249), "B9": (124, 175),
-    "B10": (87, 124), "JIS B0": (2920, 4127), "JIS B1": (2064, 2920), "JIS B2": (1460, 2064),
-    "JIS B3": (1032, 1460), "JIS B4": (729, 1032), "JIS B5": (516, 729), "JIS B6": (363, 516),
-    "JIS B7": (258, 363), "Arch E": (2592, 3456), "Arch C": (1296, 1728), "Arch B": (864, 1296),
-    "Arch A": (648, 864), "US Foolscap (8.5 x 13)": (612, 936), "Foolscap (9 x 13)": (648, 936),
-    "Half Letter": (396, 612), "ID-1": (242.65, 153), "ID-2": (297, 210), "ID-3": (354, 249),
-    "Ledger (17 x 11)": (1224, 792), "Crown Quarto": (535, 697), "Large Crown Quarto": (569, 731),
-    "Demy Quarto": (620, 782), "Royal Quarto": (671, 884), "Crown Octavo": (348, 527),
-    "Large Crown Octavo": (365, 561), "Demy Octavo": (391, 612), "Royal Octavo": (442, 663),
-    "Small Paperback": (314, 504), "Penguin Small Paperback": (314, 513), "Penguin Large Paperback": (365, 561),
-}
+# Every standard paper size BookForge offers, from the size's own definition (US and architectural sizes in
+# inches, ISO/JIS/ID-card/book sizes in millimetres), width x height as listed.
+_IN, _MMPT = 72.0, 72.0 / 25.4
+_INCH = {"Letter": (8.5, 11), "Legal": (8.5, 14), "Tabloid / 11x17": (11, 17), "Half Letter": (5.5, 8.5),
+         "Executive": (7.25, 10.5), "Note": (7.5, 10), "Ledger (17 x 11)": (17, 11),
+         "US Foolscap (8.5 x 13)": (8.5, 13), "Foolscap (9 x 13)": (9, 13), "ANSI C (17 x 22)": (17, 22),
+         "ANSI D (22 x 34)": (22, 34), "ANSI E (34 x 44)": (34, 44), "Super B / A3+ (13 x 19)": (13, 19),
+         "Arch A": (9, 12), "Arch B": (12, 18), "Arch C": (18, 24), "Arch D": (24, 36), "Arch E": (36, 48),
+         "Arch E1 (30 x 42)": (30, 42)}
+_MILLI = {"A0": (841, 1189), "A1": (594, 841), "A2": (420, 594), "A3": (297, 420), "A4": (210, 297),
+          "A5": (148, 210), "A6": (105, 148), "A7": (74, 105), "A8": (52, 74), "A9": (37, 52), "A10": (26, 37),
+          "B0": (1000, 1414), "B1": (707, 1000), "B2": (500, 707), "B3": (353, 500), "B4": (250, 353),
+          "B5": (176, 250), "B6": (125, 176), "B7": (88, 125), "B8": (62, 88), "B9": (44, 62), "B10": (31, 44),
+          "JIS B0": (1030, 1456), "JIS B1": (728, 1030), "JIS B2": (515, 728), "JIS B3": (364, 515),
+          "JIS B4": (257, 364), "JIS B5": (182, 257), "JIS B6": (128, 182), "JIS B7": (91, 128),
+          "JIS B8": (64, 91), "JIS B9": (45, 64), "JIS B10": (32, 45), "SRA3": (320, 450), "SRA4": (225, 320),
+          "ID-1": (85.6, 53.98), "ID-2": (105, 74), "ID-3": (125, 88),
+          "Crown Quarto": (189, 246), "Large Crown Quarto": (201, 258), "Demy Quarto": (219, 276),
+          "Royal Quarto": (237, 312), "Crown Octavo": (123, 186),
+          "Large Crown Octavo / Penguin Large Paperback": (129, 198), "Demy Octavo": (138, 216),
+          "Royal Octavo": (156, 234), "Small Paperback": (111, 178), "Penguin Small Paperback": (111, 181)}
+EXPECTED = {k: (w * _IN, h * _IN) for k, (w, h) in _INCH.items()}
+EXPECTED.update({k: (w * _MMPT, h * _MMPT) for k, (w, h) in _MILLI.items()})
+EXPECTED["Postcard"] = (283.0, 416.0)            # kept as earlier versions printed it (no single standard)
 presets = {k: v for k, v in SHEETS.items() if v is not None}
-check(len(EXPECTED) == 57 and set(presets) == set(EXPECTED) and "Custom" in SHEETS and SHEETS["Custom"] is None,
-      f"all {len(EXPECTED)} paper presets are offered, plus Custom ({len(presets)} presets)")
-check(all(tuple(map(float, presets[k])) == tuple(map(float, v)) for k, v in EXPECTED.items()),
+check(len(EXPECTED) == 68 and set(presets) == set(EXPECTED) and "Custom" in SHEETS and SHEETS["Custom"] is None,
+      f"all {len(EXPECTED)} paper presets are offered, plus Custom ({len(presets)} presets) "
+      f"{sorted(set(presets) ^ set(EXPECTED))}")
+check(all(close(presets[k][0], v[0], 1e-9) and close(presets[k][1], v[1], 1e-9) for k, v in EXPECTED.items()),
       "every preset has its exact size")
 check(len(set(SHEETS)) == len(SHEETS), "no preset is listed twice")
 
@@ -82,11 +90,19 @@ lab = {u: paper_label({"sheet_size": "Letter", "sheet_unit": u}) for u in UNITS}
 check(lab["in"] == "Letter (8.5 × 11.0 inches)" and lab["mm"] == "Letter (215.9 × 279.4 mm)" and
       lab["cm"] == "Letter (21.59 × 27.94 cm)" and lab["pt"] == "Letter (612 × 792 points)",
       f"Letter shown in every unit {list(lab.values())}")
-check(paper_label({"sheet_size": "A4", "sheet_unit": "mm"}) == "A4 (209.9 × 297.0 mm)", "A4 in mm")
-check(paper_label({"sheet_size": "ID-1", "sheet_unit": "pt"}) == "ID-1 (242.65 × 153 points)",
+check(paper_label({"sheet_size": "A4", "sheet_unit": "mm"}) == "A4 (210.0 × 297.0 mm)", "A4 in mm")
+check(paper_label({"sheet_size": "ID-1", "sheet_unit": "pt"}) == "ID-1 (242.65 × 153.01 points)",
       "fractional points are shown")
+check(paper_label({"sheet_size": "B1", "sheet_unit": "mm"}) == "B1 (707.0 × 1000.0 mm)", "ISO B1 in mm")
+# names earlier versions saved still open the same paper
+for old, new_name in (("Tabloid", "Tabloid / 11x17"), ("11x17", "Tabloid / 11x17"),
+                      ("Large Crown Octavo", "Large Crown Octavo / Penguin Large Paperback"),
+                      ("Penguin Large Paperback", "Large Crown Octavo / Penguin Large Paperback")):
+    check(sheet_points({"sheet_size": old}) == sheet_points({"sheet_size": new_name}),
+          f"the old paper name {old!r} still gives {new_name}")
+check(sheet_points({"sheet_size": "No such paper"}) == (612.0, 792.0), "an unknown paper name is Letter")
 # the display unit never changes the paper
-check(all(sheet_points({"sheet_size": k, "sheet_unit": u}) == tuple(map(float, EXPECTED[k]))
+check(all(sheet_points({"sheet_size": k, "sheet_unit": u}) == tuple(map(float, SHEETS[k]))
           for k in EXPECTED for u in UNITS), "changing the display unit never changes a preset's size")
 
 # unit conversion
@@ -201,7 +217,7 @@ check(not paths_bad, f"all {len(LAYOUT_NAMES)} layouts, duplex and single-sided,
                      f"the right sheet size on 6 different papers {paths_bad[:3]}")
 for fmt in SIG_FORMATS:
     info = imp(numbered(40), sheet_size="A4", sig_format=fmt, sig_sheets=3, sig_custom="2, 3")
-    check(info["sheets"] >= 10 and sheet_sizes(info) == {(842.0, 595.0)}, f"{fmt}: {info['sheets']} A4 sheets")
+    check(info["sheets"] >= 10 and sheet_sizes(info) == {(841.89, 595.28)}, f"{fmt}: {info['sheets']} A4 sheets")
 
 # the finished page size never follows the printer paper
 s0 = dict(DEFAULTS, source_mode="paste", toc=False, fmt_impose=True, page_size="Half Letter / Digest (5.5 x 8.5 in)")
@@ -216,7 +232,7 @@ for name in ("Letter", "A0", "ID-1", "Custom"):
 s = dict(s0, sheet_size="A4", sheet_unit="mm", out_dir=os.path.join(TMP, "notes"), open_when_done=False)
 _f, made, notes = run_build(apply_info(load_book(s, book_text), s), s, lambda m: None)
 txt = open(os.path.join(_f, "READ ME - printing notes.txt"), encoding="utf-8").read()
-check("A4 (209.9 × 297.0 mm) paper, printed 11.69 x 8.264 in" in txt, "printing notes give the paper and its size")
+check("A4 (210.0 × 297.0 mm) paper, printed 11.69 x 8.268 in" in txt, "printing notes give the paper and its size")
 
 # ---------------------------------------------------------------- 4. blank pages: the numbers allowed
 for v, n in ((0, 0), (3, 3), ("12", 12), (" 7 ", 7), (BLANK_PAGES_MAX, BLANK_PAGES_MAX), (2.0, 2)):
@@ -471,7 +487,7 @@ if have_display:
     app.var("sheet_size").set("A4")
     pump()
     check(app.var("sheet_w").get() == 230.5 and not app.custom_paper_on.get() and
-          sheet_points(app.collect()) == (595.0, 842.0),
+          sheet_points(app.collect()) == SHEETS["A4"],
           "choosing a preset unticks the box and uses the preset; the custom size is kept for later")
     app.custom_paper_on.set(True)
     app._custom_paper_toggled()

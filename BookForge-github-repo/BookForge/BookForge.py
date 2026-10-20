@@ -17,12 +17,13 @@ from tkinter import ttk, filedialog, messagebox
 
 from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, PDF_MODES, BLANK_PAGES_MAX, parse_blank_count,
                      APP_NAME, APP_VERSION, APP_AUTHOR, BUILD_DATE,
-                     load_book, apply_info, plain, esc, Block, Chapter, page_size_inches)
+                     load_book, apply_info, plain, esc, Block, Chapter, page_size_inches, custom_page_inches)
 import bf_fonts
 from bf_fonts import SAME_BODY, SAME_HEAD
 from bf_pdf import HYPH_LANGS, TOC_SPACING, contents_entries, contents_rows, rows_to_edits
 from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE, FOLD_SIDES, UNITS, UNIT_CHOICES
 import bf_impose
+import bf_placement
 from bf_build import run_build, default_out_dir, build_preview
 import bf_edit
 import bf_pictures
@@ -30,6 +31,9 @@ import bf_update
 import bf_theme as th
 
 SHEET_CUSTOM_HINT = "Width \u00d7 height of your paper, in the display unit above."
+PLACEMENT_BOXES = bf_placement.PLACEMENT_KEYS        # margins and offsets, in points
+PLACEMENT_HINT = ("Margins keep white space inside each page's space on the sheet; offsets then move every page "
+                  "(points, 72 pt = 1 inch).")
 TEXT_KEYS = ("paste_text", "dedication", "note_text", "blurb", "hyph_words")
 # Fields that belong to one particular book. They are NOT remembered between sessions, so a new
 # session never starts with the previous book's file, text, title or author.
@@ -89,6 +93,22 @@ PRINTING THE "IMPOSED FOR BINDING" PDF
   perfect bound / standard / custom signatures, flyleafs, page range, page
   rotation, scaling, margins, fold/cut/spine/signature/sewing marks, and
   duplex or single-sided printing.
+- PAGE PLACEMENT (Output tab): how each page sits in its space on the sheet.
+  Page scaling: "Keep proportional" makes the page as large as fits inside
+  the margins without changing its shape; "Stretch to fit" fills the space
+  inside the margins (width and height scaled separately, so the shape can
+  change); "Original size" never scales (a page bigger than its space is cut
+  off at the edge of its space, and the printing notes say so).
+  Page position: "Centered", or "Snug against binding edge" (against the
+  binding margin, at the spine). Margins (fore-edge, binding, top, bottom)
+  keep white space inside each page's space; the offsets then move every
+  page: positive toward the fore-edge / toward the top, negative toward the
+  spine / toward the bottom. All in points: 72 pt = 1 inch.
+  "Adjust page placement..." opens a live view of a sheet drawn to scale,
+  with the real pages, the margins, the spine and the measurements of the
+  page you click. It changes as you change any setting, and you can drag a
+  page (or use the arrow keys) to set the offsets. The printing files use
+  exactly the same placement.
 - Print at Actual size / 100% (never "Fit"). The printing notes file says
   which edge to flip on for your layout. If your printer can only flip on the
   other edge, tick "Rotate back sides 180" and rebuild.
@@ -1230,8 +1250,28 @@ class PreviewWindow:
         self.of.configure(text=f"of {len(self.items)}   \u2014   {label}")
 
     # ---- buttons
+    def mark_stale(self, why):
+        """A different book was opened: the old book's pages must not stay on screen as if they were current."""
+        self._release()
+        self.result = None
+        self.pages, self.sheets, self.covers, self.i, self.mode = [], [], [], 0, "pages"
+        for c in self.modes.winfo_children():
+            c.destroy()
+        ttk.Label(self.modes, text="Out of date", style="Paper.TLabel",
+                  font=("Segoe UI Semibold", 11)).pack(side="left")
+        c = self.canvas
+        c.delete("all")
+        c.create_text(20, 20, anchor="nw", width=max(300, c.winfo_width() - 40), fill=th.INK,
+                      font=("Segoe UI", 11), text=why)
+        self.page_var.set("")
+        self.of.configure(text="")
+        self.info.configure(text=why)
+        self.w.title("Preview \u2014 out of date")
+
     def chapter_at_page(self):
         """Id of the chapter shown on the current page (the last chapter starting on or before it)."""
+        if not self.result:
+            return None
         page = self.i + 1 if self.mode == "pages" else 1
         starts = sorted((pg, cid) for cid, pg in self.result.get("chapter_pages", []) if pg)
         cid = None
@@ -1486,6 +1526,18 @@ def resource(name):
 
 
 class App(tk.Tk):
+    # Every edit to the book marks it unsaved; book_rev counts those edits, so views of the typeset pages
+    # (the page placement window) know when to set the pages again.
+    @property
+    def unsaved(self):
+        return self.__dict__.get("_unsaved", False)
+
+    @unsaved.setter
+    def unsaved(self, value):
+        self.__dict__["_unsaved"] = value
+        if value:
+            self.__dict__["book_rev"] = self.__dict__.get("book_rev", 0) + 1
+
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} {APP_VERSION} (build {BUILD_DATE}) \u2014 one-click book maker by {APP_AUTHOR}")
@@ -1623,6 +1675,61 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
+    def _placement_values(self):
+        """The page margins and offsets as typed, checked (ValueError with a plain message)."""
+        return bf_impose.placement_settings({k: self._raw(k) for k in PLACEMENT_BOXES})
+
+    def _placement_typed(self):
+        msg = getattr(self, "placement_msg", None)
+        if msg is None:
+            return
+        try:
+            self._placement_values()
+            text, colour = PLACEMENT_HINT, ""
+        except ValueError as e:
+            text, colour = str(e), "#D9534F"
+        try:
+            msg.configure(text=text, foreground=colour)
+        except tk.TclError:
+            pass
+
+    def open_placement(self):
+        """The live page placement view (one window; brought to the front if it's already open)."""
+        win = getattr(self, "placement_win", None)
+        if win is not None and win.alive():
+            win.w.deiconify()
+            win.w.lift()
+            win.w.focus_force()
+            return
+        self.placement_win = bf_placement.PlacementWindow(self)
+
+    def _placement_book_changed(self):
+        win = getattr(self, "placement_win", None)
+        if win is not None and win.alive():
+            win.book_changed()
+
+    def _book_switched(self, why, update=True):
+        """Another book is open now (a project, a new book or a newly read source): the page placement view
+        sets the new pages, and an open preview is marked out of date and - when there is a book - made
+        again, so no window keeps showing the previous book."""
+        self._placement_book_changed()
+        pw = getattr(self, "preview_win", None)
+        if pw is not None and pw.alive():
+            pw.mark_stale(why)
+            if update and self.book is not None:
+                self.after(60, self._auto_preview)
+
+    def _auto_preview(self):
+        pw = getattr(self, "preview_win", None)
+        if pw is not None and pw.alive() and not self.busy and self.book is not None:
+            self.preview_book()
+
+    def _close_placement(self):
+        win = getattr(self, "placement_win", None)
+        if win is not None:
+            win.close()
+        self.placement_win = None
+
     def settings_problem(self, s):
         """A plain message if a setting can't be used for a preview or build (else None)."""
         for which, label in (("start", "Blank pages at beginning"), ("end", "Blank pages at end")):
@@ -1630,6 +1737,17 @@ class App(tk.Tk):
                 parse_blank_count(self._raw(f"blank_pages_{which}"), label)
             except ValueError as e:
                 return f"{e}\n\n(On the Front & back step.)"
+        try:
+            if s.get("page_size") not in PAGE_SIZES or PAGE_SIZES[s["page_size"]] is None:   # custom: as typed
+                custom_page_inches(self._raw("custom_w"), self._raw("custom_h"))
+            page_size_inches(s)
+        except ValueError as e:
+            return f"{e}\n\n(Layout step, Page size.)"
+        if s.get("fmt_impose"):
+            try:
+                self._placement_values()
+            except ValueError as e:
+                return f"{e}\n\n(Output step, Page placement.)"
         if s.get("sheet_size") == "Custom" and s.get("fmt_impose"):
             if getattr(self, "_sheet_error", ""):
                 return f"The custom paper size can't be used yet: {self._sheet_error}\n\n(Output step, Printer & paper.)"
@@ -2002,7 +2120,8 @@ class App(tk.Tk):
             messagebox.showerror("Open project", f"That project can't be opened: {e}.")
             return
         settings.pop("dark_mode", None)
-        for k in ("blank_pages_start", "blank_pages_end"):     # projects made before these existed: none
+        for k in ("blank_pages_start", "blank_pages_end",     # projects made before these existed: none
+                  "imp_offset_x", "imp_offset_y"):
             settings.setdefault(k, DEFAULTS[k])
         self.apply(settings)
         self._mode_changed()
@@ -2013,6 +2132,8 @@ class App(tk.Tk):
         self.fill_list()
         self.editor.reset()
         self.shelf.select(self.edit_tab())
+        self._book_switched(f"Another project was opened ({os.path.basename(p)}). The preview is being made "
+                            "again for it\u2026")
         self.status.configure(text=f"Opened project {os.path.basename(p)} - {len(book.chapters)} chapters.")
 
     def _tab_info(self, t):
@@ -2216,14 +2337,29 @@ class App(tk.Tk):
         self.check(pr, 8, "Rotate back sides 180\u00b0 (flip on the other edge)", "rotate_back")
         self._paper_changed()
         pl = self.group(t, "Page placement", row=3, column=0)
-        self.combo(pl, 0, "Page scaling", "imp_scaling", ["Keep proportional", "Stretch to fit", "Original size"])
-        self.combo(pl, 1, "Page position", "imp_position", ["Centered", "Snug against binding edge"])
-        self.spin(pl, 2, "Fore-edge margin (pt)", "imp_fore", 0, 200, 1, "72 pt = 1 inch")
-        self.spin(pl, 3, "Binding margin (pt)", "imp_binding", 0, 200, 1)
-        self.spin(pl, 4, "Top margin (pt)", "imp_top", 0, 200, 1)
-        self.spin(pl, 5, "Bottom margin (pt)", "imp_bottom", 0, 200, 1)
-        self.combo(pl, 6, "Small layouts: spacing", "wacky_spacing", ["Packed", "Distributed space"])
-        self.spin(pl, 7, "Small layouts: fore-edge padding (pt)", "wacky_fore", 0, 72, 1)
+        self.combo(pl, 0, "Page scaling", "imp_scaling", bf_impose.SCALINGS)
+        self.combo(pl, 1, "Page position", "imp_position", bf_impose.POSITIONS)
+        mx, ox = bf_impose.MARGIN_MAX_PT, bf_impose.OFFSET_MAX_PT
+        self.spin(pl, 2, "Fore-edge margin (pt)", "imp_fore", 0, mx, 1, "72 pt = 1 inch")
+        self.spin(pl, 3, "Binding margin (pt)", "imp_binding", 0, mx, 1, "at the spine")
+        self.spin(pl, 4, "Top margin (pt)", "imp_top", 0, mx, 1)
+        self.spin(pl, 5, "Bottom margin (pt)", "imp_bottom", 0, mx, 1)
+        self.spin(pl, 6, "Offset toward fore-edge (pt)", "imp_offset_x", -ox, ox, 1, "negative = toward the spine")
+        self.spin(pl, 7, "Offset toward top (pt)", "imp_offset_y", -ox, ox, 1, "negative = toward the bottom")
+        self.placement_msg = ttk.Label(pl, text=PLACEMENT_HINT, style=self.S("CardHint.TLabel"), wraplength=300,
+                                       justify="left")
+        self.placement_msg.grid(row=8, column=0, columnspan=2, sticky="we", padx=6)
+        self.wrap_to_width(self.placement_msg)
+        for k in PLACEMENT_BOXES:
+            self._trace_once(k, self._placement_typed)
+        pb = ttk.Frame(pl, style=self.S("Card.TFrame"))
+        pb.grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
+        ttk.Button(pb, text="Adjust page placement\u2026", style=self.S("TButton"),
+                   command=self.open_placement).pack(side="left")
+        ttk.Label(pb, text="  live view of a sheet; drag the pages", style=self.S("CardHint.TLabel")).pack(side="left")
+        self.combo(pl, 10, "Small layouts: spacing", "wacky_spacing", ["Packed", "Distributed space"])
+        self.spin(pl, 11, "Small layouts: fore-edge padding (pt)", "wacky_fore", 0, 72, 1)
+        self._placement_typed()
         mk = self.group(t, "Marks", row=3, column=1)
         self.check(mk, 0, "Fold lines", "fold_marks")
         self.combo(mk, 9, "Fold lines printed on", "fold_side", FOLD_SIDES, width=30)
@@ -2288,6 +2424,11 @@ class App(tk.Tk):
         for k in TEXT_KEYS:
             if k in self.texts:
                 s[k] = self.texts[k].get("1.0", "end-1c")
+        for k in PLACEMENT_BOXES:       # margins/offsets as typed ("12,5" and "\u22123" too), never silently 0
+            try:
+                s[k] = bf_impose.parse_points(self._raw(k), k, -float("inf"), float("inf"))
+            except ValueError:
+                pass                    # not a number: settings_problem stops the preview/build and says so
         s["custom_fonts"] = [dict(c) for c in self.custom_fonts]
         return s
 
@@ -2300,6 +2441,8 @@ class App(tk.Tk):
 
     def _apply(self, data):
         data = bf_fonts.migrate(dict(data))
+        if "sheet_size" in data and data["sheet_size"] not in SHEETS:     # a paper name from an earlier version
+            data["sheet_size"] = bf_impose.sheet_name({"sheet_size": data["sheet_size"]})
         if "custom_fonts" in data:
             self.custom_fonts = [dict(c) for c in data.get("custom_fonts") or []]
             self.refresh_fonts()
@@ -2362,6 +2505,7 @@ class App(tk.Tk):
             return
         if getattr(self, "preview_win", None) is not None:
             self.preview_win.close()
+        self._close_placement()
         self._commit_editor()
         editing = getattr(getattr(self, "editor", None), "cur_obj", None)
         state = self.collect()
@@ -2717,6 +2861,8 @@ class App(tk.Tk):
                 self.var(k).set("")
         self.book, self.book_sig, self.edited, self.autofilled = None, None, False, {}
         self.unsaved = False
+        self._book_switched("New book: there is nothing to preview yet. Pick a source, then click "
+                            "Update preview.", update=False)
         self.editor.reset()
         self.ctree.delete(*self.ctree.get_children())
         self.show_preview()
@@ -2736,6 +2882,7 @@ class App(tk.Tk):
                 return
         if getattr(self, "preview_win", None) is not None:
             self.preview_win.close()
+        self._close_placement()
         try:
             if not getattr(self, "_no_save", False):
                 self.save_settings(os.path.join(app_dir(), "settings.json"))
@@ -3515,6 +3662,8 @@ class App(tk.Tk):
                         self._stop(f"PDF ready: {self.book.fixed_pages} pages, kept as they are. Click Preview book.")
                     elif self.mode == "scan":
                         self._stop(f"Found {len(self.book.chapters)} chapters. Check the list, then click Preview book.")
+                    self._book_switched("The source changed, so this preview showed the previous book. It is "
+                                        "being made again\u2026")
                 elif kind == "update":
                     newer, info = item[1], item[2]
                     if newer:

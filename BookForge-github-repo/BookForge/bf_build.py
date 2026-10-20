@@ -76,11 +76,14 @@ def blank_pages_note(s):
 
 def check_settings(s):
     """Stop before anything is written when a setting can't be used (a plain ValueError message):
-    the number of blank pages, and a custom printer paper size when the pages are imposed."""
+    the number of blank pages, a custom page size, and - when the pages are imposed - a custom printer paper
+    size and the page margins and offsets."""
     blank_pages(s, "start")
     blank_pages(s, "end")
+    page_size_inches(s)
     if s.get("fmt_impose"):
         bf_impose.sheet_points(s)
+        bf_impose.placement_settings(s)
 
 
 def build_preview(book, s, log=print):
@@ -171,7 +174,9 @@ def run_build(book, s, log=print):
             f"  Print at Actual size / 100%, {how}. Print one test sheet first.\n  Folding: {info['instructions']}"
             + ("\n  Fold lines are printed on the inside of each fold (the side facing you as you fold)."
                if s.get("fold_marks") and s.get("fold_side", "Inside").startswith("Inside") else "")
-            + (f"\n  WARNING: {info['warning']}" if info.get("warning") else ""))
+            + (f"\n  {info['placement_note']}" if info.get("placement_note") else "")
+            + (f"\n  WARNING: {info['warning']}" if info.get("warning") else "")
+            + (f"\n  WARNING: {info['placement_warning']}" if info.get("placement_warning") else ""))
 
     if s["fmt_cover"]:
         log("Drawing cover template...")
