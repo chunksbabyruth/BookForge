@@ -738,6 +738,18 @@ if have_display:
             time.sleep(0.02)
         return False
 
+    def idle(sec=240):
+        """Wait until BookForge isn't busy making a preview or a book. Open project, New book and the light/dark
+        switch are ignored while it is (as in every version), and a slow computer (or CI runner) takes longer."""
+        return wait(lambda: not app.busy, sec)
+
+    def settle(win, sec=30):
+        """Wait until the placement window has redrawn for the settings just changed (not a fixed time)."""
+        pump(0.05)
+        if win is None or not win.alive():
+            return True
+        return wait(lambda: win._pending is None, sec)
+
     def window_ready(w):
         return (w.alive() and not w.busy_typeset and w.real_pages and w.src_sizes and
                 w.src_sig == w.typeset_sig(w.settings()) and w._pending is None)
@@ -841,7 +853,7 @@ if have_display:
     def set_vars(**kw):
         for k, v in kw.items():
             app.var(k).set(v)
-        pump(0.1)
+        settle(getattr(app, "placement_win", None))
 
     pump()
     app.var("source_mode").set("paste")
@@ -860,10 +872,10 @@ if have_display:
           "opening it again brings the same window to the front")
     check(wait(lambda: window_ready(w), 120), f"the window shows the book's real pages ({w.status.cget('text')})")
     app.var("fmt_impose").set(False)
-    pump(0.2)
+    settle(w)
     check("isn't ticked" in w.diag.get("1.0", "end"), "the window says when no printing sheets will be made")
     app.var("fmt_impose").set(True)
-    pump(0.2)
+    settle(w)
     check("isn't ticked" not in w.diag.get("1.0", "end"), "and stops saying it once they will")
 
     CONFIGS = [
@@ -936,42 +948,42 @@ if have_display:
     check(wait(lambda: window_ready(w), 120), "back to Letter paper and a 5.5 x 8.5 in page")
     before = [(g.x, g.y, g.w, g.h) for _si, g in w.sides[0]["places"]]
     app.var("imp_top").set(50)
-    pump(0.15)
+    settle(w)
     after = [(g.x, g.y, g.w, g.h) for _si, g in w.sides[0]["places"]]
     check(before != after and w.real_pages, "a margin change moves the pages in the window straight away")
     app.var("imp_top").set(0)
     app.var("page_size").set("Pocket (4 x 6 in)")
-    pump(0.15)
+    settle(w)
     stale = w.real_pages and w.src_sizes and close(w.src_sizes[0][0], 5.5 * 72)
     check(not stale and all(close(g.src[0], 288) for _si, g in w.sides[0]["places"]),
           "right after the page size changes the window shows plain 4 x 6 in pages, never the old ones")
     check(wait(lambda: window_ready(w), 120) and close(w.src_sizes[0][0], 288) and close(w.src_sizes[0][1], 432),
           "then the book's real 4 x 6 in pages")
     app.var("imp_fore").set("abc")
-    pump(0.15)
+    settle(w)
     check("isn't a number" in w.error and w.drawn == [] and "isn't a number" in app.placement_msg.cget("text") and
           str(app.placement_msg.cget("foreground")) == "#D9534F",
           "a margin that isn't a number: the window says so and draws no out-of-date sheet; the Output step too")
     check("Fore-edge margin" in (app.settings_problem(app.collect()) or ""),
           "and Preview book / Generate are stopped with the same message")
     app.var("imp_fore").set(0)
-    pump(0.15)
+    settle(w)
     check(not w.error and w.drawn and app.placement_msg.cget("text") == BF.PLACEMENT_HINT, "fixing it brings it back")
     keep_size = app.var("page_size").get()
     app.var("page_size").set("Custom")
     app.var("custom_w").set("abc")
-    pump(0.1)
+    settle(w)
     check("Custom page width" in (app.settings_problem(app.collect()) or ""),
           "a custom page width that isn't a number stops Preview book / Generate (never silently replaced)")
     app.var("custom_w").set(6)
     app.var("page_size").set(keep_size)
-    pump(0.1)
+    settle(w)
     app.var("imp_offset_x").set("-12,5")
-    pump(0.15)
+    settle(w)
     check(app.collect()["imp_offset_x"] == -12.5 and w.settings()["imp_offset_x"] == "-12,5" and
           w.sides[0]["places"][0][1].offset[0] == -12.5, "an offset typed with a decimal comma is used as typed")
     app.var("imp_offset_x").set(0)
-    pump(0.1)
+    settle(w)
 
     # dragging a page and the arrow keys set the offsets; the PDF follows
     check(wait(lambda: window_ready(w), 120), "the window has the real pages again")
@@ -985,7 +997,7 @@ if have_display:
     w.canvas.event_generate("<ButtonPress-1>", x=int(cx_), y=int(cy_))
     w.canvas.event_generate("<B1-Motion>", x=int(cx_) + 30, y=int(cy_) - 20)
     w.canvas.event_generate("<ButtonRelease-1>", x=int(cx_) + 30, y=int(cy_) - 20)
-    pump(0.2)
+    settle(w)
     want = bf_placement.offsets_after_drag(g0, (0.0, 0.0), 30, -20, k_)
     got = (app.var("imp_offset_x").get(), app.var("imp_offset_y").get())
     g1 = w.sides[0]["places"][0][1]
@@ -1000,12 +1012,12 @@ if have_display:
     start = (app.var("imp_offset_x").get(), app.var("imp_offset_y").get())
     w.canvas.event_generate("<Right>")
     w.canvas.event_generate("<Up>", state=1)
-    pump(0.1)
+    settle(w)
     want = bf_placement.nudge(g1, start, 1, 10)
     check((app.var("imp_offset_x").get(), app.var("imp_offset_y").get()) == want,
           f"arrow keys move the page 1 pt, with Shift 10 pt {want}")
     w.reset_offsets()
-    pump(0.1)
+    settle(w)
     check((app.var("imp_offset_x").get(), app.var("imp_offset_y").get()) == (0.0, 0.0) and
           close(w.sides[0]["places"][0][1].x, g0.x, 1e-9), "Reset offsets puts the pages back")
 
@@ -1027,12 +1039,14 @@ if have_display:
     projOld = os.path.join(TMP, "old.bookforge")
     with open(projOld, "w", encoding="utf-8") as f:
         json.dump(data, f)
+    idle()
     app.preview_book()
     check(wait(lambda: getattr(app, "preview_win", None) is not None and app.preview_win.alive() and not app.busy
                and app.preview_win.result is not None, 120), "Preview book shows the book")
     pw = app.preview_win
     filedialog.askopenfilename = lambda **kw: projB
     app.unsaved = False
+    idle()
     app.open_project_dialog()
     check(pw.result is None and "out of date" in pw.w.title(), "opening another project marks the open preview out "
                                                                "of date at once")
@@ -1044,14 +1058,18 @@ if have_display:
     probs = compare_window(w, "project B")
     check(not probs, f"[project B] window = PDF {probs[:2]}")
     filedialog.askopenfilename = lambda **kw: projOld
+    idle()
     app.open_project_dialog()
     pump(0.2)
     check(app.var("sheet_size").get() == "Large Crown Octavo / Penguin Large Paperback" and
           app.var("imp_offset_x").get() == 0 and app.var("imp_offset_y").get() == 0,
           "a project from before offsets (with an old paper name) opens with no offsets and the same paper")
     check(wait(lambda: window_ready(w), 120), "and the window catches up")
+    check(wait(lambda: pw.result is not None and not app.busy, 240),
+          "and the open preview is made again for it too (BookForge is busy until then)")
     app.unsaved = False
     app.edited = False
+    idle()
     app.new_book()
     pump(0.3)
     check(pw.result is None and app.book is None, "New book: the open preview is marked out of date, not left showing "
@@ -1061,6 +1079,7 @@ if have_display:
     pw.close()
 
     # dark/light switch closes the window cleanly; it opens again in the new look
+    idle()
     app.toggle_dark()
     pump(0.5)
     check(app.placement_win is None and not w.alive(), "switching light/dark closes the placement window")
