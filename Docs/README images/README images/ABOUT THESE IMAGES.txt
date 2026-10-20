@@ -1,0 +1,60 @@
+BOOKFORGE - README IMAGES (2026-10-20, BookForge 1.6.1)
+
+Every picture here was made by BookForge 1.6.1 itself: screenshots of the real window, and pages and sheets
+rendered from the real PDFs it made. Nothing was drawn by hand except the labels around them.
+
+The example book "The Lighthouse Clockmaker" (text, title and cover pictures) was written and drawn for
+these examples, so you can use it freely in the repository. It is in example-book\ if you want people to try
+it themselves (open the .md file as the source).
+
+To use a picture in your README, put this folder in the repository (for example as docs/images) and link
+it, for example:  ![The Output step](docs/images/screenshots/07-step-7-output.png)
+
+SCREENSHOTS (dark mode, the default; the same in light mode in screenshots\light-mode\)
+- 01-step-1-source.png              choosing the source file
+- 02-step-2-book-info.png           title, subtitle, author, dedication
+- 03-step-3-front-and-back.png      title page, contents page, blank pages, THE END
+- 04-step-4-chapters.png            the chapters BookForge found, with how each starts
+- 05-step-5-layout.png              page size, margins, fonts, drop caps, page numbers
+- 06-step-6-specific-text-edit.png  the Word-style editor
+- 07-step-7-output.png              binding layout, printer and paper (with the custom paper tick box)
+- 08-preview-book-page.png          the preview: a chapter opening page
+- 09-preview-printing-sheet.png     the preview: a printing sheet (folio on Letter paper)
+- 10-preview-cover.png              the preview: the wraparound cover
+(captured on Linux; on Windows the window has the same layout)
+
+EXAMPLE OUTPUT (rendered from the PDFs BookForge made for the example book)
+- book-first-pages.png           title page, dedication, contents, first chapter
+- book-spread.png                two facing pages
+- printing-sheet-both-sides.png  both sides of one printing sheet (folio on Letter)
+- cover-laid-flat.png            the wraparound cover: back, spine, front
+
+FORMAT OPTIONS (how pages land on the printer paper; Letter paper; blue = portrait pages 5.5 x 8.5 in,
+green = landscape pages 8.5 x 5.5 in, yellow = square pages 7 x 7 in; every page shows its page number)
+- format-options-overview.png              folio, quarto, octavo, sextodecimo x the three page shapes
+- format-options-snug.png                  the same with "Snug against binding edge"
+- format-options-placement-portrait.png    Keep proportional / Snug / Stretch to fit / Original size /
+  format-options-placement-landscape.png   margins, for every fold layout (one sheet per page shape)
+  format-options-placement-square.png
+- format-options-small-layouts.png         the seven small layouts and the one-sheet zine, three page shapes
+- format-options-small-layouts-spacing.png Packed vs Distributed space
+- format-options-printing.png              duplex, rotate back sides, single-sided, backs in reverse order
+- format-options-marks.png                 fold lines, cut lines, spine edge marks, signature marks, sewing
+                                           marks (with close-ups of the fold)
+- format-options-rotation.png              rotate paper 90 degrees and the source page rotations
+- folders folio\ quarto\ octavo\ sextodecimo\ small-layouts\ printing\ marks\ rotation\: every single
+  combination as its own picture, named after the layout, the page shape and the placement
+
+PAPER SIZES
+- paper-sizes-to-scale.png       all 57 presets drawn to the same scale, with Letter for comparison
+- paper-sizes-overview.png       all 57 presets with a folio printed on each
+- paper-sizes-us-and-office.png, -iso-a, -iso-b, -jis-b, -architectural, -id-cards, -book-sizes:
+                                 each group larger, with sizes in inches and millimetres
+- paper-sizes-custom.png         three custom sizes (tick "Use a custom paper size")
+- individual\                    one picture per paper size
+
+NOTES
+- In the "Original size" column, pages bigger than their space run into each other. That is what BookForge
+  prints with that setting (it never shrinks pages); use it only for pages that are already the right size.
+- The printing-sheet pictures show the first printed side of the first sheet. BookForge prints each
+  signature's innermost sheet first, which is why the first sheet shows pages from the middle.
