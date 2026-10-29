@@ -13,7 +13,7 @@ import math
 import os
 import re
 
-from bf_core import safe_name, DEFAULTS
+from bf_core import safe_name, DEFAULTS, not_the_source
 
 PT = 72.0
 
@@ -182,22 +182,22 @@ def parse_length(text):
 def custom_sheet_points(w, h, unit):
     """Custom paper size -> (width, height) in points, checked. Raises ValueError with a plain message."""
     if unit not in UNITS:
-        raise ValueError(f"Custom paper size: unknown unit \u201c{unit}\u201d.")
+        raise ValueError(f"Custom printer paper size: unknown unit \u201c{unit}\u201d.")
     out = []
     for name, v in (("width", w), ("height", h)):
         try:
             x = parse_length(v)
         except ValueError as e:
-            raise ValueError(f"Custom paper {name}: {e}.") from None
+            raise ValueError(f"Custom printer paper {name}: {e}.") from None
         pt = x * UNITS[unit]
         shown = v.strip() if isinstance(v, str) else format(x, "g")
         if pt <= 0:
-            raise ValueError(f"Custom paper {name} must be more than 0 (it is {shown}).")
+            raise ValueError(f"Custom printer paper {name} must be more than 0 (it is {shown}).")
         if pt < SHEET_MIN_PT:
-            raise ValueError(f"Custom paper {name} is too small: at least 1 point "
+            raise ValueError(f"Custom printer paper {name} is too small: at least 1 point "
                              f"({fmt_length(SHEET_MIN_PT, unit, True)} {UNIT_WORDS[unit]}).")
         if pt > SHEET_MAX_PT:
-            raise ValueError(f"Custom paper {name} must be at most {fmt_length(SHEET_MAX_PT, unit)} "
+            raise ValueError(f"Custom printer paper {name} must be at most {fmt_length(SHEET_MAX_PT, unit)} "
                              f"{UNIT_WORDS[unit]} (it is {shown}).")
         out.append(pt)
     return tuple(out)
@@ -228,6 +228,30 @@ def parse_range(text, n):
     return [p - 1 for p in sorted(picked)] if picked else list(range(n))
 
 
+CUSTOM_SIG_MAX = 200          # sheets in one custom signature (a sanity limit: 800+ pages folded together)
+CUSTOM_SIG_HELP = ("Type the number of sheets in each signature, in order, separated by commas "
+                   "(for example 4, 4, 6, 6).")
+
+
+def custom_sizes(s):
+    """The sheets per signature typed for "Custom signature sizes" ("4, 4, 6, 6" -> [4, 4, 6, 6]): whole
+    numbers from 1 to CUSTOM_SIG_MAX, separated by commas (spaces and semicolons work too). Anything else is
+    a ValueError with a plain message: a size is never guessed. (Before 1.8.0 "4.5" was read as two
+    signatures of 4 and 5 sheets, "0" or a word was skipped, and a list without a number quietly used the
+    standard signature size instead.)"""
+    text = (s.get("sig_custom") or "").strip()
+    tokens = [x for x in re.split(r"[,;\s]+", text) if x]
+    if not tokens:
+        raise ValueError("Custom signature sizes: no sizes typed. " + CUSTOM_SIG_HELP)
+    out = []
+    for x in tokens:
+        if not re.fullmatch(r"[0-9]+", x) or not 1 <= int(x) <= CUSTOM_SIG_MAX:
+            raise ValueError(f"Custom signature sizes: \u201c{x}\u201d isn't a whole number of sheets from 1 to "
+                             f"{CUSTOM_SIG_MAX}. " + CUSTOM_SIG_HELP)
+        out.append(int(x))
+    return out
+
+
 def signature_plan(sheets, s):
     fmt = s.get("sig_format", "Standard signatures")
     if fmt.startswith("Perfect"):
@@ -235,12 +259,15 @@ def signature_plan(sheets, s):
     if fmt.startswith("Booklet"):
         return [sheets]
     if fmt.startswith("Custom"):
-        sizes = [int(x) for x in re.findall(r"\d+", s.get("sig_custom") or "") if int(x) > 0]
-        if sizes:
-            plan = list(sizes)
-            while sum(plan) < sheets:
-                plan.append(sizes[-1])
-            return plan
+        sizes = custom_sizes(s)                # (a ValueError if the sizes can't be read: never guessed)
+        # The sizes in the order given (the last one again when the list runs out), only as many as the book
+        # needs: each signature keeps its own size, and only the last one is completed with blank pages.
+        # (Before 1.8.0 every size in the list was used, so a list longer than the book made whole
+        # signatures of nothing but blank pages.)
+        plan = []
+        while sum(plan) < sheets:
+            plan.append(sizes[min(len(plan), len(sizes) - 1)])
+        return plan
     size = max(1, int(s.get("sig_sheets") or 8))
     n = math.ceil(sheets / size)
     base, extra = divmod(sheets, n)
@@ -886,8 +913,15 @@ def plan_imposition(sizes, s, log=print):
                         items.append({"ref": chunk[p], "r": r, "c": c, "rot": rot, "bind": bind,
                                       "sigpage": p, "sigpages": len(chunk), "outer": sh == 0})
                     sides.append({"front": face == "B", "face": face, "sig": si, "sheet": sh, "items": items})
+        firsts, pos = [], 0                 # signatures holding no book page (only flyleafs: blank on purpose)
+        for nsh in plan_sizes:
+            firsts.append(any(r[0] == "p" for r in order[pos:pos + nsh * per_sheet]))
+            pos += nsh * per_sheet
         info.update(sheets=sum(plan_sizes), signatures=len(plan_sizes), plan=plan_sizes, blanks=blanks,
-                    sheet=(W, H), cell=(cw, ch), instructions=fold_instructions(layout, max(plan_sizes) > 1))
+                    sheet=(W, H), cell=(cw, ch), instructions=fold_instructions(layout, max(plan_sizes) > 1),
+                    per_sheet=per_sheet, flyleaf_pages=2 * int(s.get("flyleafs") or 0),
+                    flyleaf_only=[i + 1 for i, has in enumerate(firsts) if not has],
+                    custom=custom_sizes(s) if s.get("sig_format", "").startswith("Custom") else [])
     else:
         fmt = WACKY[layout]
         land = WACKY_LANDSCAPE[fmt]
@@ -907,8 +941,10 @@ def plan_imposition(sizes, s, log=print):
                 log("Note: " + info["warning"])
         for i, side in enumerate(wsides):
             sides.append({"front": i % 2 == 0, "sig": i // 2, "sheet": 0, "rows": side, "items": []})
+        empty = sum(1 for side in wsides for row in side for idx, _fl in row if idx is None)
         info.update(sheets=math.ceil(len(wsides) / 2), signatures=0, plan=[], blanks=0, sheet=(W, H),
-                    instructions=WACKY_HELP.get(fmt, ""), refs=refs)
+                    instructions=WACKY_HELP.get(fmt, ""), refs=refs, empty_spaces=empty,
+                    flyleaf_pages=2 * int(s.get("flyleafs") or 0), flyleaf_only=[], custom=[])
 
     ps = placement_settings(s)
 
@@ -1075,9 +1111,14 @@ def impose(pdf_in, out_dir, base_name, s, log=print):
     os.makedirs(out_dir, exist_ok=True)
 
     def write(wr, path):
-        with open(path, "wb") as f:
+        new = not_the_source(path, s)              # never the book's own source file
+        if new != path:
+            info.setdefault("renamed", []).append((path, new))
+            log(f"\u201c{os.path.basename(path)}\u201d is the book's source file, so this file was saved as "
+                f"\u201c{os.path.basename(new)}\u201d instead.")
+        with open(new, "wb") as f:
             wr.write(f)
-        files.append(path)
+        files.append(new)
 
     def emit(indices, base):
         if duplex:

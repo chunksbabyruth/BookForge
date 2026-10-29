@@ -18,7 +18,12 @@ from bf_core import Book, Chapter, Block, esc, plain
 STYLES = [("para", "Normal text"), ("head", "Heading"), ("subtitle", "Chapter subtitle"),
           ("quote", "Quotation"), ("item", "List item"), ("verse", "Poetry line"),
           ("scene", "Section break"), ("anote", "Author's note"), ("image", "Picture")]
-STYLE_NAMES = dict(STYLES)
+# styles of the front & back pages (bf_matter): offered in the editor only for the pages they belong to
+MATTER_STYLES = [("btitle", "Book title"), ("bsub", "Book subtitle"), ("bauth", "Author line"),
+                 ("bcred", "Credit line"), ("plate", "Bookplate line"), ("ded", "Dedication"),
+                 ("meta", "Work info line"), ("flush", "Text, no indent"), ("endline", "Closing line"),
+                 ("tocentry", "Contents entry")]
+STYLE_NAMES = dict(STYLES + MATTER_STYLES)
 FLAGS = ("b", "i", "u", "s", "sup", "sub")                 # character formatting the editor can toggle
 _TAGS = {"b": "b", "strong": "b", "i": "i", "em": "i", "u": "u", "s": "s", "strike": "s", "del": "s",
          "super": "sup", "sup": "sup", "sub": "sub"}

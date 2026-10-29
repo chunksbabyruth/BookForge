@@ -16,10 +16,12 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (BaseDocTemplate, PageTemplate, Frame, Paragraph,
                                 Spacer, PageBreak, Flowable, Image, CondPageBreak)
 from reportlab.platypus.flowables import DocIf, ImageAndFlowables
+from reportlab.platypus.doctemplate import ActionFlowable
 from reportlab.platypus.tableofcontents import TableOfContents, drawPageNumbers
 from reportlab.platypus import TableStyle, Table
 
 from bf_core import page_size_inches, plain, esc, blank_pages
+import bf_matter
 
 GREY = HexColor("#555555")
 
@@ -396,9 +398,9 @@ class Anchor(Marker):
 
 
 class Rule(Flowable):
-    def __init__(self, width, thickness=0.6, space=6, diamond=False):
+    def __init__(self, width, thickness=0.6, space=6, diamond=False, align=TA_CENTER):
         Flowable.__init__(self)
-        self.w, self.t, self.space, self.diamond = width, thickness, space, diamond
+        self.w, self.t, self.space, self.diamond, self.align = width, thickness, space, diamond, align
 
     def wrap(self, aw, ah):
         self.aw = aw
@@ -406,24 +408,106 @@ class Rule(Flowable):
 
     def draw(self):
         c = self.canv
-        x0 = (self.aw - self.w) / 2
+        w = self.w
+        x0 = 0 if self.align == TA_LEFT else (self.aw - w) if self.align == TA_RIGHT else (self.aw - w) / 2
+        cx = x0 + w / 2                 # the diamond sits in the middle of the line
         y = self.space
         c.setStrokeColor(black)
         c.setLineWidth(self.t)
         if self.diamond:
             g = 4
-            c.line(x0, y, self.aw / 2 - g * 2, y)
-            c.line(self.aw / 2 + g * 2, y, x0 + self.w, y)
+            c.line(x0, y, cx - g * 2, y)
+            c.line(cx + g * 2, y, x0 + w, y)
             p = c.beginPath()
-            p.moveTo(self.aw / 2, y + g)
-            p.lineTo(self.aw / 2 + g, y)
-            p.lineTo(self.aw / 2, y - g)
-            p.lineTo(self.aw / 2 - g, y)
+            p.moveTo(cx, y + g)
+            p.lineTo(cx + g, y)
+            p.lineTo(cx, y - g)
+            p.lineTo(cx - g, y)
             p.close()
             c.setFillColor(black)
             c.drawPath(p, fill=1, stroke=0)
         else:
-            c.line(x0, y, x0 + self.w, y)
+            c.line(x0, y, x0 + w, y)
+
+
+class Gap(Flowable):
+    """Space after something (a picture, a dedication line, a block of notes). At the bottom of a page it takes
+    only the room that is left there, and none at the top of a page. A plain Spacer that doesn't fit below the
+    last line moves to the top of the next page on its own; when a new page follows (the next chapter, the
+    contents, an own-page picture...) that page is left with nothing on it - an unwanted blank page in the book
+    and on the printing sheets. Where it fits, it takes exactly the room a Spacer takes."""
+
+    def __init__(self, width, height):
+        Flowable.__init__(self)
+        self.width, self.height = width, height
+
+    def wrap(self, aw, ah):                 # (only used when something measures it)
+        return self.width, max(0.0, min(self.height, ah))
+
+    def frameAction(self, frame):           # placed by the frame itself: it can never move to another page
+        if not frame._atTop:
+            frame._y -= min(self.height, max(0.0, frame._y - frame._y1p))
+            if frame._oASpace:
+                frame._prevASpace = 0      # (as after a Spacer)
+
+
+class KeepTop(Spacer):
+    """Space above a chapter title. It takes exactly the room a Spacer takes, but it remembers whether it
+    started a page, so AtTopAgain (right after it) can keep the page counted as "at the top": a title kept
+    with a long first paragraph is then not pushed on to the next page, which used to leave an empty page."""
+
+    def wrap(self, aw, ah):
+        f = getattr(self, "_frame", None)
+        self.was_top = bool(f is not None and getattr(f, "_atTop", 0))
+        return Spacer.wrap(self, aw, ah)
+
+
+class AtTopAgain(Flowable):
+    """Follows a KeepTop. When the space started a page, the page still counts as "at the top", and the space
+    above the next line (which ReportLab leaves out at the top of a page) is added here, so every line stays
+    exactly where it was."""
+
+    def __init__(self, space):
+        Flowable.__init__(self)
+        self.space, self.extra = space, 0.0
+
+    def frameAction(self, frame):
+        if getattr(self.space, "was_top", False) and not frame._atTop:
+            frame._y -= min(self.extra, max(0.0, frame._y - frame._y1p))
+            frame._atTop = 1
+
+
+TITLE_ALIGN = {"Centered": TA_CENTER, "Left": TA_LEFT, "Right": TA_RIGHT}
+
+
+def _num(v, default, lo, hi):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    if x != x or x in (float("inf"), float("-inf")):
+        return default
+    return max(lo, min(hi, x))
+
+
+def title_layout(s):
+    """The title alignment and position settings, checked: an unknown or unusable value means its default
+    (the defaults print every title where versions before 1.8.0 did)."""
+    al = lambda k: TITLE_ALIGN.get(s.get(k), TA_CENTER)        # noqa: E731
+    size = lambda k: (lambda v: 0.0 if v < 6 else v)(_num(s.get(k), 0.0, 0.0, 144.0))   # noqa: E731
+    return {"tp_align": al("tp_align"), "tp_pos": _num(s.get("tp_pos"), 20.0, 0.0, 90.0),
+            "tp_title_size": size("tp_title_size"), "ch_align": al("ch_align"), "part_align": al("part_align"),
+            "part_pos": _num(s.get("part_pos"), 30.0, 0.0, 90.0), "part_size": size("part_size"),
+            "sink": _num(s.get("chapter_sink"), 0.0, 0.0, 12.0)}
+
+
+def _block_height(flowables, width, height):
+    """How tall a run of flowables is on the page (their own spacing included)."""
+    total = 0.0
+    for i, f in enumerate(flowables):
+        _w, h = f.wrap(width, height)
+        total += h + (f.getSpaceBefore() if i else 0) + f.getSpaceAfter()
+    return total
 
 
 DROP_RE = re.compile(r"^((?:<[^>]+>)*)((?:&\w+;|['\"\u2018\u201c\u201e\u00ab(\u00bf\u00a1])*)(\w)")
@@ -538,18 +622,33 @@ class PagePicture(Flowable):
         canvas.restoreState()
 
 
+class PageForPicture(ActionFlowable):
+    """Before a picture on a page of its own: a new page - unless nothing has been printed on this page yet
+    (a chapter that starts with the picture), then the picture takes this page, from its top. ReportLab's
+    PageBreakIfNotEmpty counted a chapter's invisible marks (its contents link, the space of "Drop chapter start
+    down") as something on the page and broke anyway, which left an empty page before the picture."""
+
+    def __init__(self):
+        ActionFlowable.__init__(self, ("pageBreak",))
+
+    def apply(self, doc):
+        if doc.bf["content"].get(doc.page):
+            doc.handle_pageBreak()
+        else:
+            doc.frame._reset()
+
+
 def picture_flowables(b, fw, fh):
     """The flowables for a picture block (see Block.img_width / img_place / align)."""
-    from reportlab.platypus.flowables import PageBreakIfNotEmpty
     if b.img_place in ("page", "full"):
-        return [PageBreakIfNotEmpty(), PagePicture(b.image, b.img_width, b.align, full=b.img_place == "full")]
+        return [PageForPicture(), PagePicture(b.image, b.img_width, b.align, full=b.img_place == "full")]
     from bf_pictures import picture_scale
     ir = ImageReader(io.BytesIO(b.image))
     iw, ih = ir.getSize()
     k = picture_scale(iw, ih, int(b.img_width or 0), "", fw, fh, fw, fh)
     img = Image(io.BytesIO(b.image), width=iw * k, height=ih * k)
     img.hAlign = {"left": "LEFT", "right": "RIGHT"}.get(b.align, "CENTER")
-    return [Spacer(1, 6), img, Spacer(1, 8)]
+    return [Spacer(1, 6), img, Gap(1, 8)]
 
 
 class WriteLines(Flowable):
@@ -622,6 +721,23 @@ class BookDoc(BaseDocTemplate):
             self.bf["content"][self.page] = True
 
 
+def empty_pages(doc):
+    """Pages of the finished book with nothing printed on them that nobody asked for: not "Blank pages at
+    beginning/end", not the left-hand page before a right-hand start, not the back of the front cover picture.
+    (Checked after every book is typeset, so an unwanted blank page is reported instead of printed unnoticed.)"""
+    bf = doc.bf
+    return [p for p in range(1, doc.page + 1) if not bf["content"].get(p) and not bf["userblank"].get(p)
+            and not bf.get("planned", {}).get(p) and not bf.get("fullpage", {}).get(p)]
+
+
+def empty_pages_note(pages):
+    shown = ", ".join(map(str, pages[:12])) + (f" and {len(pages) - 12} more" if len(pages) > 12 else "")
+    return (f"page{'s' if len(pages) > 1 else ''} {shown} of the book (counting every page of the print PDF) "
+            f"{'have' if len(pages) > 1 else 'has'} nothing printed on {'them' if len(pages) > 1 else 'it'}, "
+            "and no setting asked for a blank page there. Check the print PDF and the imposed files before "
+            "printing; an empty chapter, or a chapter or page with only space in it, can cause this.")
+
+
 # --------------------------------------------------------------------------
 # Contents page
 # --------------------------------------------------------------------------
@@ -659,14 +775,23 @@ def contents_entries(book, s):
 
 def contents_rows(auto, edits):
     """Every entry for the "Edit contents" window, hidden ones included, in display order:
-    [{"uid", "custom", "auto", "title", "page", "show", "level", "auto_level"}].
+    [{"uid", "custom", "auto", "title", "page", "show", "level", "auto_level", "markup", "space"}].
+    "markup" (fonts, bold... set in Specific Text Edit) and "space" (points above) are None/0 unless set.
 
     auto: contents_entries(); edits: the book's saved changes (see Book.toc). "title"/"page" are None/""
     unless the user typed them. Chapters added since the contents was edited appear after the chapter
     before them; edits for chapters that no longer exist are dropped."""
     def fresh(a):
         return {"uid": a["uid"], "custom": False, "auto": a["text"], "title": None, "page": "",
-                "show": True, "level": a["level"], "auto_level": a["level"]}
+                "show": True, "level": a["level"], "auto_level": a["level"], "markup": None, "space": 0}
+
+    def look(r, ed):
+        r["markup"] = ed.get("markup") or None
+        try:
+            r["space"] = max(0, min(int(ed.get("space") or 0), 72))
+        except (TypeError, ValueError):
+            r["space"] = 0
+        return r
     if not edits:
         return [fresh(a) for a in auto]
     by_uid = {a["uid"]: a for a in auto}
@@ -675,9 +800,9 @@ def contents_rows(auto, edits):
         if ed.get("custom"):
             if (ed.get("title") or "").strip():
                 lvl = int(ed.get("level") or 0)
-                rows.append({"uid": None, "custom": True, "auto": "", "title": ed["title"].strip(),
-                             "page": (ed.get("page") or "").strip(), "show": bool(ed.get("show", True)),
-                             "level": lvl, "auto_level": lvl})
+                rows.append(look({"uid": None, "custom": True, "auto": "", "title": ed["title"].strip(),
+                                  "page": (ed.get("page") or "").strip(), "show": bool(ed.get("show", True)),
+                                  "level": lvl, "auto_level": lvl}, ed))
             continue
         a = by_uid.get(ed.get("uid"))
         if a is None or a["uid"] in seen:
@@ -690,7 +815,7 @@ def contents_rows(auto, edits):
         r["show"] = bool(ed.get("show", True))
         if ed.get("level") is not None:
             r["level"] = int(ed["level"])
-        rows.append(r)
+        rows.append(look(r, ed))
     for i, a in enumerate(auto):                       # chapters the edits don't know about yet
         if a["uid"] in seen:
             continue
@@ -707,17 +832,94 @@ def contents_rows(auto, edits):
 
 def rows_to_edits(rows, auto):
     """The rows of the "Edit contents" window -> what is saved in the book ([] = automatic contents)."""
-    key = lambda r: (r["uid"], r["custom"], r["title"], r["page"], r["show"], r["level"])  # noqa: E731
+    key = lambda r: (r["uid"], r["custom"], r["title"], r["page"], r["show"], r["level"],   # noqa: E731
+                     r.get("markup") or None, r.get("space") or 0)
     if [key(r) for r in rows] == [key(r) for r in contents_rows(auto, [])]:
         return []
     out = []
     for r in rows:
         if r["custom"]:
-            out.append({"custom": True, "title": r["title"], "page": r["page"], "level": r["level"],
-                        "show": r["show"]})
+            e = {"custom": True, "title": r["title"], "page": r["page"], "level": r["level"], "show": r["show"]}
         else:
-            out.append({"uid": r["uid"], "title": r["title"], "page": r["page"], "show": r["show"],
-                        "level": None if r["level"] == r["auto_level"] else r["level"]})
+            e = {"uid": r["uid"], "title": r["title"], "page": r["page"], "show": r["show"],
+                 "level": None if r["level"] == r["auto_level"] else r["level"]}
+        if r.get("markup"):
+            e["markup"] = r["markup"]
+        if r.get("space"):
+            e["space"] = r["space"]
+        out.append(e)
+    return out
+
+
+def merged_contents_page(p_keep, p_gone, choice=None):
+    """The page number typed for the surviving chapter's contents entry after another chapter is merged into
+    it (p_keep / p_gone: the numbers typed for the two entries, '' = none). Only the absorbed chapter had one:
+    it is kept (moved to the surviving entry). Both had different ones: choice, the one the user picked.
+    Otherwise None: the surviving entry stays as it is."""
+    if p_gone and p_keep and p_gone != p_keep:
+        return choice
+    if p_gone and not p_keep:
+        return p_gone
+    return None
+
+
+def merge_contents_edits(edits, keep_uid, gone_uid, page=None):
+    """Book.toc after the chapter gone_uid is merged into the chapter keep_uid ("Merge into previous").
+    The absorbed chapter's entry goes: its typed text, formatting and hidden setting belonged to a heading
+    that is no longer a chapter. page (see merged_contents_page), when given, becomes the surviving entry's
+    typed page number. The surviving chapter keeps its uid, so its entry stays attached to it when it is
+    renamed or moved. A typed number is only what the contents page prints beside the entry - it never
+    moves the chapter. Returns a new list; the one given is not changed."""
+    out, at = [], None
+    for e in edits or []:
+        if not e.get("custom") and e.get("uid") == gone_uid:
+            at = len(out)
+            continue
+        out.append(dict(e))
+    if page:
+        k = next((n for n, e in enumerate(out) if not e.get("custom") and e.get("uid") == keep_uid), None)
+        if k is None:            # the surviving chapter had no saved entry: one where the absorbed entry was
+            out.insert(len(out) if at is None else at,
+                       {"uid": keep_uid, "title": None, "page": page, "show": True, "level": None})
+        else:
+            out[k]["page"] = page
+    return out
+
+
+def swap_contents_entries(edits, uid_a, uid_b):
+    """Book.toc after two chapters swapped places on the Chapters step (Move up / Move down): their contents
+    entries swap places too, so an edited contents keeps following the chapter order. Entries added in Edit
+    contents stay where they are. Returns a new list."""
+    out = [dict(e) for e in edits or []]
+    at = {e.get("uid"): n for n, e in enumerate(out) if not e.get("custom")}
+    if uid_a in at and uid_b in at:
+        a, b = at[uid_a], at[uid_b]
+        out[a], out[b] = out[b], out[a]
+    return out
+
+
+def keep_left_out(new, old, book):
+    """Contents edits written again from the entries shown (Edit contents, or the contents page in Specific Text
+    Edit), plus the saved entries of chapters that are left out for now (unticked on the Chapters step): those
+    aren't shown, so they used to be dropped, and a chapter put back lost its typed page number and words.
+    Each goes back after the entry it followed. Returns a new list."""
+    out_uids = {c.uid for c in getattr(book, "chapters", []) if not c.include}
+    old = list(old or [])
+    kept = [(n, e) for n, e in enumerate(old) if not e.get("custom") and e.get("uid") in out_uids]
+    if not kept:
+        return new
+    out = [dict(e) for e in new or []]
+    for n, e in kept:
+        if any(not x.get("custom") and x.get("uid") == e["uid"] for x in out):
+            continue
+        at = 0
+        for prev in reversed(old[:n]):
+            pos = next((k for k, x in enumerate(out) if not prev.get("custom") and not x.get("custom")
+                        and x.get("uid") == prev.get("uid")), None)
+            if pos is not None:
+                at = pos + 1
+                break
+        out.insert(at, dict(e))
     return out
 
 
@@ -730,14 +932,18 @@ def apply_contents_edits(auto, edits):
         if not r["show"]:
             continue
         if r["custom"]:
-            out.append({"uid": None, "level": r["level"], "text": r["title"], "page": r["page"], "custom": True})
-            continue
-        e = dict(by_uid[r["uid"]])
-        e["level"] = r["level"]
-        if r["title"]:
-            e["text"], e["edited"] = r["title"], True
-        if r["page"]:
-            e["page"] = r["page"]
+            e = {"uid": None, "level": r["level"], "text": r["title"], "page": r["page"], "custom": True}
+        else:
+            e = dict(by_uid[r["uid"]])
+            e["level"] = r["level"]
+            if r["title"]:
+                e["text"], e["edited"] = r["title"], True
+            if r["page"]:
+                e["page"] = r["page"]
+        if r.get("markup"):                 # formatted in Specific Text Edit: that look, with the entry's words
+            e["markup"] = bf_matter.restyle(r["markup"], e["text"])
+        if r.get("space"):
+            e["space"] = r["space"]
         out.append(e)
     return out
 
@@ -759,11 +965,14 @@ class BookTOC(TableOfContents):
                 for lv, tx, pg, k, u in self._lastEntries]
         out = apply_contents_edits(auto, self.edits)
         for e in out:
-            if e.get("custom") or e.get("edited"):       # typed in "Edit contents": plain text
+            if e.get("markup"):                          # formatted in Specific Text Edit
+                e["text"] = self.markup(self.fix(e["markup"]))
+            elif e.get("custom") or e.get("edited"):     # typed in "Edit contents": plain text
                 e["text"] = self.markup(esc(e["text"]))
         return out
 
     markup = staticmethod(lambda m: m)                 # replaced by the font-coverage helper in build_pdf
+    fix = staticmethod(lambda m: m)                    # replaced by build_pdf's font-name helper
 
     def wrap(self, availWidth, availHeight):
         entries = self.final_entries()
@@ -784,9 +993,14 @@ class BookTOC(TableOfContents):
             text = e["text"]
             if e.get("key"):
                 text = '<a href="#%s">%s</a>' % (e["key"], text)
-            para = Paragraph('%s<onDraw name="drawTOCEntryEnd" label="%d"/>' % (text, i), style)
+            try:
+                para = Paragraph('%s<onDraw name="drawTOCEntryEnd" label="%d"/>' % (text, i), style)
+            except Exception:
+                para = Paragraph('%s<onDraw name="drawTOCEntryEnd" label="%d"/>' % (esc(plain(text)), i), style)
             if style.spaceBefore:
                 data.append([Spacer(1, style.spaceBefore)])
+            if e.get("space"):                           # space above this entry (Specific Text Edit)
+                data.append([Spacer(1, float(e["space"]))])
             data.append([para])
         if not data:
             data = [[Spacer(1, 1)]]
@@ -825,6 +1039,9 @@ def contents_pages(entries, styles, has_parts, width, first_h, h):
         if st.spaceBefore:
             data.append([Spacer(1, st.spaceBefore)])
             rows_entry.append(False)
+        if e.get("space"):
+            data.append([Spacer(1, float(e["space"]))])
+            rows_entry.append(False)
         data.append([Paragraph(e["text"] + " 000", st)])
         rows_entry.append(True)
     if not data:
@@ -855,7 +1072,7 @@ def build_pdf(book, s, out_path, log=print):
     mi, mo = float(s["margin_inner"]) * inch, float(s["margin_outer"]) * inch
     fw, fh = W - mi - mo, H - mt - mb
     if fw < 1.5 * inch or fh < 2 * inch:
-        raise ValueError(f"Margins are too large for this page size: they leave {max(0.0, fw) / inch:.2f} \u00d7 "
+        raise ValueError(f"Margins are too large for this book page size: they leave {max(0.0, fw) / inch:.2f} \u00d7 "
                          f"{max(0.0, fh) / inch:.2f} inches for the text, and at least 1.5 \u00d7 2 inches is needed. "
                          "Make the margins smaller (Layout step).")
     (R, B, I, BI), (HR, HB, HI, HBI), (DR, _db, _di, _dbi) = font_roles(s, log)
@@ -867,6 +1084,8 @@ def build_pdf(book, s, out_path, log=print):
     lead = size * float(s["line_spacing"])
     ts, ss = float(s["title_size"]), float(s["sub_size"])
     align = TA_JUSTIFY if s["align"] == "Justified" else TA_LEFT
+    tl = title_layout(s)
+    cha, pta, tpa = tl["ch_align"], tl["part_align"], tl["tp_align"]
 
     st = {}
     st["body"] = ParagraphStyle("body", fontName=R, fontSize=size, leading=lead, alignment=align,
@@ -896,33 +1115,39 @@ def build_pdf(book, s, out_path, log=print):
                                 firstLineIndent=-0.25 * inch)
     st["sub"] = ParagraphStyle("sub", fontName=HT, fontSize=ss, leading=ss * 1.25,
                                alignment=TA_CENTER, spaceBefore=12, spaceAfter=8, keepWithNext=1)
+    # Generated titles and headings (their alignment and position come from the Layout tab's "Titles" settings;
+    # headings inside the text keep their own alignment from Specific Text Edit).
+    st["gsub"] = ParagraphStyle("gsub", parent=st["sub"], alignment=cha)      # Contents, Work info, Notes...
     st["label"] = ParagraphStyle("label", fontName=HR, fontSize=ss, leading=ss * 1.3,
-                                 alignment=TA_CENTER, spaceAfter=4, keepWithNext=1)
+                                 alignment=cha, spaceAfter=4, keepWithNext=1)
+    st["plabel"] = ParagraphStyle("plabel", parent=st["label"], alignment=pta)
     st["ctitle"] = ParagraphStyle("ctitle", fontName=HT, fontSize=ts, leading=ts * 1.25,
-                                  alignment=TA_CENTER, spaceBefore=6, spaceAfter=16, keepWithNext=1)
-    st["csub"] = ParagraphStyle("csub", fontName=I, fontSize=size, leading=lead, alignment=TA_CENTER,
-                                leftIndent=0.3 * inch, rightIndent=0.3 * inch, spaceBefore=0,
+                                  alignment=cha, spaceBefore=6, spaceAfter=16, keepWithNext=1)
+    st["csub"] = ParagraphStyle("csub", fontName=I, fontSize=size, leading=lead, alignment=cha,
+                                leftIndent=0 if cha == TA_LEFT else 0.3 * inch,
+                                rightIndent=0 if cha == TA_RIGHT else 0.3 * inch, spaceBefore=0,
                                 spaceAfter=18, keepWithNext=1)
-    st["part"] = ParagraphStyle("part", fontName=HT, fontSize=ts * 1.2, leading=ts * 1.5,
-                                alignment=TA_CENTER)
+    ps = tl["part_size"] or ts * 1.2
+    st["part"] = ParagraphStyle("part", fontName=HT, fontSize=ps, leading=ps * 1.25,
+                                alignment=pta)
     st["scene"] = ParagraphStyle("scene", fontName=R, fontSize=size, leading=lead,
                                  alignment=TA_CENTER, spaceBefore=6, spaceAfter=12)
-    bt = max(30.0, ts * 1.5)
+    bt = tl["tp_title_size"] or max(30.0, ts * 1.5)
     st["btitle"] = ParagraphStyle("btitle", fontName=HT, fontSize=bt, leading=bt * 1.2,
-                                  alignment=TA_CENTER)
+                                  alignment=tpa)
     st["bsub"] = ParagraphStyle("bsub", fontName=HI if HI != HR else I, fontSize=ss + 1, leading=(ss + 1) * 1.35,
-                                alignment=TA_CENTER, spaceBefore=14)
+                                alignment=tpa, spaceBefore=14)
     st["bauth"] = ParagraphStyle("bauth", fontName=R, fontSize=ss, leading=ss * 1.4,
-                                 alignment=TA_CENTER, spaceBefore=36)
+                                 alignment=tpa, spaceBefore=36)
     st["bcred"] = ParagraphStyle("bcred", fontName=R, fontSize=size * 0.9, leading=size * 1.3,
-                                 alignment=TA_CENTER, spaceBefore=12)
+                                 alignment=tpa, spaceBefore=12)
     st["plate"] = ParagraphStyle("plate", fontName=I, fontSize=ss + 0.5, leading=(ss + 0.5) * 1.3,
                                  alignment=TA_CENTER)
     st["head"] = ParagraphStyle("head", fontName=I, fontSize=max(8.5, size * 0.75),
                                 leading=max(8.5, size * 0.75) * 1.2, alignment=TA_CENTER)
     st["ded"] = ParagraphStyle("ded", fontName=I, fontSize=size, leading=lead, alignment=TA_CENTER)
     st["toct"] = ParagraphStyle("toct", fontName=HT, fontSize=ts, leading=ts * 1.3,
-                                alignment=TA_CENTER, spaceAfter=20)
+                                alignment=cha, spaceAfter=20)
 
     covs = {}
 
@@ -993,13 +1218,82 @@ def build_pdf(book, s, out_path, log=print):
         except Exception:
             return Paragraph(c.apply(esc(plain(markup))), style, **kw)
 
+    def scene_mark(b):
+        sb = s["scene_break"]
+        if sb == "Blank space":
+            return "&#160;"
+        if sb == "Keep the source's own":
+            return b.text or "*&#160;&#160;*&#160;&#160;*"
+        return esc(sb)
+
+    def item_style(depth):
+        d = max(0, min(int(depth), 4))
+        key = f"item{d}"
+        if key not in st:
+            st[key] = ParagraphStyle(key, parent=st["item"], leftIndent=(d + 1) * 0.3 * inch,
+                                     bulletIndent=d * 0.3 * inch + 0.04 * inch, bulletFontName=R,
+                                     bulletFontSize=size)
+        return st[key]
+
+    MATTER_STYLE = {"flush": "flush", "meta": "meta", "head": "sub", "subtitle": "csub", "quote": "quote",
+                    "btitle": "btitle", "bsub": "bsub", "bauth": "bauth", "bcred": "bcred", "plate": "plate",
+                    "endline": "scene", "tocentry": "flush"}
+
+    def matter_flowables(blocks, base="body"):
+        """The flowables for an edited front or back page: the chapter styles plus the title-page and
+        front-page ones, with the alignment, indent and space set in Specific Text Edit."""
+        out, prev_label = [], None
+        for b in blocks:
+            fmt_now[0] = b
+            k = b.kind
+            if k != "anote":
+                prev_label = None
+            if k == "image":
+                if b.image:
+                    try:
+                        out.extend(picture_flowables(b, fw, fh))
+                    except Exception:
+                        log(f"A picture ({b.image_name or 'unnamed'}) couldn't be used and was left out.")
+            elif k == "verse":
+                out.append(P("<br/>".join(x if x else "&#160;" for x in b.lines), st["verse"]))
+            elif k == "scene":
+                out.append(P(scene_mark(b), st["scene"]))
+            elif k == "item":
+                out.append(P(b.text or "&#160;", item_style(b.depth), bulletText=b.bullet or None))
+            elif k == "anote":
+                if b.label and b.label != prev_label:
+                    out.append(P(esc(b.label), st["anlabel"]))
+                out.append(P(b.text, st["anote"]))
+                prev_label = b.label
+            elif k == "ded":
+                out.append(P(b.text or "&#160;", st["ded"]))
+                out.append(Gap(1, 8))
+            elif plain(b.text or "").strip():
+                out.append(P(b.text, st[MATTER_STYLE.get(k, base)]))
+        fmt_now[0] = None
+        return out
+
+    def section(key):
+        """(edited?, blocks) of a front/back page (bf_matter)."""
+        if bf_matter.is_edited(book, key) and bf_matter.override(book, key) is not None:
+            return True, bf_matter.section_blocks(book, s, key)
+        return False, None
+
     story = []
     recto = s["chapter_start"] == "Right-hand page"
+    # Pages left blank on purpose by the layout (the left-hand page before a right-hand start, the back of the
+    # front cover picture): any other page with nothing printed on it is reported after typesetting.
+    # (doc.bf["planned"]: page -> why; the printing notes list them apart from signature padding)
+    def mark_planned(why):
+        return lambda canv, doc: doc.bf.setdefault("planned", {}).__setitem__(canv.getPageNumber(), why)
+
+    def verso_blank():
+        return DocIf("doc.page % 2 == 0", [Marker(mark_planned("verso")), PageBreak()])
 
     def new_page():
         story.append(PageBreak())
         if recto:
-            story.append(DocIf("doc.page % 2 == 0", [PageBreak()]))
+            story.append(verso_blank())
 
     # ---- Blank pages before the book ("Blank pages at beginning"): real pages of the book, before
     # everything else, with nothing printed on them (no number, no running head). Signature padding and
@@ -1027,86 +1321,126 @@ def build_pdf(book, s, out_path, log=print):
             except Exception:
                 log("The front cover picture couldn't be used inside the book.")
 
+    def plate_lines():
+        edited, pblocks = section("bookplate")
+        return matter_flowables(pblocks) if edited else [P(esc(s["bookplate_text"]), st["plate"])]
+
     # ---- Title page
     if started_art:
+        story.append(Marker(mark_planned("cover")))
         story.append(PageBreak())                      # the back of the cover picture stays blank
     if s["title_page"]:
-        story.append(Spacer(1, fh * 0.2))
-        story.append(P(esc(book.title), st["btitle"]))
-        if book.subtitle:
-            story.append(P(esc(book.subtitle), st["bsub"]))
-        if book.author:
-            story.append(P(esc(book.author), st["bauth"]))
-        if book.credit:
-            story.append(P(esc(book.credit), st["bcred"]))
+        # The title block (title, subtitle, author, credit) shares one alignment and starts tp_pos % down the
+        # text area (20 % = where it always was); it is never pushed so low that it spills onto another page.
+        edited, tblocks = section("title")
+        if edited:                                     # edited in Specific Text Edit (words = Book info)
+            block = matter_flowables(tblocks) or [Spacer(1, 1)]
+        else:
+            block = [P(esc(book.title), st["btitle"])]
+            if book.subtitle:
+                block.append(P(esc(book.subtitle), st["bsub"]))
+            if book.author:
+                block.append(P(esc(book.author), st["bauth"]))
+            if book.credit:
+                block.append(P(esc(book.credit), st["bcred"]))
+        plate = []
+        if s["bookplate"] == "On title page":           # the bookplate stays centred under the title block
+            plate = [Spacer(1, 0.9 * inch)] + plate_lines() + [Spacer(1, 0.35 * inch),
+                                                              Rule(min(4.2 * inch, fw * 0.85), 0.8, 2)]
+        top = fh * tl["tp_pos"] / 100
+        room = fh - _block_height(block + plate, fw, fh) - 2
+        story.append(Spacer(1, top if top <= room else max(0.0, room)))
+        story.extend(block)
         if s.get("pn_hide_title"):
             story.append(Marker(lambda c, d: d.bf["nonum"].__setitem__(c.getPageNumber(), True)))
-        if s["bookplate"] == "On title page":
-            story.append(Spacer(1, 0.9 * inch))
-            story.append(P(esc(s["bookplate_text"]), st["plate"]))
-            story.append(Spacer(1, 0.35 * inch))
-            story.append(Rule(min(4.2 * inch, fw * 0.85), 0.8, 2))
+        story.extend(plate)
     started = bool(s["title_page"])
     if s["bookplate"] == "Separate page":
         if started:
             story.append(PageBreak())
         story.append(Spacer(1, fh * 0.35))
-        story.append(P(esc(s["bookplate_text"]), st["plate"]))
+        story.extend(plate_lines())
         story.append(Spacer(1, 0.4 * inch))
         story.append(Rule(min(4.2 * inch, fw * 0.85), 0.8, 2))
         started = True
-    if (s.get("dedication") or "").strip():
+    ded_edited, ded_blocks = section("dedication")
+    if bf_matter.has_text(ded_blocks) if ded_edited else (s.get("dedication") or "").strip():
         if started:
             new_page()
         story.append(Spacer(1, fh * 0.25))
-        for para in re.split(r"\n\s*\n", s["dedication"].strip()):
-            story.append(P(esc(para.strip()).replace("\n", "<br/>"), st["ded"]))
-            story.append(Spacer(1, 8))
+        if ded_edited:
+            story.extend(matter_flowables(ded_blocks))
+        else:
+            for para in re.split(r"\n\s*\n", s["dedication"].strip()):
+                story.append(P(esc(para.strip()).replace("\n", "<br/>"), st["ded"]))
+                story.append(Gap(1, 8))
         started = True
 
     def note_page():
         nonlocal started
-        if not (s.get("note_title") or s.get("note_text") or "").strip():
+        edited, nblocks = section("note")
+        if edited:
+            if not (s.get("note_title", "").strip() or bf_matter.has_text(nblocks)):
+                return
+        elif not (s.get("note_title") or s.get("note_text") or "").strip():
             return
         if started:
             new_page()
         if s.get("note_title", "").strip():
             story.append(Anchor("note", s["note_title"].strip(), 0))
-            story.append(P(esc(s["note_title"].strip()), st["sub"]))
+            story.append(P(esc(s["note_title"].strip()), st["gsub"]))
             story.append(Rule(fw, 0.6, 3))
             story.append(Spacer(1, 8))
-        for para in re.split(r"\n\s*\n", (s.get("note_text") or "").strip()):
-            if para.strip():
-                story.append(P(esc(" ".join(para.split())), st["body"]))
+        if edited:
+            story.extend(matter_flowables(nblocks))
+        else:
+            for para in re.split(r"\n\s*\n", (s.get("note_text") or "").strip()):
+                if para.strip():
+                    story.append(P(esc(" ".join(para.split())), st["body"]))
         started = True
 
     an_mode = s.get("an_mode", "Set apart (smaller, indented)")
 
     def fic_pages():
         nonlocal started
-        if book.fic_meta and s.get("fic_info", "Leave out") != "Leave out":
+        wi_edited, wi_blocks = section("work_info")
+        has_info = bf_matter.has_text(wi_blocks) if wi_edited else bool(book.fic_meta)
+        if has_info and s.get("fic_info", "Leave out") != "Leave out":
             if started:
                 new_page()
             story.append(Anchor("workinfo", "Work info", 0))
-            story.append(P("Work Info", st["sub"]))
+            head = bf_matter.section_heading(book, s, "work_info")
+            if head:
+                story.append(P(esc(head), st["gsub"]))
             story.append(Spacer(1, 8))
-            for m in book.fic_meta:
-                story.append(P(m, st["meta"]))
+            if wi_edited:
+                story.extend(matter_flowables(wi_blocks))
+            else:
+                for m in book.fic_meta:
+                    story.append(P(m, st["meta"]))
             started = True
-        summ = book.fic_summary if s.get("fic_summary", "Add a summary page") != "Leave out" else []
-        notes = book.fic_notes if not an_mode.startswith("Leave") else []
-        if summ or notes:
+        groups = []
+        for key, on in (("summary", s.get("fic_summary", "Add a summary page") != "Leave out"),
+                        ("work_notes", not an_mode.startswith("Leave"))):
+            edited, blocks = section(key)
+            orig = book.fic_summary if key == "summary" else book.fic_notes
+            if on and (bf_matter.has_text(blocks) if edited else orig):
+                groups.append((key, edited, blocks if edited else orig))
+        if groups:
             if started:
                 new_page()
-            story.append(Anchor("summary", "Summary" if summ else "Notes", 0))
-            for group, default in ((summ, "Summary"), (notes, "Notes")):
-                if not group:
-                    continue
-                story.append(P(esc(group[0].label or default), st["sub"]))
+            story.append(Anchor("summary", "Summary" if groups[0][0] == "summary" else "Notes", 0))
+            for key, edited, group in groups:
+                head = bf_matter.section_heading(book, s, key)
+                if head:
+                    story.append(P(esc(head), st["gsub"]))
                 story.append(Spacer(1, 6))
-                for b in group:
-                    story.append(P(b.text, st["flush"]))
-                story.append(Spacer(1, 14))
+                if edited:
+                    story.extend(matter_flowables(group, "flush"))
+                else:
+                    for b in group:
+                        story.append(P(b.text, st["flush"]))
+                story.append(Gap(1, 14))
             started = True
 
     fic_pages()
@@ -1126,7 +1460,8 @@ def build_pdf(book, s, out_path, log=print):
         story.append(title_p)
         # Spacing: normal, unless the last contents page would hold only a few entries - then tighten the
         # spacing (and at most make the type a little smaller) so they fit on the pages before.
-        shown = [dict(e, text=esc(e["text"])) for e in apply_contents_edits(auto_toc, book.toc)]
+        shown = [dict(e, text=fix_fonts(e["markup"]) if e.get("markup") else esc(e["text"]))
+                 for e in apply_contents_edits(auto_toc, book.toc)]
         spacing = s.get("toc_spacing", TOC_SPACING[0])
         variant = 2 if spacing == "Compact" else 0
         if spacing.startswith("Automatic") and len(shown) > 1:
@@ -1146,6 +1481,7 @@ def build_pdf(book, s, out_path, log=print):
         ts0, tsP, ts1, toc_table, _fs = contents_styles(R, B, size, variant)
         toc = BookTOC(edits=book.toc)
         toc.markup = cov.apply
+        toc.fix = fix_fonts
         toc.levelStyles = [tsP if has_parts else ts0, ts1]
         toc.dotsMinLevel = 0 if s["toc_dots"] else 99
         toc.rightColumnWidth = 0.6 * inch
@@ -1156,30 +1492,47 @@ def build_pdf(book, s, out_path, log=print):
     if s.get("note_place") != "Before contents":
         note_page()
 
-    if book.front_blocks:
+    ft_edited, ft_blocks = section("front_text")
+    if bf_matter.has_text(ft_blocks) if ft_edited else book.front_blocks:
         if started:
             new_page()
-        for b in book.front_blocks:
-            if b.kind == "para":
-                story.append(P(b.text, st["body"]))
+        if ft_edited:
+            story.extend(matter_flowables(ft_blocks))
+        else:
+            for b in book.front_blocks:
+                if b.kind == "para":
+                    story.append(P(b.text, st["body"]))
         started = True
 
     # ---- Chapters
     chap_no = part_no = 0
     first = True
     cont = s["chapter_start"] == "Continuous"
+    def settle(att, at):
+        """AtTopAgain (story[at - 1]) adds the space above the first line that follows it (see AtTopAgain)."""
+        for f in story[at:]:
+            if isinstance(f, (CondPageBreak, Anchor, KeepTop, AtTopAgain)):
+                continue
+            att.extra = float(f.getSpaceBefore() or 0)
+            break
+
     for ci, ch in enumerate(chapters):
+        fmt_now[0] = None              # titles never take the formatting of the last paragraph before them
+        top_space, top_at = None, 0
         if first:
             if started:
                 new_page()
             elif recto and (n_front or started_art):
                 # nothing before the first chapter but blank pages: it still opens on a right-hand page
-                story.append(DocIf("doc.page % 2 == 0", [PageBreak()]))
+                story.append(verso_blank())
         elif ch.level == 0 or not cont:
             if not (cont and story and isinstance(story[-1], PageBreak)):
                 new_page()             # (in Continuous mode a part already ends with a page break: no empty page)
         else:
-            story.append(Spacer(1, 28))
+            gap = KeepTop(1, 28)
+            top_space = AtTopAgain(gap)
+            story.extend([gap, top_space])
+            top_at = len(story)
             story.append(CondPageBreak(fh * 0.28))
         title = apply_case(ch.title, s["title_case"])
         if ch.level == 0:
@@ -1190,13 +1543,13 @@ def build_pdf(book, s, out_path, log=print):
             story.append(Anchor(f"ch{ci}", plain(disp), 0, toc_text=cov.apply(esc(ce["text"])),
                                 toc_level=ce["level"], title=plain(title or lbl), opener=True, body_start=first,
                                 uid=ch.uid))
-            story.append(Spacer(1, fh * 0.3))
-            if lbl:
-                story.append(P(esc(lbl), st["label"]))
-            if title:
-                story.append(P(esc(title), st["part"]))
-            if s["ornament"]:
-                story.append(Rule(1.4 * inch, 0.8, 8, diamond=True))
+            # the part's title block starts part_pos % down the text area (30 % = where it always was)
+            head = ([P(esc(lbl), st["plabel"])] if lbl else []) + ([P(esc(title), st["part"])] if title else []) + \
+                ([Rule(1.4 * inch, 0.8, 8, diamond=True, align=pta)] if s["ornament"] else [])
+            top = fh * tl["part_pos"] / 100
+            room = fh - _block_height(head, fw, fh) - 2
+            story.append(Spacer(1, top if top <= room else max(0.0, room)))
+            story.extend(head)
             first = False
             if not ch.blocks:
                 if cont:
@@ -1213,11 +1566,27 @@ def build_pdf(book, s, out_path, log=print):
                 lbl = auto_label(s["chapter_label"], chap_no)
             ce = toc_by_uid[ch.uid]            # contents text: see contents_entries
             toc_text, lvl = ce["text"], ce["level"]
-            story.append(Anchor(f"ch{ci}", plain(toc_text), lvl, toc_text=cov.apply(esc(toc_text)), toc_level=lvl,
-                                title=plain(ch.title), opener=True, body_start=first, uid=ch.uid))
+            if not (lbl or title) and ch.blocks and ch.blocks[0].kind == "image" and \
+                    ch.blocks[0].img_place in ("page", "full"):
+                # no title, and the chapter opens with a picture on a page of its own: the chapter starts on that
+                # page (in Continuous mode its contents entry used to point at the page before)
+                story.append(PageForPicture())
+            anchor = Anchor(f"ch{ci}", plain(toc_text), lvl, toc_text=cov.apply(esc(toc_text)), toc_level=lvl,
+                            title=plain(ch.title), opener=True, body_start=first, uid=ch.uid)
+            if cont and (lbl or title):
+                # Continuous: the title is kept with the chapter's first paragraph, and when they don't fit in
+                # the rest of the page ReportLab moves them to the next page together. The chapter's contents
+                # link (its page number, opening page and running head) goes with them; it used to stay
+                # behind, so the contents gave the page before the one the chapter starts on.
+                anchor.keepWithNext = 1
+            story.append(anchor)
             first = False
-            if float(s["chapter_sink"]) > 0 and not cont:
-                story.append(Spacer(1, float(s["chapter_sink"]) * inch))
+            sink = None
+            if tl["sink"] > 0 and not cont:          # "Drop chapter start down": the title block starts lower
+                sink = KeepTop(1, tl["sink"] * inch)
+                top_space = AtTopAgain(sink)
+                story.extend([sink, top_space])
+                top_at = len(story)
             if lbl:
                 story.append(P(esc(lbl), st["label"]))
             if title:
@@ -1226,17 +1595,43 @@ def build_pdf(book, s, out_path, log=print):
             while blocks and blocks[0].kind == "subtitle":
                 story.append(P(blocks.pop(0).text, st["csub"]))
             if s["ornament"]:
-                story.append(Rule(1.4 * inch, 0.8, 6, diamond=True))
+                story.append(Rule(1.4 * inch, 0.8, 6, diamond=True, align=cha))
                 story.append(Spacer(1, 10))
             fresh = True
             cap_pending = bool(s["drop_cap"])
+            if sink is not None:
+                # Never dropped so low that the title block and what the chapter starts with (two lines of text -
+                # as many as a drop cap spans -, a heading and two lines, or its opening picture) can't follow on
+                # the page, as for title and part pages. A bigger drop than the page has room for left a page with
+                # nothing on it but the drop space (when not even the number line or the opening picture fitted
+                # below it), or the number line alone at the bottom with the title on the next page. Where it
+                # fits, the drop is exactly as set.
+                head = story[top_at:]
+                need = (head[0].getSpaceBefore() or 0) + _block_height(head, fw, fh) if head else 0.0
+                b0 = blocks[0] if blocks else None
+                opening = None
+                if b0 is not None and b0.kind == "image" and b0.image and b0.img_place not in ("page", "full"):
+                    try:
+                        opening = _block_height(picture_flowables(b0, fw, fh)[:2], fw, fh)   # space + picture
+                    except Exception:
+                        opening = None
+                if opening is None and b0 is not None and b0.kind == "head":     # a heading, kept with its text
+                    hp = P(b0.text, st["sub"])
+                    opening = (hp.getSpaceBefore() or 0) + _block_height([hp], fw, fh) + 2 * lead
+                if opening is None:
+                    lines = int(_num(s.get("drop_cap_lines"), 2, 2, 5)) if (cap_pending and b0 is not None and
+                                                                              b0.kind == "para") else 2
+                    opening = lines * lead
+                sink.height = min(sink.height, max(0.0, fh - need - opening - 2))
+        if top_space is not None:
+            settle(top_space, top_at)
         prev_label, in_note = None, False
         for b in blocks:
             fmt_now[0] = b
             if b.kind != "anote" and in_note:
                 in_note, prev_label = False, None
                 if not an_mode.startswith("Keep"):
-                    story.append(Spacer(1, 8))
+                    story.append(Gap(1, 8))
             if b.kind == "para":
                 txt = b.text
                 sty = st["flush"] if (fresh and not s["first_para_indent"]) else st["body"]
@@ -1266,7 +1661,10 @@ def build_pdf(book, s, out_path, log=print):
                     continue
                 keep = an_mode.startswith("Keep")
                 if not in_note and not keep:
-                    story.append(Spacer(1, 4))
+                    # a Gap, not a Spacer: when the page above is full (a picture on a page of its own, text
+                    # ending at the bottom) a Spacer moved to the next page, and a long note kept with its label
+                    # was then pushed past it, leaving that page empty
+                    story.append(Gap(1, 4))
                 if b.label and b.label != prev_label:
                     story.append(P(esc(b.label), st["flush"] if keep else st["anlabel"]))
                 story.append(P(b.text, st["quote"] if keep else st["anote"]))
@@ -1305,18 +1703,43 @@ def build_pdf(book, s, out_path, log=print):
                     story.extend(picture_flowables(b, fw, fh))
                 except Exception:
                     log(f"A picture ({b.image_name or 'unnamed'}) couldn't be used and was left out.")
+            elif b.kind in MATTER_STYLE or b.kind == "ded":      # a front-page style used in a chapter
+                story.extend(matter_flowables([b]))
+                fmt_now[0] = b
         if not ch.blocks:
-            story.append(Spacer(1, 1))
+            story.append(Gap(1, 1))
         if ch.level == 0 and cont:
             story.append(PageBreak())          # chapters after a part's text still start on a new page
-    if s["the_end"]:
+    fmt_now[0] = None
+    edited, eblocks = section("the_end")
+    # THE END emptied in Specific Text Edit prints nothing, like the other formats (its 24 pt of space alone
+    # could move to a page of its own after a chapter ending at the bottom of a page)
+    if s["the_end"] and (bf_matter.has_text(eblocks) if edited else True):
         story.append(Spacer(1, 24))
-        story.append(P("THE END", st["scene"]))
-    for _ in range(int(s.get("notes_pages") or 0)):
+        if edited:
+            story.extend(matter_flowables(eblocks))
+        else:
+            story.append(P("THE END", st["scene"]))
+    edited, xblocks = section("end_matter")          # end pages: afterword, notes... (only when written)
+    xhead = bf_matter.section_heading(book, s, "end_matter")
+    if edited and (bf_matter.has_text(xblocks) or xhead):
         story.append(PageBreak())
-        # running heads on these pages say "Notes", not the last chapter's title
-        story.append(Marker(lambda canv, doc: doc.bf.__setitem__("cur", "Notes")))
-        story.append(P("Notes", st["sub"]))
+        story.append(Marker(lambda canv, doc, h=plain(xhead): doc.bf.__setitem__("cur", h)))
+        if xhead:
+            story.append(Anchor("endpages", plain(xhead), 0))
+            story.append(P(esc(xhead), st["gsub"]))
+            story.append(Spacer(1, 8))
+        story.extend(matter_flowables(xblocks))
+    nhead = bf_matter.section_heading(book, s, "notes_page")
+    edited, nblocks = section("notes_page")
+    for i in range(int(s.get("notes_pages") or 0)):
+        story.append(PageBreak())
+        # running heads on these pages say "Notes" (or the heading chosen), not the last chapter's title
+        story.append(Marker(lambda canv, doc, h=plain(nhead) or "Notes": doc.bf.__setitem__("cur", h)))
+        if nhead:
+            story.append(P(esc(nhead), st["gsub"]))
+        if i == 0 and edited:
+            story.extend(matter_flowables(nblocks, "flush"))
         story.append(WriteLines(0.34 * inch))
     # ---- Blank pages after the book ("Blank pages at end")
     for _ in range(n_back):
@@ -1398,6 +1821,12 @@ def build_pdf(book, s, out_path, log=print):
     anchors = doc.bf.get("anchors", {})
     book._chapter_pages = [(id(ch), anchors.get(f"ch{ci}")) for ci, ch in enumerate(chapters)]
     book._toc_labels = dict(doc.bf.get("toc_labels", {}))      # chapter uid -> page number (for Edit contents)
+    book._empty_pages = empty_pages(doc)
+    # the pages left blank on purpose by the layout (not the "Blank pages at beginning/end" ones): page -> why
+    book._planned_blanks = {p: why for p, why in sorted(doc.bf.get("planned", {}).items())
+                            if not doc.bf["content"].get(p)}
+    if book._empty_pages:
+        log("WARNING: " + empty_pages_note(book._empty_pages))
     if s.get("toc") and book.toc:
         # A number typed in "Edit contents" is always printed as typed - but say so when it isn't the page
         # the chapter really starts on, so a stale correction is noticed instead of silently printed.

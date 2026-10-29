@@ -6,6 +6,7 @@ carried through as a tiny markup subset: <i> <b> <super> <sub> <br/>.
 """
 import html
 import math
+import os
 import posixpath
 import re
 import zipfile
@@ -15,8 +16,8 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.7.0"
-BUILD_DATE = "2026-10-20"     # shown next to the version so different builds can be told apart
+APP_VERSION = "1.8.0"
+BUILD_DATE = "2026-10-28"     # shown next to the version so different builds can be told apart
 APP_AUTHOR = "ChunksBabyRuth"
 
 # --------------------------------------------------------------------------
@@ -48,6 +49,14 @@ DEFAULTS = {
     "an_mode": "Set apart (smaller, indented)",
     "chapter_label": "None", "title_case": "As written",
     "chapter_start": "New page", "chapter_sink": 0.0, "ornament": False,
+    # Titles: alignment and position (the defaults print exactly as before these settings existed)
+    "tp_align": "Centered",            # title page: title, subtitle, author and credit lines
+    "tp_pos": 20.0,                    # title page: where the title starts, % down the text area
+    "tp_title_size": 0.0,              # book title size in pt (0 = automatic: 1.5 x chapter title size, min 30)
+    "ch_align": "Centered",            # chapter number line, title, subtitle, ornament + generated headings
+    "part_align": "Centered",          # part label, part title and its ornament
+    "part_pos": 30.0,                  # part pages: where the part title starts, % down the text area
+    "part_size": 0.0,                  # part title size in pt (0 = automatic: 1.2 x chapter title size)
     "drop_cap": False, "scene_break": "Keep the source's own", "verse_style": "Centered italic",
     "pn_position": "Bottom center", "pn_style": "Rule above",
     "pn_mode": "Every page (title page = 1)", "pn_hide_openers": False,
@@ -69,10 +78,19 @@ DEFAULTS = {
     "spine_width": 0.0, "cover_front_image": "", "cover_back_image": "",
     "cover_image_fit": "Fill the panel (edges may be trimmed)", "cover_text_over_art": False,
     "cover_art_in_book": False,
+    "cover_align": "Same as title page",    # front cover: title, subtitle and author lines
+    "cover_pos": 32.0,                       # front cover: where the title line sits, % down the front panel
     # App
     "check_updates": True,
 }
 PDF_MODES = ["Keep the pages as they are", "Rebuild as an editable book"]
+TITLE_ALIGNS = ["Centered", "Left", "Right"]
+# Title alignment/position settings added in 1.8.0: projects and settings files from before then don't have
+# them and open with these defaults, which print the titles exactly where earlier versions did.
+TITLE_LAYOUT_KEYS = ("tp_align", "tp_pos", "tp_title_size", "ch_align", "part_align", "part_pos", "part_size",
+                     "cover_align", "cover_pos")
+# The front cover's title lines: the title page's alignment unless one is chosen for the cover itself.
+COVER_ALIGNS = ["Same as title page"] + TITLE_ALIGNS
 # "Blank pages at beginning / end": at most this many each, which keeps building and imposing quick
 # (a block of 500 blank pages is far thicker than anything bound by hand).
 BLANK_PAGES_MAX = 500
@@ -172,9 +190,9 @@ def custom_page_inches(w, h):
         try:
             x = float(v)
         except (TypeError, ValueError):
-            raise ValueError(f"Custom page {name}: \u201c{v}\u201d isn't a number of inches.") from None
+            raise ValueError(f"Custom book page {name}: \u201c{v}\u201d isn't a number of inches.") from None
         if not math.isfinite(x) or not CUSTOM_PAGE_MIN_IN <= x <= CUSTOM_PAGE_MAX_IN:
-            raise ValueError(f"Custom page {name} must be between {CUSTOM_PAGE_MIN_IN:g} and "
+            raise ValueError(f"Custom book page {name} must be between {CUSTOM_PAGE_MIN_IN:g} and "
                              f"{CUSTOM_PAGE_MAX_IN:g} inches (it is {v}).")
         out.append(x)
     return tuple(out)
@@ -236,6 +254,9 @@ class Book:
     # Changes made in "Edit contents": [{"uid", "title", "page", "show", "level", "custom"}] in display
     # order. Empty = the automatic contents. Saved in projects with the book.
     toc: list = field(default_factory=list)
+    # Front & back pages edited in Specific Text Edit (see bf_matter): {key: {"blocks": [Block] or None,
+    # "title": heading or None}}. Empty = every page made automatically, as before. Saved in projects.
+    matter: dict = field(default_factory=dict)
     # Copies of the cover pictures, saved in projects so they still work if the picture files move
     cover_front: bytes = None
     cover_back: bytes = None
@@ -1607,3 +1628,35 @@ def apply_info(book, s):
 def safe_name(t):
     t = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", t).strip().rstrip(".")
     return t[:80] or "Book"
+
+
+def source_file(s):
+    """The file the book is read from ('' for pasted text or a source that isn't there)."""
+    if s.get("source_mode", "file") != "file":
+        return ""
+    p = (s.get("source_path") or "").strip()
+    return p if p and os.path.isfile(p) else ""
+
+
+def _same_file(a, b):
+    try:
+        if os.path.exists(a) and os.path.exists(b):
+            return os.path.samefile(a, b)
+    except OSError:
+        pass
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def not_the_source(path, s):
+    """Where to write a file BookForge makes: path itself, or - when path is the book's own source file (the
+    source kept in the book's output folder under the name BookForge gives that file, e.g. "My Book.txt", or
+    BookForge's "My Book - Print.pdf" used again as a source) - the same name with " (BookForge)" added, so
+    making the book never overwrites the file it was read from."""
+    src = source_file(s)
+    if not src or not _same_file(path, src):
+        return path
+    root, ext = os.path.splitext(path)
+    alt, n = f"{root} (BookForge){ext}", 2
+    while _same_file(alt, src):                      # (only if the source itself has that name)
+        alt, n = f"{root} (BookForge {n}){ext}", n + 1
+    return alt

@@ -25,7 +25,7 @@ SHEET_ONLY_KEYS = set(bf_impose.IMPOSE_DEFAULTS) | {"sheet_size", "sheet_unit", 
                                                     "fmt_html", "fmt_txt", "out_dir", "open_when_done",
                                                     "dark_mode", "check_updates", "paper", "spine_width",
                                                     "cover_front_image", "cover_back_image", "cover_image_fit",
-                                                    "cover_text_over_art", "blurb"}
+                                                    "cover_text_over_art", "cover_align", "cover_pos", "blurb"}
 PLACEHOLDER_PAGES = 16
 
 
@@ -91,9 +91,9 @@ def diagnostics(info, s, side, g, page_no, fixed=False):
     W, H = info["sheet"]
     W0, H0 = bf_impose.sheet_points(s)
     lines = [("PAPER AND LAYOUT", "", "head"),
-             ("Printer paper", f"{bf_impose.sheet_name(s)} – {_pt(W0)} × {_pt(H0)} pt", ""),
+             ("Printer paper size", f"{bf_impose.sheet_name(s)} – {_pt(W0)} × {_pt(H0)} pt", ""),
              ("Sheet as printed", f"{_pt(W)} × {_pt(H)} pt ({'landscape' if W > H else 'portrait'})", ""),
-             ("Finished book page", finished_page_text(s, fixed, info.get("page")), "")]
+             ("Book page size", finished_page_text(s, fixed, info.get("page")), "")]
     layout = info["layout"]
     if layout in bf_impose.FOLD_LAYOUTS:
         rows, cols, _f, _l = bf_impose.FOLD_LAYOUTS[layout]

@@ -504,3 +504,300 @@ reference only; nothing copied).
   (1) empty pages in the print PDF - in "Continuous" mode a part with its own text ends with a page break and the
   next part added another (bf_pdf: no second break); (2) scrolling with a dropdown list open moved the page under
   the list (App._wheel ignores the wheel while a ...popdown window is mapped). tests/test_regressions_170.py.
+
+## 1.8.0 - core reliability fixes (Phase 2, 2026-10-27; unreleased, more phases to come)
+Found in the Phase 1 audit (reproduced in the real window), fixed with tests/test_regressions_180.py:
+- [x] Pictures in Specific Text Edit: a picture is now the embedded small copy named bfpic<key> (BookEditor._pics),
+      not its label text or line tags. read() keeps every picture; text that ends up on a picture's line becomes
+      its own paragraph (never dropped); the label (tag "pl") is never book text. normalise_pictures() puts a
+      picture back on its own line after joins/typing/pastes and repairs or removes labels. Keys (Backspace,
+      Delete, Enter, typing) never join or type into a picture line; styles skip picture lines; find & replace
+      skips labels; cut/copy/paste carry the picture itself (BookEditor.clip). A picture whose small copy can't
+      be made shows as a grey box and keeps its bytes. Picture settings find the picture by key when OK/Remove.
+- [x] Source and book rules (App.changes_text / reread_source / update_source_note): the source is never changed;
+      reading it makes the book; edits change only the book; an edited book is replaced only after asking.
+      "Re-read source" button on the Source tab (with what would be lost). scan() clears `edited` only after a
+      successful read, so a failed read keeps the book and its edits. "Keep your chapter changes?" -> Yes is
+      remembered for that source. A preview that fails marks the open preview out of date. A failed editor
+      commit keeps you in Specific Text Edit. "Undo all changes" keeps the book if reading fails.
+- [x] Nothing to print (bf_build.book_problem / check_book / NothingToPrint): preview and build (GUI and run_build)
+      refuse a book with no chapters, all left out, or no text/pictures left, with what to do; empty chapters are
+      named in the log. Front text, pictures-only and poem-only chapters and kept PDFs are fine.
+- [x] Titles & headings font: the PDF engine was already right for every title element (now checked from the PDF
+      font resources: included/installed/custom/built-in, bold on/off, Same as body). What made it look broken:
+      an open preview kept old pages (App._check_preview_current marks it out of date on any setting change),
+      the editor showed headings in the body font (now the heading font), and a heading made from a paragraph
+      set in one font kept that font (Heading style now clears a font set on the whole paragraph).
+      Unchanged on purpose: chapter subtitles (body italic) and contents entries (body font).
+- [x] Edit contents typed page numbers: Preview and Make the book use the window's changes even while it is open
+      (App._apply_contents_window); its close button asks; Cancel goes back to how it was. The window says a typed
+      number only changes the printed number. tests: 28 chapters, 1-14 -> 2 and 15-28 -> 3, preview, Print PDF,
+      project reopen, clearing one.
+
+## 1.8.0 - title and heading placement (Phase 3, 2026-10-27; unreleased)
+- [x] Settings (bf_core.DEFAULTS, TITLE_LAYOUT_KEYS): tp_align / tp_pos (% down the text area, 20) / tp_title_size
+      (0 = automatic, 1.5 x chapter title size, min 30), ch_align, part_align / part_pos (30) / part_size (0 = 1.2 x).
+      chapter_sink ("Drop chapter start down") is reused for the chapter titles' position, unchanged, and moved into
+      the new Layout group "Titles: alignment & position". Defaults print exactly as before (33 of 36 typeset
+      configurations identical to the character; the other 3 are books that used to get an empty page, see below).
+      Old projects open with the defaults (open_project_dialog setdefault). bf_pdf.title_layout checks and clamps
+      every value (positions 0-90 %, sizes 0 or 6-144 pt, drop 0-12 in); text typed into a box counts as the default.
+- [x] bf_pdf: styles btitle/bsub/bauth/bcred follow tp_align; label/ctitle/csub/toct and the new gsub (Contents,
+      Work info, Summary/Notes, extra page and Notes headings) follow ch_align; plabel/part follow part_align; Rule
+      (ornament) takes an alignment. In-text headings ("head" blocks, style sub) keep their own editor alignment.
+      Title page and part blocks start at their % but are moved up just enough never to spill onto another page.
+- [x] Fixed: a chapter title (and THE END) took the alignment/indent/space of the last paragraph before it
+      (fmt_now was not reset between chapters).
+- [x] Fixed (Phase 1 issue 8a): an empty page before a chapter whose first paragraph is longer than the rest of
+      the page, with "Drop chapter start down" > 0 or after a part page in Continuous mode. KeepTop + AtTopAgain keep
+      the page counted as "at the top" (ReportLab's KeepTogether otherwise breaks to the next frame); every line
+      stays where it was. tests/test_titles_180.py.
+
+## 1.8.0 - editable front & back matter and contents (Phase 4, 2026-10-28; unreleased)
+- [x] Model (new bf_matter.py): Book.matter = {key: {"blocks": [Block] or None, "title": heading or None}} for 13
+      pages: title, bookplate, dedication, note (extra front page), work_info, summary, work_notes, contents,
+      front_text, the_end, end_matter (new: end pages after THE END), notes_page, blurb. Empty = automatic: the page is
+      made from the settings/source exactly as before (auto_blocks; saving a page unchanged prints identically, all
+      13 checked). Same Block/markup model as chapters; projects store it (PROJECT_FORMAT unchanged; older projects
+      have no "matter" and open with every page automatic; older BookForge versions ignore the field).
+- [x] One source of truth: title page and bookplate words = Book info fields / Bookplate wording (an edited page
+      keeps its lines, order and formatting and shows the current words: bf_matter._synced); dedication, extra
+      front page, blurb = the edited page, its plain words mirrored into the old settings, whose boxes become
+      read-only while the page is edited (sync_matter_ui); fanfic pages and contents = edits kept beside what was
+      read from the source (fic_meta/fic_summary/fic_notes/front_blocks/toc never changed).
+- [x] Specific Text Edit: list = FRONT PAGES / CHAPTERS / BACK PAGES; select_section, _commit_section,
+      Back to automatic, page heading field (note -> note_title, contents -> toc_title, others -> matter title),
+      styles per page (bf_edit.MATTER_STYLES: Book title, Book subtitle, Author line, Credit line, Bookplate line,
+      Dedication, Work info line, Text no indent, Closing line, Contents entry), pictures only on note, front_text,
+      end_matter. Front & back tab: buttons opening each page; Book info / Output: "Edit with formatting...".
+- [x] Contents as text: one line per shown entry; a page-number mark (embedded label, not text) at the end of each
+      line identifies its entry (Chapter.uid) and opens the typed-page prompt. New line = custom entry, removed
+      line = hidden entry, Indent = level, Space above = space, formatting = markup (words follow a renamed
+      chapter: bf_matter.restyle in apply_contents_edits), Move up/down = reorder. Saved as Book.toc (same format
+      as Edit contents, plus "markup"/"space"); the Edit contents window and the text never edit at the same time.
+- [x] PDF (bf_pdf.matter_flowables + section()), cover blurb, EPUB / Word / web page / text exports all read
+      bf_matter.section_blocks. Web page and text now also include the dedication and extra front page (they
+      were missing there before).
+- [x] Re-read source / preview / build re-reading the source keep the user's own pages (user_pages /
+      restore_user_pages); edits to pages read from the source are listed in the "will be lost" question.
+- [x] Fixed on the way (each reproduced on the Phase 3 code first): after switching light/dark on Specific Text
+      Edit the text box was empty (typing there would have replaced the chapter); closing BookForge right after
+      typing in Specific Text Edit closed without asking to save (the typing was lost); New book right after typing
+      didn't ask either. Also select() now stays on the text when its edits can't be applied.
+- [x] tests/test_matter_180.py (engine + window); tests/test_regressions_180.py list-size check follows the new list.
+
+
+## 1.8.0 - blank pages and custom signature padding (Phase 5, 2026-10-28; unreleased)
+Investigated with scans of the typesetter (14,224 books on the final code, 0 unexplained blank pages: every
+chapter start mode, drop 0/1 in, long/short first paragraphs, headings, untitled chapters, parts with/without
+text, pictures inline/own page/full page, author's notes, fanfic pages, dedication, extra page, contents, THE
+END, end pages, Notes pages, blank pages, cover picture, many-chapter books, and boundary sweeps where a
+chapter's text ends on every line of a page in turn before each kind of follower) and of the imposition (32,400
+plans + 480 real imposed outputs rendered and checked side by side, every file). BookForge's own empty-page
+check agreed with the rendered pages in every scan.
+- [x] Cause 1 (typesetting): space after something (the 8 pt after an inline picture or a dedication-style line,
+      the 14 pt after the fanfic summary/notes, the 8 pt after a run of author's notes, the 1 pt of an empty
+      chapter) was a ReportLab Spacer. When it didn't fit below the last line it moved to the top of the next page
+      on its own; the next chapter / contents / page picture then started a page later, leaving a page with
+      nothing on it. Also when a line's own space after had already reached below the bottom. Fix: bf_pdf.Gap
+      (a frame action: takes only the room left, none at the top of a page; where it fits it is exactly a Spacer).
+- [x] Cause 2 (typesetting): a chapter with no title that opens with a picture on a page of its own (or edge to
+      edge): ReportLab's PageBreakIfNotEmpty counted the chapter's invisible marks (contents link, drop space) as
+      content and broke anyway. Fix: bf_pdf.PageForPicture (breaks only when something is printed on the page;
+      otherwise the picture takes the page from its top), and such a chapter's contents link goes on the
+      picture's page (Continuous mode pointed at the page before).
+- [x] Cause 4 (typesetting): the 4 pt of space before a run of author's notes was a ReportLab Spacer too. When
+      the page above was already full (a picture on a page of its own / edge to edge ending a chapter; or the
+      chapter's text ending on the last line of a page when the line spacing leaves less than the paragraph
+      space + 4 pt below it, as on the default Letter page) it moved to the next page alone; the note's label is
+      kept with the note, and a label + note taller than a page then broke to a new page because that page was
+      no longer "at the top" - leaving it empty. Fix: Gap(1, 4).
+- [x] Cause 5 (typesetting): THE END emptied in Specific Text Edit with "Print THE END" still on printed its
+      24 pt of space and nothing else; after a book whose text ended near the bottom of a page that space moved
+      to a last page of its own. Now an emptied THE END prints nothing in the PDF either (as in EPUB/Word/HTML/TXT).
+- [x] "Drop chapter start down" + long first paragraph (Phase 1 issue 8a): fixed in Phase 3 (KeepTop/AtTopAgain);
+      re-checked here in 96 + 1,152 combinations with headings, untitled chapters, pictures, parts, every start mode.
+- [x] Cause 3 (imposition, Phase 1 issue 8b): signature_plan used every custom size in the list, so a list longer
+      than the book made whole signatures of nothing but blank pages (12-page book, folio, "4, 4, 6, 6": 68
+      blanks, 3 empty signature files). Now the sizes are used in order, only as many as the book needs (the last
+      repeats when the list runs out); each signature keeps its size; only the last is completed with padding.
+      bf_impose.custom_sizes / signature_plan.
+- [x] Printing notes (bf_build.padding_note): "N blank page(s) added after the book's last page to complete the
+      last sheet/signature" (was always "to fill the last sheet", wrong for custom sizes), flyleafs counted
+      apart, custom sizes not needed / repeated, signatures holding only flyleaf pages named as blank on purpose.
+      plan_imposition records per_sheet, flyleaf_pages, flyleaf_only, custom, empty_spaces (small layouts).
+- [x] Safety net: bf_pdf.empty_pages / empty_pages_note - after every typeset, pages with nothing printed that no
+      setting asked for (planned: blank pages at beginning/end, left-hand page before a right-hand start, back of
+      the front cover picture; marked with Marker(mark_planned) / userblank / fullpage) are reported: log
+      WARNING, preview window line, printing notes, build_preview result "empty_pages".
+- [x] Not changed (checked, correct): no padding during typesetting; flyleafs and padding counted once; plans
+      and notes come from the current files (no stale counts); Standard/Perfect/Booklet plans identical.
+- [x] Layout compared with Phase 4 (36 unedited test books: novel, parts, pictures, fanfic x 3 chapter starts x
+      3 option sets): 21 identical; in the other 15 the only change is on a page where Phase 4 had moved a space
+      to its top (8 pt after a picture, 14 pt after the fanfic summary + the heading's own 12 pt): that page now
+      starts at the normal top margin. Same lines on every page, same page count, same page numbers.
+- [x] Review fixes: merging a chapter now says when its contents entry had a typed page number / text / was hidden
+      (C14); the headless build stops with the plain "Nothing to print" message (no traceback).
+- [x] tests/test_blanks_180.py (78 checks; each bug check fails on the code before its fix - the Phase 4 code, or
+      for causes 4 and 5 the Phase 5 code with only that fix undone).
+
+## 1.8.0 - page size labels, contents page numbers kept when merging (Phase 6, 2026-10-28; unreleased)
+- [x] Labels: "Book page size" (Layout step, the finished page of the book; group "Book page & margins (inches)",
+      custom size hint "used when Book page size = Custom") and "Printer paper size" (Output step, the sheet that
+      goes through the printer; "Use a custom printer paper size", "Custom printer paper size", the size line
+      "Printer paper size: ..."). The cover's paper list is "Paper weight (sets spine width)" so it isn't read
+      as a size (its hint now wraps to its column). Same names in Help, README, error messages ("Custom book
+      page width/height", "Custom printer paper width/height", "(Layout step, Book page size.)"), the printing
+      notes ("book page size W x H in", "sheet(s) of ... printer paper") and the placement window. Setting keys
+      unchanged (page_size, custom_w/h, sheet_size, sheet_unit, sheet_w/h, paper): settings, presets and projects
+      from every version load as before (old paper names still mapped). Tests updated to the new wording only.
+- [x] Root cause (merge): contents edits (Book.toc) are keyed by chapter uid. "Merge into previous" deleted the
+      absorbed chapter, so its entry - with a page number typed in Edit contents - pointed at a chapter that no
+      longer existed and contents_rows dropped it (Phase 5 only said so in the status line). The surviving
+      chapter keeps its uid, so its own entry was never the problem.
+- [x] Fix (BookForge.App.merge_ch, bf_pdf.merged_contents_page / merge_contents_edits): the absorbed chapter's
+      typed number moves to the surviving chapter's entry when that one has none; when both have different
+      numbers the user chooses (Yes = keep the surviving chapter's, No = keep the absorbed chapter's, Cancel =
+      no merge, nothing changed). The absorbed entry's other changes (typed text, formatting, hidden) go with it,
+      and the status line says so. The rule is applied to an open Edit contents window too (its pending changes
+      are used, as Preview does, and its Cancel goes back to the merged pre-window contents); Specific Text Edit
+      loads its contents page again when a typed number changed elsewhere, so saving it can't restore old numbers.
+      A typed number stays only a printed label: the chapter starts where the layout puts it (log note as before).
+- [x] Unchanged: chapter ids; renaming / moving chapters (the number stays with the surviving chapter's id);
+      projects without typed numbers or without contents edits merge exactly as before (contents stay automatic).
+      Note (existing design, not changed here): once the contents were edited, their order is the order kept in
+      Edit contents, so moving a chapter on the Chapters step didn't move its contents entry (changed in Phase 8:
+      the two chapters' entries now swap too).
+- [x] tests/test_contents_merge_180.py (new): merge rules; merge into an entry without a number; conflicting
+      numbers (Cancel, keep absorbed, keep surviving); save/reopen; rename + move after merging; open Edit
+      contents window; Specific Text Edit's contents page; an older project without contents edits or chapter
+      ids; labels bound to the same setting keys, presets and older settings files; messages and printing notes.
+      22 checks fail on the Phase 5 code. tests/test_blanks_180.py: the Phase 5 merge check now expects the
+      number to be kept.
+
+## 1.8.0 - drop chapter start down, custom signature sizes (Phase 7, 2026-10-28; unreleased)
+Both reported defects were first reproduced on the original code (GitHub main 70839fc): "Drop chapter start
+down" 1 in + long first paragraphs left an empty page before every chapter (Digest: pages 1, 8, 15), and "4, 4,
+6, 6" padded a 1-page folio book with 79 blank pages (2,674 of 7,956 plans wrong). Both were already fixed in
+Phases 3 and 5 and stay fixed (checked again below). Tracing them further found these, fixed now:
+- [x] Drop bigger than the page has room for (bf_pdf.build_pdf): the drop was a fixed space before the title
+      block, whatever the page size. On small pages (Pocket, A6, Mass Market with 3-4 in), or before a tall opening
+      picture (any page size), the title block or the picture couldn't follow it: the page was left with only the
+      drop space on it (an empty page), or the number line stayed alone at the bottom with the title on the next
+      page, or the opening heading / drop cap lines went to the next page. A drop typed above the room of the page
+      (e.g. 6 in on Mass Market; the field takes up to 12) stopped the book with a ReportLab LayoutError. Now the
+      drop is never so low that the title block and what the chapter starts with (two lines of text, as many as a
+      drop cap spans, an opening heading and two lines, or the opening picture) can't follow it on the page - the
+      same rule as title and part pages. Where it fits, the drop is exactly as set (unchanged books).
+- [x] Continuous: a titled chapter whose first paragraph didn't fit in the rest of the page moved (title and
+      paragraph together, ReportLab keepWithNext) to the next page, but its contents link stayed behind: the
+      contents gave the page before the one the chapter starts on (also the opening-page number hiding and the
+      running head). The link now moves with the title (Anchor keepWithNext in Continuous). The text layout is
+      unchanged; only those contents numbers change (to the right page).
+      Not changed (existing Continuous behaviour): such a chapter still starts on the next page instead of under
+      the end of the previous chapter.
+- [x] Custom signature sizes were read leniently (bf_impose.custom_sizes): "4.5, 6" became three signatures of 4,
+      5 and 6 sheets, "0" / "-4" / a word were skipped, and a list without a number (or "Custom" with an empty box)
+      quietly used the standard size. Now only whole numbers 1-200 separated by commas (spaces / semicolons) are
+      accepted; anything else stops the preview / build with a plain message (window: Output step, Binding layout;
+      headless: the log), checked before anything is written (bf_build.check_settings). Small layouts don't use
+      the sizes, so they aren't checked there.
+- [x] Printing notes: the pages the layout leaves blank on purpose are listed apart from padding, flyleafs and
+      the blank pages you added - "Blank pages in the book on purpose: page 3 (the back of the front cover picture);
+      pages 6, 10 (left-hand pages left blank so the next chapter starts on a right-hand page)". bf_pdf records why
+      each planned page is blank (book._planned_blanks; build_preview result "planned_blanks").
+- [x] Checked, not changed: no padding before imposition (the print PDF has only the book's pages); flyleafs and
+      padding counted once; nothing carried over between builds/previews (plans and notes come from the current
+      files); Standard / Perfect bound / Booklet plans unchanged; padding only completes the last signature.
+- [x] Headless build: an unusable setting is logged as a plain message (no traceback).
+
+## 1.8.0 - complete front & back editing (Phase 8, 2026-10-28; unreleased)
+Inspected first: the page model (bf_matter, Book.matter, Book.toc), Specific Text Edit (select / commit /
+_commit_section / _commit_contents), project save/load, and every output. Every page was edited with its own
+words (and a picture where pictures go) and every format made from it, then saved and reopened. The preview, the
+print PDF and the imposed PDF had every edit; the gaps were in the other outputs and around them:
+- [x] Text before chapter 1 (read from the source or edited) was only in the PDFs: the EPUB, Word document, web
+      page and text file left it out. Now in all of them, after the contents and the extra front page, as in the
+      PDF (bf_export.front_text_blocks: an edited page, or the paragraphs read from the source; edited to nothing
+      = none anywhere; a picture alone counts). It also has its own button on Front & back ("Text before chapter
+      1", with the other pages) and a hint saying where its text comes from.
+- [x] Word: an edited contents (Edit contents or the contents page in Specific Text Edit) was ignored - the Word
+      file always had Word's own contents field, listing every chapter under its original title. Now it lists the
+      edited entries in their order (renamed, formatted, indented, space above, added; hidden ones left out), a
+      typed page number as typed, otherwise a PAGEREF field to a bookmark on the chapter's heading (Word fills in
+      the real page when it updates its fields; LibreOffice does it on opening). An unedited contents is still
+      Word's own contents field (same XML as before).
+- [x] Same order in every format: the Word document had the contents before the work info / summary / notes
+      pages (the PDF has them before the contents); the EPUB always put the extra front page before the contents;
+      the web page and text file put an extra front page set "Before contents" ahead of the work info. All now
+      follow the PDF: title page, bookplate, dedication, work info, summary, notes, extra front page (before or
+      after the contents, as set), contents, text before chapter 1, chapters, THE END, end pages, Notes pages.
+- [x] Making the book could overwrite its own source: with the source file kept in the book's output folder
+      under the name BookForge gives a file (e.g. "My Book.txt" with plain text on, or BookForge's own "My Book -
+      Print.pdf" used again as a source) the source was replaced. Now such a file gets " (BookForge)" added
+      (bf_core.not_the_source; run_build, the imposition, the READ ME, the headless log) and the printing notes say
+      so. Save project... refuses to save onto the source file.
+- [x] Contents vs chapters: moving a chapter (Chapters step, or Move up / down on a chapter in Specific Text Edit)
+      left an edited contents in the old order, so it no longer matched the book. The two chapters' entries now
+      swap too (App.swap_chapters, bf_pdf.swap_contents_entries), including changes still open in the Edit
+      contents window. Editing the contents while a chapter was left out (unticked) dropped that chapter's entry,
+      so putting it back lost its typed page number and words; those entries are now kept in place
+      (bf_pdf.keep_left_out; Edit contents' Undo all still drops everything).
+- [x] What a format can't hold is said in the printing notes and the log instead of being left out quietly
+      (bf_build.format_limits): the edited bookplate (a print page: print PDF and Word only), edited Notes pages
+      (lined pages for printing only), typed contents page numbers and contents entry formatting (the EPUB, web
+      page and text file reflow and have no page numbers: print PDF and Word), pictures on edited pages (the text
+      file has none), edited back-cover text when the cover isn't being made. The help text, the README and the
+      Specific Text Edit hints say the same.
+- [x] Checked, not changed: typing on a page is kept when another page, a chapter or another step is opened, and
+      Preview, Make the book, Save project, Re-read source and closing all take the latest typing first; edits go
+      to the page being edited (never a chapter); save / reopen brings back every page, heading, picture and the
+      contents edits and makes the same files; Re-read source names the edited pages read from the source and
+      keeps the user's own pages; the source file is never written to.
+- [x] Unedited books: the print PDF is identical to Phase 7 (36 test books, every character and picture
+      position); the EPUB, Word, web page and text files differ only by the order fixes above and the text before
+      chapter 1.
+- [x] tests/test_front_back_180.py (every page x every format, pictures, order, notes, Word contents incl. a
+      LibreOffice check where installed, EPUB placement, save/reopen, source never overwritten, contents
+      following chapters, window checks). Its bug checks fail on the Phase 7 code.
+
+## 1.8.0 - title and heading settings in every format (Phase 9, 2026-10-28; unreleased)
+Traced first: the Layout tab's "Titles: alignment & position" settings (tp_align, tp_pos, tp_title_size, ch_align,
+chapter_sink, part_align, part_pos, part_size; checked by bf_pdf.title_layout) were used only by bf_pdf (print PDF,
+preview, imposed sheets). The EPUB and web page centred every title in a fixed stylesheet, Word centred its
+Heading styles and title paragraphs and put the title page title a fixed 140 pt down (its book title size ignored
+"Book title size"), and the cover drew its own centred title at a fixed height. Chapter title size and the titles
+font were already used by Word (Heading styles) and the PDFs; the EPUB and web page have no font settings
+(unchanged).
+- [x] One source of truth: bf_export.title_look reads the same checked values as the PDF (title_layout); no new
+      Layout controls. What each setting moves is kept apart as in the PDF: title page (title, subtitle, author,
+      credit; the bookplate stays centred), chapter titles (number line, title, chapter subtitles) and the
+      headings BookForge adds (Contents, Work info, Summary, Notes, extra front page, end pages) = ch_align,
+      parts = part_*. Headings typed in the text, the dedication, THE END and section breaks keep their own look.
+- [x] EPUB and web page (bf_export.title_css, added after the fixed stylesheet so it wins; the chapter number line
+      and title in a div "chead", parts in a div "part" in the web page too): text-align for each title; positions
+      as space above (a screen has no fixed page): title page margin = 1.25 x its % (20 % -> 25 %, the old margin),
+      part margin = its % (30 % = the old EPUB margin; the web page's part titles now get it too), chapter drop =
+      padding in ems (drop / text size, none in Continuous, as in the PDF); Book title / part title sizes in ems of
+      the text size (0 = automatic keeps the old sizes). The number line has no first-line indent any more, so it
+      lines up with its title.
+- [x] Word: Heading styles carry the alignment (Heading 1 = parts when the book has parts, else chapters) and the
+      part size (part_size, or 1.2 x the chapter title size as in the PDF); title page paragraphs follow tp_align
+      and Book title size; positions are the PDF's on Word's real pages: space above the title page title =
+      tp_pos % of the text area, part titles part_pos %, chapter titles + the drop (never so much that the block
+      leaves its page, estimated); generated headings and chapter subtitles follow ch_align. With the standard
+      settings the title page title and part titles move to the PDF's places (Robert chose "Match the PDF").
+- [x] Cover: the cover is laid out apart from the title page, so it gets its own settings (Robert's choice):
+      cover_align ("Same as title page" (standard) / Centered / Left / Right: title, subtitle and author lines) and
+      cover_pos (% down the front panel where the title line sits, 5-85, standard 32 = where it always was), Output
+      tab, Cover group. Standard values draw the cover exactly as before; the title never leaves the cover and the
+      subtitle never runs into the author line. Both are in TITLE_LAYOUT_KEYS (older projects get the standard
+      values) and bf_placement.SHEET_ONLY_KEYS.
+- [x] Not changed: the PDFs (print, preview, imposed: identical to Phase 8 for every setting); the plain text file
+      (no layout); EPUB/web page fonts.
+- [x] tests/test_title_exports_180.py: PDF positions; preview = print = imposed (rendered); EPUB and web page read
+      with a small CSS cascade (specificity, order, inline styles, inheritance) on the real files; Word styles and
+      paragraphs (and, where LibreOffice is installed, the Word file laid out and measured); cover on its own;
+      what keeps its own look; plain text unchanged; project save/reopen; older projects; window checks. 14 of its
+      checks fail on the Phase 8 code (which then stops at the missing cover settings). Also checked in Chromium
+      (not part of the tests): every title's alignment, size and position in the EPUB pages and the web page.

@@ -138,7 +138,7 @@ try:
     sheet_points(dict(IMPOSE_DEFAULTS, sheet_size="Custom", sheet_w=0, sheet_h=11, sheet_unit="in"))
     check(False, "an unusable custom size is never replaced by another size")
 except ValueError as e:
-    check("Custom paper width" in str(e), "an unusable custom size is reported, not replaced by another size")
+    check("Custom printer paper width" in str(e), "an unusable custom size is reported, not replaced by another size")
 
 
 # ---------------------------------------------------------------- 3. real printed sheets for every preset
@@ -232,7 +232,7 @@ for name in ("Letter", "A0", "ID-1", "Custom"):
 s = dict(s0, sheet_size="A4", sheet_unit="mm", out_dir=os.path.join(TMP, "notes"), open_when_done=False)
 _f, made, notes = run_build(apply_info(load_book(s, book_text), s), s, lambda m: None)
 txt = open(os.path.join(_f, "READ ME - printing notes.txt"), encoding="utf-8").read()
-check("A4 (210.0 × 297.0 mm) paper, printed 11.69 x 8.268 in" in txt, "printing notes give the paper and its size")
+check("A4 (210.0 × 297.0 mm) printer paper, printed 11.69 x 8.268 in" in txt, "printing notes give the paper and its size")
 
 # ---------------------------------------------------------------- 4. blank pages: the numbers allowed
 for v, n in ((0, 0), (3, 3), ("12", 12), (" 7 ", 7), (BLANK_PAGES_MAX, BLANK_PAGES_MAX), (2.0, 2)):
@@ -421,8 +421,8 @@ if have_display:
     app.var("sheet_size").set("Letter")
     app.var("sheet_unit").set("in")
     pump()
-    check(app.paper_lbl.cget("text") == "Paper size: Letter (8.5 × 11.0 inches)", app.paper_lbl.cget("text"))
-    # the custom size is off until "Use a custom paper size" is ticked
+    check(app.paper_lbl.cget("text") == "Printer paper size: Letter (8.5 × 11.0 inches)", app.paper_lbl.cget("text"))
+    # the custom size is off until "Use a custom printer paper size" is ticked
     states = lambda: [str(e.cget("state")) for e in app.sheet_entries]          # noqa: E731
     check(not app.custom_paper_on.get() and states() == ["disabled", "disabled"] and app.sheet_msg.cget("text") == "",
           "a preset is chosen: the tick box is off and the custom size boxes are greyed out")
@@ -434,8 +434,8 @@ if have_display:
     app._custom_paper_toggled()
     pump()
     check(app.var("sheet_size").get() == "Custom" and states() == ["normal", "normal"] and
-          app.paper_lbl.cget("text").startswith("Paper size: Custom ("),
-          "ticking the box sets Paper size to Custom and opens the boxes")
+          app.paper_lbl.cget("text").startswith("Printer paper size: Custom ("),
+          "ticking the box sets Printer paper size to Custom and opens the boxes")
     app.custom_paper_on.set(False)
     app._custom_paper_toggled()
     pump()
@@ -455,7 +455,7 @@ if have_display:
     app.unit_disp.set("Millimeters")
     app._paper_unit_chosen()
     pump()
-    check(app.paper_lbl.cget("text") == "Paper size: Letter (215.9 × 279.4 mm)" and
+    check(app.paper_lbl.cget("text") == "Printer paper size: Letter (215.9 × 279.4 mm)" and
           app.var("sheet_unit").get() == "mm", "choosing millimetres shows Letter in mm")
     app.var("sheet_size").set("Custom")
     app.sheet_w_text.set("230.5")
@@ -478,7 +478,7 @@ if have_display:
     n = len(SAID)
     app.build()
     pump()
-    check(len(SAID) == n + 1 and "custom paper" in SAID[-1][1].lower() and not app.busy,
+    check(len(SAID) == n + 1 and "custom printer paper" in SAID[-1][1].lower() and not app.busy,
           "making the book is stopped with a message while the custom size is invalid")
     app.sheet_w_text.set("230.5")
     pump()

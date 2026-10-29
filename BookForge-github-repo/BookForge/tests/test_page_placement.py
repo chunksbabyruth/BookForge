@@ -332,7 +332,7 @@ try:
     bf_build.check_settings(dict(DEFAULTS, page_size="Custom", custom_w=float("nan"), custom_h=9))
     check(False, "an unusable custom page size stops the build")
 except ValueError as e:
-    check("Custom page width" in str(e), f"an unusable custom page size stops the build ({e})")
+    check("Custom book page width" in str(e), f"an unusable custom page size stops the build ({e})")
 
 # every finished preset: the typeset pages have exactly that size, and imposed on A3 they sit as the rules say
 BOOK_TEXT = "Chapter 1\n\n" + "Some words here. " * 120 + "\n\nChapter 2\n\n" + "More words. " * 120
@@ -973,7 +973,7 @@ if have_display:
     app.var("page_size").set("Custom")
     app.var("custom_w").set("abc")
     settle(w)
-    check("Custom page width" in (app.settings_problem(app.collect()) or ""),
+    check("Custom book page width" in (app.settings_problem(app.collect()) or ""),
           "a custom page width that isn't a number stops Preview book / Generate (never silently replaced)")
     app.var("custom_w").set(6)
     app.var("page_size").set(keep_size)

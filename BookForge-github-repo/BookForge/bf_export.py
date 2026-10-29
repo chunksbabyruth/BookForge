@@ -1,4 +1,5 @@
 """BookForge exporters: imposition, cover, EPUB, DOCX, HTML, TXT."""
+import dataclasses
 import html
 import io
 import math
@@ -8,7 +9,84 @@ import zipfile
 from datetime import datetime, timezone
 
 from bf_core import PAPERS, page_size_inches, plain, esc
-from bf_pdf import font_roles, apply_case, auto_label, LABELISH
+from bf_pdf import font_roles, apply_case, auto_label, LABELISH, title_layout, _num
+import bf_matter
+
+
+def edited(book, s, key):
+    """The edited content of a front/back page (bf_matter.section_blocks), or None while it is automatic."""
+    if bf_matter.is_edited(book, key) and bf_matter.override(book, key) is not None:
+        return bf_matter.section_blocks(book, s, key)
+    return None
+
+
+PICTURE_SECTIONS = [k for k, v in bf_matter.SECTIONS.items() if v[4]]
+
+
+def title_look(s):
+    """The Layout tab's title settings as the EPUB, Word document and web page use them - read and checked by
+    bf_pdf.title_layout, the same function the PDF uses, so every format works from the same values:
+    alignments "left" / "center" / "right", positions in % of the text area, sizes in pt (0 = automatic) and
+    the chapter drop in inches (none in Continuous, as in the PDF)."""
+    from reportlab.lib.enums import TA_LEFT, TA_RIGHT
+    tl = title_layout(s)
+    name = lambda a: "left" if a == TA_LEFT else "right" if a == TA_RIGHT else "center"   # noqa: E731
+    return {"tp_align": name(tl["tp_align"]), "tp_pos": tl["tp_pos"], "tp_title_size": tl["tp_title_size"],
+            "ch_align": name(tl["ch_align"]), "part_align": name(tl["part_align"]), "part_pos": tl["part_pos"],
+            "part_size": tl["part_size"],
+            "sink": 0.0 if s.get("chapter_start") == "Continuous" else tl["sink"]}
+
+
+def cover_look(s):
+    """The front cover's title settings (Output tab, Cover): the alignment of the title, subtitle and author
+    lines ("Same as title page" = the Layout tab's title page alignment) and how far down the front panel the
+    title line sits (% of the cover's height; 32 = where it always was)."""
+    a = s.get("cover_align", "Same as title page")
+    al = {"Left": "left", "Right": "right", "Centered": "center"}.get(a) or title_look(s)["tp_align"]
+    return {"align": al, "pos": _num(s.get("cover_pos"), 32.0, 5.0, 85.0)}
+
+
+def matter_pictures(book, s):
+    """The pictures in edited front/back pages (they go into EPUB / web pages with the chapters' ones)."""
+    out = []
+    for key in PICTURE_SECTIONS:
+        for b in edited(book, s, key) or []:
+            if b.kind == "image" and b.image:
+                out.append(b)
+    return out
+
+
+def front_text_blocks(book, s):
+    """The text before chapter 1 as the PDF prints it: the edited page (when it has something in it), or the
+    paragraphs read from the source ("Keep text before the first chapter"). [] = none."""
+    ed = edited(book, s, "front_text")
+    if ed is not None:
+        return ed if bf_matter.has_text(ed) else []
+    return [b for b in book.front_blocks if b.kind == "para"]
+
+
+def blocks_text(blocks, s):
+    """Plain-text lines for the blocks of an edited front/back page (text export)."""
+    out = []
+    for b in blocks or []:
+        k = b.kind
+        if k in ("para", "quote", "head", "subtitle", "flush", "ded", "endline", "tocentry") + MATTER_LINES:
+            words = plain((b.text or "").replace("<br/>", "\n"))
+            if words.strip():
+                out += [words, ""]
+        elif k == "meta":
+            out.append(plain(b.text or ""))
+        elif k == "anote" and not an_mode(s).startswith("Leave"):
+            out += [("[" + b.label + "] " if b.label else "") + plain(b.text), ""]
+        elif k == "item":
+            out.append("  " * b.depth + (b.bullet + " " if b.bullet else "  ") + plain(b.text))
+        elif k == "verse":
+            out += [plain(x) for x in b.lines] + [""]
+        elif k == "scene":
+            out += [scene_text(b, s), ""]
+    if out and out[-1] != "":
+        out.append("")
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -96,21 +174,34 @@ def build_cover(book, s, out_path, n_pages):
     fx0 = (tw + spine) * 72
     cx = fx0 + tw * 72 / 2
     pad = 0.6 * 72
-    y = H * 0.68
+    # Front cover title lines (Output tab, Cover): their alignment ("Same as title page" = the Layout tab's title
+    # page alignment) and how far down the front the title line sits (32 % = where it always was). The title
+    # never goes so high that it leaves the cover or so low that the subtitle runs into the author line.
+    look = cover_look(s)
     t = book.title
     sz = fit(t, B, 40, tw * 72 - 2 * pad)
+    s2 = fit(book.subtitle, I, 16, tw * 72 - 2 * pad) if book.subtitle else 0
+    s3 = fit(book.author, R, 18, tw * 72 - 2 * pad) if book.author else 0
+    low = (H * 0.18 + s3 * 1.6 if book.author else pad) + (sz * 1.3 if book.subtitle else 0)
+    y = max(low, min(H * (1 - look["pos"] / 100), H - pad - sz * 0.8))
+
+    def line(text, yy):
+        if look["align"] == "left":
+            c.drawString(fx0 + pad, yy, text)
+        elif look["align"] == "right":
+            c.drawRightString(fx0 + tw * 72 - pad, yy, text)
+        else:
+            c.drawCentredString(cx, yy, text)
     c.setFillColor(black)
     if not arts.get("front") or s.get("cover_text_over_art"):
         c.setFont(B, sz)
-        c.drawCentredString(cx, y, t)
+        line(t, y)
         if book.subtitle:
-            s2 = fit(book.subtitle, I, 16, tw * 72 - 2 * pad)
             c.setFont(I, s2)
-            c.drawCentredString(cx, y - sz * 1.3, book.subtitle)
+            line(book.subtitle, y - sz * 1.3)
         if book.author:
-            s3 = fit(book.author, R, 18, tw * 72 - 2 * pad)
             c.setFont(R, s3)
-            c.drawCentredString(cx, H * 0.18, book.author)
+            line(book.author, H * 0.18)
     if spine * 72 >= 14:
         label = book.title + (f"    {book.author}" if book.author else "")
         ssz = min(spine * 72 * 0.55, 14)
@@ -121,11 +212,26 @@ def build_cover(book, s, out_path, n_pages):
         c.setFont(B, ssz)
         c.drawCentredString(0, -ssz * 0.35, label)
         c.restoreState()
-    if (s.get("blurb") or "").strip():
+    blurb = edited(book, s, "blurb")
+    if blurb is not None or (s.get("blurb") or "").strip():
         sty = ParagraphStyle("blurb", fontName=R, fontSize=11, leading=15, alignment=TA_JUSTIFY,
                              spaceAfter=8)
-        paras = [Paragraph(esc(" ".join(p.split())), sty)
-                 for p in re.split(r"\n\s*\n", s["blurb"].strip()) if p.strip()]
+        if blurb is not None:                      # edited: its bold, italics, colours and alignment
+            from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+            al = {"left": TA_LEFT, "center": TA_CENTER, "right": TA_RIGHT, "justify": TA_JUSTIFY}
+            paras = []
+            for b in blurb:
+                if b.kind == "image" or not plain(b.text or "").strip():
+                    continue
+                bs = ParagraphStyle(f"blurb{len(paras)}", parent=sty, alignment=al.get(b.align, TA_JUSTIFY))
+                markup = re.sub(r'<font face="[^"]*"', "<font", b.text)   # cover fonts: the book's own
+                try:
+                    paras.append(Paragraph(markup, bs))
+                except Exception:
+                    paras.append(Paragraph(esc(plain(b.text)), bs))
+        else:
+            paras = [Paragraph(esc(" ".join(p.split())), sty)
+                     for p in re.split(r"\n\s*\n", s["blurb"].strip()) if p.strip()]
         Frame(pad, pad, tw * 72 - 2 * pad, H * 0.75 - pad, showBoundary=0).addFromList(paras, c)
     c.showPage()
     c.save()
@@ -174,6 +280,9 @@ def contents_list(book, s, heads, sep=" \u2014 "):
             n = by_uid[e["uid"]]
             out.append((n, e["text"] if e.get("edited") else items[n - 1][1]))
     return out
+
+
+MATTER_LINES = ("btitle", "bsub", "bauth", "bcred", "plate")
 
 
 def an_mode(s):
@@ -283,6 +392,38 @@ nav ol{list-style:none;} a{color:inherit;}
 """
 
 
+def title_css(s):
+    """Stylesheet lines for the titles BookForge makes, from the Layout tab's title settings (title_look), added
+    after CSS so they win: the title page block, chapter titles (number line, title, subtitles), part titles and
+    the headings BookForge adds (Contents, Work info, Summary, Notes, the extra front page, end pages: h2, as in
+    the PDF they follow the chapter title alignment). Headings typed in the text (h3) keep their own alignment.
+    A screen has no fixed page, so positions become space above the title: the title page's top margin grows
+    from the standard 25 % (at 20 %) in step with its %, a part's top margin is its % (30 % = as before, % of the
+    page width, as CSS works), the chapter drop is padding in ems of the text (the drop / the text size), and
+    sizes set on the Layout tab are ems of the text size (0 = automatic keeps the standard sizes)."""
+    tl = title_look(s)
+    body = _num(s.get("body_size"), 13.0, 4.0, 100.0)
+
+    def em(pt):
+        return f"{pt / body:.4g}em"
+    tp, ch, pa = tl["tp_align"], tl["ch_align"], tl["part_align"]
+    side = {"left": ";margin-left:0", "right": ";margin-right:0"}.get(ch, "")
+    out = [f".titlepage{{text-align:{tp};margin-top:{tl['tp_pos'] * 1.25:.4g}%}}",
+           f".titlepage p,.titlepage .t{{text-align:{tp}}}",
+           f".label,h2{{text-align:{ch}}}",
+           ".label{text-indent:0}",                # (the number line lines up with its title, as in the PDF)
+           f".subtitle{{text-align:{ch}{side}}}",
+           f".part{{margin-top:{tl['part_pos']:.4g}%}}",
+           f".part,.part .label,.part h1,.part h2{{text-align:{pa}}}"]
+    if tl["sink"]:
+        out.append(f".chead{{padding-top:{em(tl['sink'] * 72)}}}")
+    if tl["tp_title_size"]:
+        out.append(f".titlepage .t{{font-size:{em(tl['tp_title_size'])}}}")
+    if tl["part_size"]:
+        out.append(f".part h1,.part h2{{font-size:{em(tl['part_size'])}}}")
+    return "\n".join(out) + "\n"
+
+
 def blocks_html(blocks, imgmap, s=None):
     s = s or {}
     out = []
@@ -317,22 +458,67 @@ def blocks_html(blocks, imgmap, s=None):
             out.append(f'<p class="scene">{esc(scene_text(b, s)) or "&#160;"}</p>')
         elif b.kind == "image" and id(b) in imgmap:
             out.append(picture_html(b, imgmap[id(b)]))
+        elif b.kind in MATTER_CSS:                 # title page and other front/back page styles
+            cls, css = MATTER_CSS[b.kind]
+            if b.kind in ("btitle", "bsub", "bauth", "bcred"):       # the title page alignment (Layout tab)
+                tl = title_look(s)
+                css = css.replace("text-align:center", f"text-align:{tl['tp_align']}")
+                if b.kind == "btitle" and tl["tp_title_size"]:
+                    body = _num(s.get("body_size"), 13.0, 4.0, 100.0)
+                    css = css.replace("font-size:2.2em", f"font-size:{tl['tp_title_size'] / body:.4g}em")
+            mine = para_style(b)[len(' style="'):-1] if para_style(b) else ""
+            css = ";".join(x for x in (css, mine) if x)
+            css = f' style="{css}"' if css else ""
+            out.append(f'<p{cls}{css}>{to_xhtml(b.text or "") or "&#160;"}</p>')
     return "\n".join(out)
+
+
+# The front/back page styles in EPUB / web pages: (class, CSS); the paragraph's own alignment, indent and
+# space (Specific Text Edit) come after, so they win.
+_C = "text-indent:0;text-align:center"
+MATTER_CSS = {"btitle": ("", _C + ";font-size:2.2em;font-weight:bold;margin:0 0 .4em"),
+              "bsub": ("", _C + ";font-style:italic"), "bauth": ("", _C + ";margin-top:1.5em"),
+              "bcred": ("", _C + ";font-size:.9em"), "plate": ("", _C + ";font-style:italic"),
+              "ded": ("", _C + ";font-style:italic"), "endline": (' class="end"', ""),
+              "meta": (' class="meta"', ""), "flush": ("", "text-indent:0"), "tocentry": ("", "text-indent:0")}
 
 
 
 
 
 def fic_sections(book, s):
-    """[(heading, [(css_class, markup)])] for the fanfic info / summary / notes pages."""
+    """[(heading, [(css_class, markup)], edited blocks or None)] for the fanfic info / summary / notes pages
+    (an edited page is written from its blocks, with their alignment, indents and styles)."""
     out = []
-    if book.fic_meta and s.get("fic_info", "Leave out") != "Leave out":
-        out.append(("Work Info", [("meta", m) for m in book.fic_meta]))
-    if book.fic_summary and s.get("fic_summary", "Add a summary page") != "Leave out":
-        out.append((book.fic_summary[0].label or "Summary", [("flush", b.text) for b in book.fic_summary]))
-    if book.fic_notes and not an_mode(s).startswith("Leave"):
-        out.append((book.fic_notes[0].label or "Notes", [("flush", b.text) for b in book.fic_notes]))
+    for key, on, orig, cls in (("work_info", s.get("fic_info", "Leave out") != "Leave out", book.fic_meta, "meta"),
+                               ("summary", s.get("fic_summary", "Add a summary page") != "Leave out",
+                                book.fic_summary, "flush"),
+                               ("work_notes", not an_mode(s).startswith("Leave"), book.fic_notes, "flush")):
+        if not on:
+            continue
+        ed = bf_matter.override(book, key) if bf_matter.is_edited(book, key) else None
+        if ed is not None:                         # edited: every line, with its own look
+            items = [("meta" if b.kind == "meta" else "flush", b.text) for b in ed
+                     if b.kind not in ("image", "verse", "scene") and plain(b.text or "").strip()]
+        else:
+            items = [(cls, m if key == "work_info" else m.text) for m in orig]
+        if items:
+            out.append((bf_matter.section_heading(book, s, key), items,
+                        [b for b in ed if b.kind not in ("image",)] if ed is not None else None))
     return out
+
+
+def fic_html(fic, s):
+    """The fanfic info / summary / notes pages for EPUB and web pages."""
+    out = []
+    for h, items, blocks in fic:
+        out.append(f"<h2>{esc(h)}</h2>")
+        if blocks is not None:            # edited: text without an indent is set apart like the original
+            out.append(blocks_html([dataclasses.replace(b, kind="quote") if b.kind == "flush" else b
+                                    for b in blocks], {}, s))
+        else:
+            out += [f'<p class="{"meta" if c == "meta" else "quote"}">{to_xhtml(m)}</p>' for c, m in items]
+    return "\n".join(out)
 
 
 # --------------------------------------------------------------------------
@@ -362,6 +548,14 @@ def build_epub(book, s, out_path):
                     files["OEBPS/" + name] = b.image
                     manifest.append(f'<item id="img{n_img}" href="{name}" media-type="{mt}"/>')
                     imgmap[id(b)] = name
+    for b in matter_pictures(book, s):
+        ext, mt = img_type(b.image)
+        if ext:
+            n_img += 1
+            name = f"images/img{n_img:04d}.{ext}"
+            files["OEBPS/" + name] = b.image
+            manifest.append(f'<item id="img{n_img}" href="{name}" media-type="{mt}"/>')
+            imgmap[id(b)] = name
     cover_meta = ""
     art = front_art(book, s)
     if art and img_type(art)[0]:
@@ -375,59 +569,100 @@ def build_epub(book, s, out_path):
         manifest.append('<item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>')
         spine.append("cover")
         cover_meta = '<meta name="cover" content="cover-image"/>'
-    tp = ['<div class="titlepage">', f'<p class="t">{esc(book.title)}</p>']
-    if book.subtitle:
-        tp.append(f"<p><i>{esc(book.subtitle)}</i></p>")
-    if book.author:
-        tp.append(f"<p>{esc(book.author)}</p>")
-    if book.credit:
-        tp.append(f"<p>{esc(book.credit)}</p>")
-    tp.append("</div>")
-    if (s.get("dedication") or "").strip():
+    title_ed = edited(book, s, "title")
+    if title_ed is not None:
+        tp = ['<div class="titlepage">', blocks_html(title_ed, imgmap, s), "</div>"]
+    else:
+        tp = ['<div class="titlepage">', f'<p class="t">{esc(book.title)}</p>']
+        if book.subtitle:
+            tp.append(f"<p><i>{esc(book.subtitle)}</i></p>")
+        if book.author:
+            tp.append(f"<p>{esc(book.author)}</p>")
+        if book.credit:
+            tp.append(f"<p>{esc(book.credit)}</p>")
+        tp.append("</div>")
+    ded_ed = edited(book, s, "dedication")
+    if ded_ed is not None:
+        if bf_matter.has_text(ded_ed):
+            tp.append('<div class="ded">' + blocks_html(ded_ed, imgmap, s) + "</div>")
+    elif (s.get("dedication") or "").strip():
         tp.append('<p class="ded">' + esc(s["dedication"].strip()).replace("\n", "<br />") + "</p>")
     files["OEBPS/title.xhtml"] = page(book.title, "\n".join(tp))
     manifest.append('<item id="title" href="title.xhtml" media-type="application/xhtml+xml"/>')
     spine.append("title")
     fic = fic_sections(book, s)
     if fic:
-        body = "".join(f"<h2>{esc(h)}</h2>" + "".join(
-            f'<p class="{"meta" if c == "meta" else "quote"}">{to_xhtml(m)}</p>' for c, m in items)
-            for h, items in fic)
+        if any(bl is not None for _h, _i, bl in fic):
+            body = fic_html(fic, s)
+        else:                                       # (as before)
+            body = "".join(f"<h2>{esc(h)}</h2>" + "".join(
+                f'<p class="{"meta" if c == "meta" else "quote"}">{to_xhtml(m)}</p>' for c, m in items)
+                for h, items, _b in fic)
         files["OEBPS/info.xhtml"] = page("About this work", body)
         manifest.append('<item id="info" href="info.xhtml" media-type="application/xhtml+xml"/>')
         spine.append("info")
-    if (s.get("note_text") or "").strip():
-        body = (f"<h2>{esc(s.get('note_title') or '')}</h2>" if s.get("note_title") else "") + \
-            "".join(f"<p>{esc(' '.join(p.split()))}</p>" for p in re.split(r"\n\s*\n", s["note_text"].strip()))
+    note_ed = edited(book, s, "note")
+
+    def add_note():
+        if note_ed is not None and (bf_matter.has_text(note_ed) or s.get("note_title")):
+            body = (f"<h2>{esc(s.get('note_title') or '')}</h2>" if s.get("note_title") else "") + \
+                blocks_html(note_ed, imgmap, s)
+        elif note_ed is None and (s.get("note_text") or "").strip():
+            body = (f"<h2>{esc(s.get('note_title') or '')}</h2>" if s.get("note_title") else "") + "".join(
+                f"<p>{esc(' '.join(p.split()))}</p>" for p in re.split(r"\n\s*\n", s["note_text"].strip()))
+        else:
+            return
         files["OEBPS/note.xhtml"] = page(s.get("note_title") or "Note", body)
         manifest.append('<item id="note" href="note.xhtml" media-type="application/xhtml+xml"/>')
         spine.append("note")
+
+    # the PDF's order: work info..., the extra front page before or after the contents (as set), the text
+    # before chapter 1, the chapters
+    if s.get("note_place") == "Before contents":
+        add_note()
+    nav_at = len(spine)                              # (the contents go here)
+    if s.get("note_place") != "Before contents":
+        add_note()
+    front = front_text_blocks(book, s)
+    if front:
+        files["OEBPS/front.xhtml"] = page(book.title, blocks_html(front, imgmap, s))
+        manifest.append('<item id="front" href="front.xhtml" media-type="application/xhtml+xml"/>')
+        spine.append("front")
     for i, (ch, lbl, title) in enumerate(heads, 1):
         fn = f"ch{i:03d}.xhtml"
         parts = []
-        if ch.level == 0:
-            parts.append('<div class="part">')
+        wrap = ch.level == 0 or lbl or title         # part title block / chapter title block (the drop)
+        if wrap:
+            parts.append('<div class="part">' if ch.level == 0 else '<div class="chead">')
         if lbl:
             parts.append(f'<p class="label">{esc(lbl)}</p>')
         if title:
             parts.append(f'<h{1 if ch.level == 0 else 2}>{esc(title)}</h{1 if ch.level == 0 else 2}>')
-        if ch.level == 0:
+        if wrap:
             parts.append("</div>")
         parts.append(blocks_html(ch.blocks, imgmap, s))
         if i == len(heads) and s.get("the_end"):
-            parts.append('<p class="end">THE END</p>')
+            end_ed = edited(book, s, "the_end")
+            parts.append(blocks_html(end_ed, imgmap, s) if end_ed is not None else '<p class="end">THE END</p>')
         files["OEBPS/" + fn] = page(title or lbl, "\n".join(parts))
         manifest.append(f'<item id="c{i}" href="{fn}" media-type="application/xhtml+xml"/>')
         spine.append(f"c{i}")
         disp = f"{lbl} \u2014 {title}" if lbl and title else (title or lbl)
         navitems.append((fn, disp))
+    xm = edited(book, s, "end_matter")
+    xhead = bf_matter.section_heading(book, s, "end_matter")
+    if xm is not None and (bf_matter.has_text(xm) or xhead):
+        files["OEBPS/endpages.xhtml"] = page(xhead or "End", (f"<h2>{esc(xhead)}</h2>" if xhead else "") +
+                                             blocks_html(xm, imgmap, s))
+        manifest.append('<item id="endpages" href="endpages.xhtml" media-type="application/xhtml+xml"/>')
+        spine.append("endpages")
     nav = ("<nav epub:type=\"toc\" id=\"toc\"><h2>" + esc(s.get("toc_title") or "Contents") + "</h2><ol>" +
            "".join(f'<li><a href="{navitems[n - 1][0]}">{esc(t)}</a></li>' if n else f"<li><span>{esc(t)}</span></li>"
                    for n, t in contents_list(book, s, heads)) + "</ol></nav>")
     files["OEBPS/nav.xhtml"] = page("Contents", nav)
     manifest.append('<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>')
     if s.get("toc"):
-        spine.insert(1 + ("cover" in spine) + ("note" in spine) + ("info" in spine), "nav")
+        spine.insert(nav_at, "nav")
     ncx = ('<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" '
            f'version="2005-1"><head><meta name="dtb:uid" content="{uid}"/></head>'
            f"<docTitle><text>{esc(book.title)}</text></docTitle><navMap>" +
@@ -436,7 +671,7 @@ def build_epub(book, s, out_path):
            "</navMap></ncx>")
     files["OEBPS/toc.ncx"] = ncx
     manifest.append('<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
-    files["OEBPS/style.css"] = CSS
+    files["OEBPS/style.css"] = CSS + title_css(s)
     manifest.append('<item id="css" href="style.css" media-type="text/css"/>')
     mod = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     opf = ('<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" '
@@ -526,17 +761,36 @@ def build_docx(book, s, out_path):
     pf.line_spacing = float(s["line_spacing"])
     pf.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY if s["align"] == "Justified" else WD_ALIGN_PARAGRAPH.LEFT
     pf.widow_control = True
-    for hn, hs in (("Heading 1", float(s["title_size"])), ("Heading 2", float(s["title_size"]))):
+    # Titles (Layout tab, "Titles: alignment & position"; the same checked values as the PDF): Word has real
+    # pages of the book's size, so positions are the PDF's - space above the title, as a % of the text area.
+    tl = title_look(s)
+    AL = {"left": WD_ALIGN_PARAGRAPH.LEFT, "center": WD_ALIGN_PARAGRAPH.CENTER, "right": WD_ALIGN_PARAGRAPH.RIGHT}
+    fh_pt = (ph - float(s["margin_top"]) - float(s["margin_bottom"])) * 72
+    ts = float(s["title_size"])
+    has_parts = any(c.level == 0 for c in book.active())
+    for hn in ("Heading 1", "Heading 2"):
+        # Heading 1 = part titles when the book has parts (Heading 2 = chapters), otherwise chapter titles
+        part = has_parts and hn == "Heading 1"
         h = d.styles[hn]
-        h.font.name, h.font.size, h.font.bold = hfont, Pt(hs), bool(s.get("heading_bold", True))
+        h.font.name, h.font.bold = hfont, bool(s.get("heading_bold", True))
+        h.font.size = Pt(tl["part_size"] or ts * 1.2) if part else Pt(ts)
         h.font.color.rgb = RGBColor(0, 0, 0)
-        h.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        h.paragraph_format.alignment = AL[tl["part_align"] if part else tl["ch_align"]]
         h.paragraph_format.space_after = Pt(16)
         h.paragraph_format.first_line_indent = Inches(0)
 
-    def center(text, sz=None, bold=False, italic=False, before=0, after=6, brk=False):
+    def top_space(pos_pt, block_pt):
+        """Space above a title block that starts pos_pt down the text area, never so much that the block
+        (block_pt high, estimated) is pushed off its page (as in the PDF)."""
+        room = fh_pt - block_pt - 2
+        return pos_pt if pos_pt <= room else max(0.0, room)
+
+    def line_pt(pt):                                   # a line's height in Word (font height x line spacing)
+        return pt * 1.15 * float(s["line_spacing"])
+
+    def center(text, sz=None, bold=False, italic=False, before=0, after=6, brk=False, align="center"):
         p = d.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.alignment = AL.get(align, WD_ALIGN_PARAGRAPH.CENTER)
         p.paragraph_format.first_line_indent = Inches(0)
         p.paragraph_format.space_before, p.paragraph_format.space_after = Pt(before), Pt(after)
         p.paragraph_format.page_break_before = brk
@@ -601,85 +855,17 @@ def build_docx(book, s, out_path):
             if fl["sub"]:
                 r.font.subscript = True
 
-    ts = float(s["title_size"])
-    art = front_art(book, s) if s.get("cover_art_in_book") else None
-    if art:
-        from bf_core import Block
-        try:
-            add_docx_picture(d, Block("image", image=art, img_place="full"), s, pw, ph)
-        except Exception:
-            pass
-    if s["title_page"]:
-        center(book.title, max(30, ts * 1.5), bold=True, before=140, after=12)
-        if book.subtitle:
-            center(book.subtitle, float(s["sub_size"]) + 1, italic=True)
-        if book.author:
-            center(book.author, float(s["sub_size"]), before=30)
-        if book.credit:
-            center(book.credit, size * 0.9)
-        if s["bookplate"] == "On title page":
-            center(s["bookplate_text"], float(s["sub_size"]), italic=True, before=60)
-            center("_" * 40, after=0)
-    if s["bookplate"] == "Separate page":
-        center(s["bookplate_text"], float(s["sub_size"]), italic=True, before=220, brk=True)
-        center("_" * 40)
-    if (s.get("dedication") or "").strip():
-        center(s["dedication"].strip(), italic=True, before=180, brk=True)
-    if s["toc"]:
-        center(s["toc_title"], ts, bold=True, after=18, brk=True)
-        p = d.add_paragraph()
-        p.paragraph_format.first_line_indent = Inches(0)
-        r = p.add_run()
-        for kind, txt in (("begin", None), ("instr", 'TOC \\o "1-2" \\h \\z \\u'), ("separate", None),
-                          ("text", "Press F9 (or right-click > Update Field) to build the contents."),
-                          ("end", None)):
-            if kind == "instr":
-                el = OxmlElement("w:instrText")
-                el.set(qn("xml:space"), "preserve")
-                el.text = txt
-                r._r.append(el)
-            elif kind == "text":
-                r = p.add_run(txt)
-                r = p.add_run()
-            else:
-                el = OxmlElement("w:fldChar")
-                el.set(qn("w:fldCharType"), kind)
-                r._r.append(el)
-    for heading, items in fic_sections(book, s):
-        center(heading, float(s["sub_size"]), bold=True, brk=True, after=12)
-        for cls, m in items:
-            p = d.add_paragraph()
-            p.paragraph_format.first_line_indent = Inches(-0.25 if cls == "meta" else 0)
-            p.paragraph_format.left_indent = Inches(0.25 if cls == "meta" else 0)
-            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            add_markup(p, m)
-    if (s.get("note_text") or "").strip():
-        first = True
-        if s.get("note_title"):
-            center(s["note_title"], float(s["sub_size"]), bold=True, brk=True, after=12)
-            first = False
-        for para in re.split(r"\n\s*\n", s["note_text"].strip()):
-            p = d.add_paragraph(" ".join(para.split()))
-            if first:
-                p.paragraph_format.page_break_before = True
-                first = False
+    bt = tl["tp_title_size"] or max(30, ts * 1.5)          # book title size, as in the PDF
+    TITLE_LINES = ("btitle", "bsub", "bauth", "bcred")       # (the title page's alignment)
+    MATTER_DOCX = {"btitle": (bt, True, False, 0, 12), "bsub": (float(s["sub_size"]) + 1, False, True, 0, 6),
+                   "bauth": (float(s["sub_size"]), False, False, 30, 6), "bcred": (size * 0.9, False, False, 0, 6),
+                   "plate": (float(s["sub_size"]), False, True, 0, 6), "ded": (None, False, True, 0, 8),
+                   "endline": (None, False, False, 24, 6)}
 
-    has_parts = any(c.level == 0 for c in book.active())
-    heads = list(chapter_heads(book, s))
-    for i, (ch, lbl, title) in enumerate(heads):
-        hstyle = "Heading 1" if (ch.level == 0 or not has_parts) else "Heading 2"
-        h = d.add_paragraph(style=hstyle)
-        h.paragraph_format.page_break_before = True
-        if lbl:
-            rl = h.add_run(lbl)
-            rl.bold = False
-            rl.font.size = Pt(float(s["sub_size"]))
-            if title:
-                rl.add_break()
-        if title:
-            h.add_run(title)
+    def add_blocks(blocks):
+        """Paragraphs for blocks: the chapter styles and the front/back page ones (title page lines...)."""
         prev_label = None
-        for b in ch.blocks:
+        for b in blocks:
             if b.kind != "anote":
                 prev_label = None
             if b.kind == "anote":
@@ -712,8 +898,8 @@ def build_docx(book, s, out_path):
                 p = d.add_paragraph()
                 add_markup(p, b.text)
                 fmt_para(p, b)
-            elif b.kind == "subtitle":
-                p = center("", after=14)
+            elif b.kind == "subtitle":                   # (chapter subtitles: the chapter title alignment)
+                p = center("", after=14, align=tl["ch_align"])
                 add_markup(p, b.text, base_italic=True)
                 fmt_para(p, b)
             elif b.kind == "quote":
@@ -743,8 +929,222 @@ def build_docx(book, s, out_path):
                     add_docx_picture(d, b, s, pw, ph)
                 except Exception:
                     pass
+            elif b.kind in MATTER_DOCX:
+                sz, bold, italic, before, after = MATTER_DOCX[b.kind]
+                p = center("", sz, bold=bold, italic=italic, before=before, after=after,
+                           align=tl["tp_align"] if b.kind in TITLE_LINES else "center")
+                add_markup(p, f"<b>{b.text}</b>" if bold else (b.text or ""), base_italic=italic)
+                if sz:
+                    for r in p.runs:
+                        if r.font.size is None:
+                            r.font.size = Pt(sz)
+                fmt_para(p, b)
+            elif b.kind in ("flush", "meta", "tocentry"):
+                p = d.add_paragraph()
+                p.paragraph_format.first_line_indent = Inches(-0.25 if b.kind == "meta" else 0)
+                p.paragraph_format.left_indent = Inches(0.25 if b.kind == "meta" else 0)
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                add_markup(p, b.text or "")
+                fmt_para(p, b)
+
+    def page_of(blocks, before=0, brk=True):
+        """blocks on a new page (the first paragraph starts the page, before points down)."""
+        start = len(d.paragraphs)
+        add_blocks(blocks)
+        if len(d.paragraphs) > start:
+            pf = d.paragraphs[start].paragraph_format
+            pf.page_break_before = brk or pf.page_break_before
+            if before and not pf.space_before:
+                pf.space_before = Pt(before)
+
+    art = front_art(book, s) if s.get("cover_art_in_book") else None
+    if art:
+        from bf_core import Block
+        try:
+            add_docx_picture(d, Block("image", image=art, img_place="full"), s, pw, ph)
+        except Exception:
+            pass
+    plate_ed = edited(book, s, "bookplate")
+
+    def plate(before, brk):
+        if plate_ed is not None:
+            page_of(plate_ed, before=before, brk=brk)
+        else:
+            center(s["bookplate_text"], float(s["sub_size"]), italic=True, before=before, brk=brk)
+
+    if s["title_page"]:
+        # The title block starts tp_pos % down the text area, with the title page alignment (the PDF's place;
+        # the bookplate stays centred, as in the PDF)
+        title_ed = edited(book, s, "title")
+        ss = float(s["sub_size"])
+        est = sum(line_pt(MATTER_DOCX.get(b.kind, (size,))[0] or size) + 8 for b in (title_ed or [])
+                  if b.kind != "image") if title_ed is not None else (
+            line_pt(bt) + 12 + (line_pt(ss + 1) + 6 if book.subtitle else 0) +
+            (30 + line_pt(ss) + 6 if book.author else 0) + (line_pt(size * 0.9) + 6 if book.credit else 0))
+        if s["bookplate"] == "On title page":
+            est += 60 + line_pt(ss) + 6 + line_pt(size)
+        top = top_space(fh_pt * tl["tp_pos"] / 100, est)
+        tpa = tl["tp_align"]
+        if title_ed is not None:                       # edited in Specific Text Edit
+            page_of(title_ed, before=top, brk=False)
+        else:
+            center(book.title, bt, bold=True, before=top, after=12, align=tpa)
+            if book.subtitle:
+                center(book.subtitle, ss + 1, italic=True, align=tpa)
+            if book.author:
+                center(book.author, ss, before=30, align=tpa)
+            if book.credit:
+                center(book.credit, size * 0.9, align=tpa)
+        if s["bookplate"] == "On title page":
+            plate(60, False)
+            center("_" * 40, after=0)
+    if s["bookplate"] == "Separate page":
+        plate(220, True)
+        center("_" * 40)
+    ded_ed = edited(book, s, "dedication")
+    if ded_ed is not None:
+        if bf_matter.has_text(ded_ed):
+            page_of(ded_ed, before=180)
+    elif (s.get("dedication") or "").strip():
+        center(s["dedication"].strip(), italic=True, before=180, brk=True)
+    def field(p, instr, result=""):
+        """A Word field (TOC, PAGEREF...): Word works out its result when the fields are updated."""
+        r = p.add_run()
+        for kind, txt in (("begin", None), ("instr", instr), ("separate", None), ("text", result), ("end", None)):
+            if kind == "instr":
+                el = OxmlElement("w:instrText")
+                el.set(qn("xml:space"), "preserve")
+                el.text = txt
+                r._r.append(el)
+            elif kind == "text":
+                if txt:
+                    p.add_run(txt)
+                r = p.add_run()
+            else:
+                el = OxmlElement("w:fldChar")
+                el.set(qn("w:fldCharType"), kind)
+                r._r.append(el)
+
+    def mark(uid):
+        return "bf_" + re.sub(r"\W", "", str(uid))[:30]
+
+    def contents_page():
+        center(s["toc_title"], ts, bold=True, after=18, brk=True, align=tl["ch_align"])
+        if not getattr(book, "toc", None):           # automatic: Word builds it from the chapter headings
+            p = d.add_paragraph()
+            p.paragraph_format.first_line_indent = Inches(0)
+            field(p, 'TOC \\o "1-2" \\h \\z \\u', "Press F9 (or right-click > Update Field) to build the contents.")
+            return
+        # Changed in Edit contents: those entries, in that order, with their words and formatting; a typed page
+        # number as typed, otherwise the chapter's real page in this document (a PAGEREF field Word fills in).
+        from docx.enum.text import WD_TAB_ALIGNMENT, WD_TAB_LEADER
+        from bf_pdf import contents_entries, apply_contents_edits
+        width = Inches(pw - float(s["margin_inner"]) - float(s["margin_outer"]))
+        for e in apply_contents_edits(contents_entries(book, s), book.toc):
+            p = d.add_paragraph()
+            pf = p.paragraph_format
+            pf.first_line_indent = Inches(0)
+            pf.left_indent = Inches(0.3 * int(e.get("level") or 0))
+            pf.space_after = Pt(4)
+            if e.get("space"):
+                pf.space_before = Pt(int(e["space"]))
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            pf.tab_stops.add_tab_stop(width, WD_TAB_ALIGNMENT.RIGHT,
+                                      WD_TAB_LEADER.DOTS if s.get("toc_dots") else WD_TAB_LEADER.SPACES)
+            add_markup(p, e.get("markup") or esc(e["text"]))
+            if (e.get("page") or "").strip():
+                p.add_run("\t" + e["page"].strip())
+            elif e.get("uid") is not None:
+                p.add_run("\t")
+                field(p, f" PAGEREF {mark(e['uid'])} \\h ")
+
+    fic = fic_sections(book, s)                       # (the PDF's order: work info..., note, contents, text
+    for heading, items, blocks in fic:                #  before chapter 1, chapters)
+        center(heading, float(s["sub_size"]), bold=True, brk=True, after=12, align=tl["ch_align"])
+        if blocks is not None:
+            add_blocks(blocks)
+            continue
+        for cls, m in items:
+            p = d.add_paragraph()
+            p.paragraph_format.first_line_indent = Inches(-0.25 if cls == "meta" else 0)
+            p.paragraph_format.left_indent = Inches(0.25 if cls == "meta" else 0)
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            add_markup(p, m)
+    note_ed = edited(book, s, "note")
+
+    def note_page():
+        if note_ed is not None:
+            if bf_matter.has_text(note_ed) or (s.get("note_title") or "").strip():
+                if (s.get("note_title") or "").strip():
+                    center(s["note_title"], float(s["sub_size"]), bold=True, brk=True, after=12,
+                           align=tl["ch_align"])
+                page_of(note_ed, brk=not (s.get("note_title") or "").strip())
+        elif (s.get("note_text") or "").strip():
+            first = True
+            if s.get("note_title"):
+                center(s["note_title"], float(s["sub_size"]), bold=True, brk=True, after=12, align=tl["ch_align"])
+                first = False
+            for para in re.split(r"\n\s*\n", s["note_text"].strip()):
+                p = d.add_paragraph(" ".join(para.split()))
+                if first:
+                    p.paragraph_format.page_break_before = True
+                    first = False
+
+    if s.get("note_place") == "Before contents":
+        note_page()
+    if s["toc"]:
+        contents_page()
+    if s.get("note_place") != "Before contents":
+        note_page()
+    front = front_text_blocks(book, s)
+    if front:
+        page_of(front)
+
+    heads = list(chapter_heads(book, s))
+    lead_pt = line_pt(size)
+    for i, (ch, lbl, title) in enumerate(heads):
+        hstyle = "Heading 1" if (ch.level == 0 or not has_parts) else "Heading 2"
+        h = d.add_paragraph(style=hstyle)
+        h.paragraph_format.page_break_before = True
+        block = (line_pt(float(s["sub_size"])) if lbl else 0) + (line_pt(ts * (1.2 if ch.level == 0 else 1)) + 16
+                                                                 if title else 0)
+        if ch.level == 0:                              # a part: its title starts part_pos % down the page
+            h.paragraph_format.space_before = Pt(top_space(fh_pt * tl["part_pos"] / 100, block))
+        elif tl["sink"] and (lbl or title):            # "Drop chapter start down" (leaving room for 2 lines):
+            own = d.styles[hstyle].paragraph_format.space_before      # the title's own space above, plus the drop
+            h.paragraph_format.space_before = Pt(top_space(tl["sink"] * 72 + (own.pt if own is not None else 0),
+                                                           block + 2 * lead_pt))
+        linked = bool(s["toc"] and getattr(book, "toc", None))     # an edited contents' page numbers point here
+        if linked:
+            bm_start = OxmlElement("w:bookmarkStart")
+            bm_start.set(qn("w:id"), str(i + 1))
+            bm_start.set(qn("w:name"), mark(ch.uid))
+            h._p.append(bm_start)
+        if lbl:
+            rl = h.add_run(lbl)
+            rl.bold = False
+            rl.font.size = Pt(float(s["sub_size"]))
+            if title:
+                rl.add_break()
+        if title:
+            h.add_run(title)
+        if linked:
+            bm_end = OxmlElement("w:bookmarkEnd")
+            bm_end.set(qn("w:id"), str(i + 1))
+            h._p.append(bm_end)
+        add_blocks(ch.blocks)
         if i == len(heads) - 1 and s.get("the_end"):
-            center("THE END", before=24)
+            end_ed = edited(book, s, "the_end")
+            if end_ed is not None:
+                add_blocks(end_ed)
+            else:
+                center("THE END", before=24)
+    xm = edited(book, s, "end_matter")                 # end pages (afterword, notes...)
+    xhead = bf_matter.section_heading(book, s, "end_matter")
+    if xm is not None and (bf_matter.has_text(xm) or xhead):
+        if xhead:
+            center(xhead, float(s["sub_size"]), bold=True, brk=True, after=12, align=tl["ch_align"])
+        page_of(xm, brk=not xhead)
 
     if s["pn_position"] != "None":
         fp = sec.footer.paragraphs[0] if not s["pn_position"].startswith("Top") else sec.header.paragraphs[0]
@@ -777,54 +1177,109 @@ def build_html(book, s, out_path):
                 ext, mt = img_type(b.image)
                 if ext:
                     imgmap[id(b)] = f"data:{mt};base64," + base64.b64encode(b.image).decode()
+    for b in matter_pictures(book, s):
+        ext, mt = img_type(b.image)
+        if ext:
+            imgmap[id(b)] = f"data:{mt};base64," + base64.b64encode(b.image).decode()
     out = [f'<!DOCTYPE html><html lang="{book.language or "en"}"><head><meta charset="utf-8">'
-           f"<title>{esc(book.title)}</title><style>{CSS} body{{max-width:40em;margin:0 auto;padding:2em}}"
+           f"<title>{esc(book.title)}</title><style>{CSS}{title_css(s)}"
+           " body{max-width:40em;margin:0 auto;padding:2em}"
            "</style></head><body>"]
     art = front_art(book, s) if s.get("cover_art_in_book") else None
     if art and img_type(art)[0]:
         out.append(f'<p class="img"><img src="data:{img_type(art)[1]};base64,{base64.b64encode(art).decode()}" '
                    f'alt="{esc(book.title)}" style="max-width:100%" /></p>')
-    out += ['<div class="titlepage">', f'<p class="t">{esc(book.title)}</p>']
-    for v, tag in ((book.subtitle, "i"), (book.author, "span"), (book.credit, "span")):
-        if v:
-            out.append(f"<p><{tag}>{esc(v)}</{tag}></p>")
-    out.append("</div>")
-    for heading, items in fic_sections(book, s):
-        out.append(f"<h2>{esc(heading)}</h2>")
-        out += [f'<p class="{"meta" if c == "meta" else "quote"}">{to_xhtml(m)}</p>' for c, m in items]
+    title_ed = edited(book, s, "title")
+    if title_ed is not None:
+        out += ['<div class="titlepage">', blocks_html(title_ed, imgmap, s), "</div>"]
+    else:
+        out += ['<div class="titlepage">', f'<p class="t">{esc(book.title)}</p>']
+        for v, tag in ((book.subtitle, "i"), (book.author, "span"), (book.credit, "span")):
+            if v:
+                out.append(f"<p><{tag}>{esc(v)}</{tag}></p>")
+        out.append("</div>")
+    ded = bf_matter.section_blocks(book, s, "dedication")      # edited, or made from the settings
+    if bf_matter.has_text(ded):
+        out.append('<div class="ded">' + blocks_html(ded, imgmap, s) + "</div>")
+    note_ed = bf_matter.section_blocks(book, s, "note")
+
+    def note():
+        head = (s.get("note_title") or "").strip()
+        if head or bf_matter.has_text(note_ed):
+            out.append((f"<h2>{esc(head)}</h2>" if head else "") + blocks_html(note_ed, imgmap, s))
+
+    fic = fic_sections(book, s)                 # (the PDF's order: work info..., the note, contents)
+    if fic:
+        out.append(fic_html(fic, s))
+    if s.get("note_place") == "Before contents":
+        note()
     if s["toc"]:
         out.append(f"<h2>{esc(s['toc_title'])}</h2><ol>")
         for i, disp in contents_list(book, s, heads):
             out.append(f'<li><a href="#c{i}">{esc(disp)}</a></li>' if i else f"<li>{esc(disp)}</li>")
         out.append("</ol>")
+    if s.get("note_place") != "Before contents":
+        note()
+    front = front_text_blocks(book, s)
+    if front:
+        out.append('<div class="front">' + blocks_html(front, imgmap, s) + "</div>")
     for i, (ch, lbl, title) in enumerate(heads, 1):
         out.append(f'<hr id="c{i}">')
-        if lbl:
-            out.append(f'<p class="label">{esc(lbl)}</p>')
-        if title:
-            out.append(f"<h2>{esc(title)}</h2>")
+        if lbl or title:                               # part title block / chapter title block, as in the EPUB
+            out.append('<div class="part">' if ch.level == 0 else '<div class="chead">')
+            if lbl:
+                out.append(f'<p class="label">{esc(lbl)}</p>')
+            if title:
+                out.append(f"<h2>{esc(title)}</h2>")
+            out.append("</div>")
         out.append(blocks_html(ch.blocks, imgmap, s))
     if s.get("the_end"):
-        out.append('<p class="end">THE END</p>')
+        end_ed = edited(book, s, "the_end")
+        out.append(blocks_html(end_ed, imgmap, s) if end_ed is not None else '<p class="end">THE END</p>')
+    xm = edited(book, s, "end_matter")
+    xhead = bf_matter.section_heading(book, s, "end_matter")
+    if xm is not None and (bf_matter.has_text(xm) or xhead):
+        out.append("<hr>" + (f"<h2>{esc(xhead)}</h2>" if xhead else "") + blocks_html(xm, imgmap, s))
     out.append("</body></html>")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(out))
 
 
 def build_txt(book, s, out_path):
-    out = [book.title]
-    for v in (book.subtitle, book.author, book.credit):
-        if v:
-            out.append(v)
+    title_ed = edited(book, s, "title")
+    if title_ed is not None:
+        out = [plain(b.text or "") for b in title_ed if b.kind != "image" and plain(b.text or "").strip()]
+    else:
+        out = [book.title]
+        for v in (book.subtitle, book.author, book.credit):
+            if v:
+                out.append(v)
     out.append("")
+    ded = bf_matter.section_blocks(book, s, "dedication")      # edited, or made from the settings
+    if bf_matter.has_text(ded):
+        out += [""] + blocks_text(ded, s)
+    note_ed = bf_matter.section_blocks(book, s, "note")
+
+    def note():
+        head = (s.get("note_title") or "").strip()
+        if head or bf_matter.has_text(note_ed):
+            out.extend(([head, ""] if head else []) + blocks_text(note_ed, s))
+
     heads = list(chapter_heads(book, s))
-    for heading, items in fic_sections(book, s):
-        out += [heading] + [plain(m) for _c, m in items] + [""]
+    for heading, items, blocks in fic_sections(book, s):       # (the PDF's order: work info..., note, contents)
+        out += [heading] + (blocks_text(blocks, s) if blocks is not None else [plain(m) for _c, m in items] + [""])
+    if s.get("note_place") == "Before contents":
+        note()
     if s["toc"]:
         out.append(s["toc_title"])
         for _i, disp in contents_list(book, s, heads, sep=" - "):
             out.append("  " + disp)
         out.append("")
+    if s.get("note_place") != "Before contents":
+        note()
+    front = front_text_blocks(book, s)
+    if front:
+        out += [""] + blocks_text(front, s)
     for ch, lbl, title in heads:
         out += ["", ""]
         if lbl:
@@ -844,7 +1299,14 @@ def build_txt(book, s, out_path):
                 out += [plain(l) for l in b.lines] + [""]
             elif b.kind == "scene":
                 out += [scene_text(b, s), ""]
+            elif b.kind in MATTER_CSS:
+                out += blocks_text([b], s)
     if s.get("the_end"):
-        out.append("THE END")
+        end_ed = edited(book, s, "the_end")
+        out += blocks_text(end_ed, s) if end_ed is not None else ["THE END"]
+    xm = edited(book, s, "end_matter")
+    xhead = bf_matter.section_heading(book, s, "end_matter")
+    if xm is not None and (bf_matter.has_text(xm) or xhead):
+        out += ["", ""] + ([xhead, ""] if xhead else []) + blocks_text(xm, s)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(out))

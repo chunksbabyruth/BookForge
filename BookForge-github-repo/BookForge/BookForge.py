@@ -16,21 +16,26 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, PDF_MODES, BLANK_PAGES_MAX, parse_blank_count,
+                     TITLE_ALIGNS, TITLE_LAYOUT_KEYS, COVER_ALIGNS,
                      APP_NAME, APP_VERSION, APP_AUTHOR, BUILD_DATE,
-                     load_book, apply_info, plain, esc, Block, Chapter, page_size_inches, custom_page_inches)
+                     load_book, apply_info, plain, esc, Block, Chapter, page_size_inches, custom_page_inches,
+                     not_the_source)
 import bf_fonts
 from bf_fonts import SAME_BODY, SAME_HEAD
-from bf_pdf import HYPH_LANGS, TOC_SPACING, contents_entries, contents_rows, rows_to_edits
+from bf_pdf import (HYPH_LANGS, TOC_SPACING, contents_entries, contents_rows, rows_to_edits, empty_pages_note,
+                    merged_contents_page, merge_contents_edits, swap_contents_entries, keep_left_out)
 from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE, FOLD_SIDES, UNITS, UNIT_CHOICES
 import bf_impose
 import bf_placement
-from bf_build import run_build, default_out_dir, build_preview
+from bf_build import (run_build, default_out_dir, build_preview, book_problem, nothing_to_print, NothingToPrint,
+                      check_settings)
 import bf_edit
+import bf_matter
 import bf_pictures
 import bf_update
 import bf_theme as th
 
-SHEET_CUSTOM_HINT = "Width \u00d7 height of your paper, in the display unit above."
+SHEET_CUSTOM_HINT = "Width \u00d7 height of your printer paper, in the display unit above."
 PLACEMENT_BOXES = bf_placement.PLACEMENT_KEYS        # margins and offsets, in points
 PLACEMENT_HINT = ("Margins keep white space inside each page's space on the sheet; offsets then move every page "
                   "(points, 72 pt = 1 inch).")
@@ -67,18 +72,53 @@ The seven steps are the tabs along the top, in order (Ctrl+1 ... Ctrl+7):
    folded into the signatures like any other page; the EPUB, Word, web page
    and text files leave them out).
 4. CHAPTERS: check that the chapters were found correctly. You can rename,
-   skip, reorder or merge chapters in the list.
-5. LAYOUT: page size, fonts, margins, chapter style, page numbers and so on.
+   skip, reorder or merge chapters in the list. Merging keeps a page number
+   you typed for the merged chapter's contents entry (it goes to the chapter
+   it joins); if both chapters have a different typed number, BookForge asks
+   which one to keep, or you can cancel the merge.
+5. LAYOUT: book page size (the size of each finished page of the book),
+   fonts, margins, chapter style, page numbers and so on. "Titles:
+   alignment & position" sets where the title page, chapter and part titles
+   (and the headings BookForge adds, such as Contents) sit. The PDFs and
+   the Word document put them in the same places on the page; the EPUB and
+   web page use the same alignment and sizes, with the positions turned
+   into space above the title (a screen has no fixed page). The front
+   cover has its own title alignment and position (Output step, Cover;
+   standard: the title page's alignment, 32 % down the front).
 6. SPECIFIC TEXT EDIT: change the text, styles and fonts of any chapter.
    "Insert picture..." adds a picture where the cursor is; double-click a
    picture to set its size, alignment and whether it sits in the text, on a
    page of its own or fills the whole page.
+   The list also has the FRONT PAGES (title page, bookplate, dedication,
+   extra front page, work info, summary, author's notes, contents, text
+   before chapter 1) and BACK PAGES ("THE END", end pages such as an
+   afterword, the Notes pages and the back-cover text). Edit them like a
+   chapter: words, fonts, sizes, bold, italics, underline, colours,
+   alignment, indents and space above (pictures too on the extra front
+   page, the text before chapter 1 and the end pages). A page
+   you haven't changed is made from the settings as before; "Back to
+   automatic" undoes your changes to a page. The title page's words are the
+   Book info fields (change them in either place). The contents show one
+   line per entry: rename or format a line, add a line for a new entry,
+   remove a line to hide an entry, and click a page number to type your own
+   (the chapter itself never moves). Pages read from the source (work info,
+   summary, notes, contents) go back to the source's version when the source
+   is read again; your own pages (title page, dedication, end pages...) stay.
+   Edited pages go into the preview, the print PDF, the printing sheets and
+   every other file you make. What a file can't hold is said in the printing
+   notes: the bookplate is a print page (print PDF and Word), the Notes pages
+   are lined pages for printing only, the EPUB, web page and text file have
+   no page numbers (typed contents numbers: print PDF and Word) and the text
+   file has no pictures.
 7. OUTPUT: tick the formats you want, choose the binding layout and the
-   printer paper (with the unit its size is shown in; tick "Use a custom
-   paper size" to type your own), and click GENERATE PRINTING FILES.
+   printer paper size (the sheets of paper that go through your printer,
+   shown in the unit you choose; tick "Use a custom printer paper size" to
+   type your own), and click GENERATE PRINTING FILES.
    Everything is saved in one folder, together with a "READ ME - printing
    notes.txt" file. The Cover box takes front and back cover pictures and
-   your measured spine width.
+   your measured spine width. BookForge never writes over the book's source
+   file: a file that would get the source's name is saved with
+   " (BookForge)" added.
 
 PREVIEW BOOK shows the book exactly as it will print (and, with imposition on,
 the printing sheets, and with a cover, the cover). Nothing is saved. Change
@@ -93,6 +133,19 @@ PRINTING THE "IMPOSED FOR BINDING" PDF
   perfect bound / standard / custom signatures, flyleafs, page range, page
   rotation, scaling, margins, fold/cut/spine/signature/sewing marks, and
   duplex or single-sided printing.
+- CUSTOM SIGNATURE SIZES (e.g. 4, 4, 6, 6) are sheets per signature, used in
+  that order and only as many as the book needs; when the list runs out, the
+  last size is used again. Type whole numbers (1 to 200) separated by commas;
+  anything else is pointed out before a preview or build, never guessed.
+  Each signature keeps its size, so only the last one is completed with
+  blank pages. The printing notes say how many blank pages complete the last
+  sheet or signature, and list apart the flyleafs, the blank pages you added
+  and the pages the layout leaves blank on purpose (the left-hand page before
+  a right-hand chapter start, the back of the cover picture).
+- BookForge checks every book it makes: if a page ends up with nothing on it
+  that you didn't ask for (blank pages at the beginning/end, the left-hand
+  page before a right-hand start), the preview, the log and the printing
+  notes name the page so you can check it before printing.
 - PAGE PLACEMENT (Output tab): how each page sits in its space on the sheet.
   Page scaling: "Keep proportional" makes the page as large as fits inside
   the margins without changing its shape; "Stretch to fit" fills the space
@@ -132,8 +185,9 @@ PERFECT BINDING
 - Trim the three open edges with a guillotine or a sharp blade + straightedge.
 
 TIPS
-- Half-letter (5.5 x 8.5) pages fill a landscape letter sheet exactly. Letter
-  pages are shrunk to fit, so pick a bigger font size if you use them.
+- A Half Letter (5.5 x 8.5) book page size fits two pages to a side of
+  Letter printer paper exactly. Letter-size book pages are shrunk to fit,
+  so pick a bigger font size if you use them.
 - Characters your chosen font doesn't have (Greek with accents, Hebrew,
   symbols, Chinese...) are drawn automatically with another installed font
   that has them. The status log says which font was borrowed, and warns if
@@ -155,18 +209,26 @@ def tk_photo(im):
 
 
 class BookEditor:
-    """The Specific Text Edit step: chapters on the left, a Word-style editor on the right.
+    """The Specific Text Edit step: the book's pages and chapters on the left, a Word-style editor on the right.
 
-    The text box holds one chapter. Paragraph styles, alignment etc. are tags on whole lines; bold, italic,
+    The text box holds one chapter, or one of the front & back pages (title page, dedication, contents,
+    THE END...: see bf_matter). The list shows "Front pages", the chapters, then "Back pages". Paragraph styles, alignment etc. are tags on whole lines; bold, italic,
     fonts, sizes and colours are tags on characters. bf_edit converts to and from the book model, which the
     preview and every output are made from, so edits always appear exactly as they will print."""
 
     SIZES = ["(default)"] + [str(n) for n in (8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60)]
     SPACES = ["0", "6", "12", "18", "24", "36"]
-    STYLE_SIZE = {"head": 16, "subtitle": 13, "anote": 10, "image": 11}
+    STYLE_SIZE = {"head": 16, "subtitle": 13, "anote": 10, "image": 11, "btitle": 24, "bsub": 15, "bauth": 13,
+                  "bcred": 11, "plate": 13, "meta": 11}
+    CENTRED = ("btitle", "bsub", "bauth", "bcred", "plate", "ded", "endline")     # front/back page styles
 
     def __init__(self, app, parent):
         self.app, self.cur, self.cur_obj = app, None, None
+        self.sec = None           # the front/back page shown instead of a chapter (a bf_matter key)
+        self.loaded = None        # what the text box holds: a Chapter, ("sec", key) or None
+        self.rows = []            # what each line of the list is (see items)
+        self.marks = {}           # contents: page-number marks in the text -> the entry they belong to
+        self.toc_rows, self.toc_auto = [], []
         self.loading, self.dirty, self.title_dirty = False, False, False
         self.images, self.fontcache, self.undo_stack, self.redo_stack = {}, {}, [], []
         self.thumbs = {}          # small pictures shown in the text (kept so Tk doesn't drop them)
@@ -174,24 +236,30 @@ class BookEditor:
         S = app.S
         parent.columnconfigure(1, weight=1)
         parent.rowconfigure(0, weight=1)
-        left = ttk.LabelFrame(parent, text="Chapters", padding=8, style=S("TLabelframe"))
+        left = ttk.LabelFrame(parent, text="Pages & chapters", padding=8, style=S("TLabelframe"))
         left.grid(row=0, column=0, sticky="nsw", padx=6, pady=5)
         left.rowconfigure(0, weight=1)
-        self.lst = tk.Listbox(left, width=30, exportselection=False, activestyle="none", font=("Segoe UI", 10))
+        self.lst = tk.Listbox(left, width=32, exportselection=False, activestyle="none", font=("Segoe UI", 10))
         th.style_text(self.lst, app.k)
         self.lst.grid(row=0, column=0, columnspan=2, sticky="nsew")
         self.lst.bind("<<ListboxSelect>>", lambda e: self._picked())
-        ttk.Label(left, text="Chapter title", style=S("Card.TLabel")).grid(row=1, column=0, columnspan=2,
-                                                                          sticky="w", pady=(8, 0))
+        self.title_lab = ttk.Label(left, text="Chapter title", style=S("Card.TLabel"))
+        self.title_lab.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.title_var = tk.StringVar()
-        ttk.Entry(left, textvariable=self.title_var, style=S("TEntry")).grid(row=2, column=0, columnspan=2,
-                                                                            sticky="we")
+        self.title_entry = ttk.Entry(left, textvariable=self.title_var, style=S("TEntry"))
+        self.title_entry.grid(row=2, column=0, columnspan=2, sticky="we")
         self.title_var.trace_add("write", lambda *a: self._title_changed())
+        self.ch_buttons = []
         for n, (txt, fn) in enumerate((("Add chapter", self.add_chapter), ("Delete chapter", self.delete_chapter),
                                        ("Move up", lambda: self.move_chapter(-1)),
                                        ("Move down", lambda: self.move_chapter(1)))):
-            ttk.Button(left, text=txt, style=S("TButton"), command=fn).grid(row=3 + n // 2, column=n % 2,
-                                                                          sticky="we", padx=1, pady=(6 if n < 2 else 2, 0))
+            b = ttk.Button(left, text=txt, style=S("TButton"), command=fn)
+            b.grid(row=3 + n // 2, column=n % 2, sticky="we", padx=1, pady=(6 if n < 2 else 2, 0))
+            self.ch_buttons.append(b)
+        self.auto_btn = ttk.Button(left, text="Back to automatic", style=S("TButton"), command=self.back_to_automatic)
+        self.auto_btn.grid(row=5, column=0, columnspan=2, sticky="we", padx=1, pady=(6, 0))
+        self.sec_hint = ttk.Label(left, style=S("CardHint.TLabel"), justify="left", wraplength=240)
+        self.sec_hint.grid(row=6, column=0, columnspan=2, sticky="we", pady=(6, 0))
         right = ttk.Frame(parent, style=S("Page.TFrame"))
         right.grid(row=0, column=1, sticky="nsew", padx=6, pady=5)
         right.columnconfigure(0, weight=1)
@@ -200,17 +268,19 @@ class BookEditor:
         bar1.grid(row=0, column=0, sticky="we")
         self.style_var, self.font_var, self.size_var, self.space_var = (tk.StringVar() for _ in range(4))
         names = [lab for _k, lab in bf_edit.STYLES]
-        cb = ttk.Combobox(bar1, textvariable=self.style_var, values=names, state="readonly", width=15, style=S("TCombobox"))
+        cb = self.style_cb = ttk.Combobox(bar1, textvariable=self.style_var, values=names, state="readonly", width=17,
+                                          style=S("TCombobox"))
         cb.pack(side="left")
-        cb.bind("<<ComboboxSelected>>", lambda e: self.set_style(dict((v, k) for k, v in bf_edit.STYLES)[self.style_var.get()]))
+        cb.bind("<<ComboboxSelected>>", lambda e: self.set_style(
+            {v: k for k, v in bf_edit.STYLE_NAMES.items()}.get(self.style_var.get(), "para")))
         self.font_cb = ttk.Combobox(bar1, textvariable=self.font_var, state="readonly", width=22, style=S("TCombobox"))
         self.font_cb.pack(side="left", padx=(6, 0))
         self.font_cb.bind("<<ComboboxSelected>>", lambda e: self.set_value("ff|", "" if self.font_var.get().startswith("(") else self.font_var.get()))
         sz = ttk.Combobox(bar1, textvariable=self.size_var, values=self.SIZES, state="readonly", width=8, style=S("TCombobox"))
         sz.pack(side="left", padx=(6, 0))
         sz.bind("<<ComboboxSelected>>", lambda e: self.set_value("fs|", "" if self.size_var.get().startswith("(") else self.size_var.get()))
-        ttk.Button(bar1, text="Insert picture...", style="Tool.TButton", command=self.insert_picture).pack(
-            side="left", padx=(10, 0))
+        self.pic_btn = ttk.Button(bar1, text="Insert picture...", style="Tool.TButton", command=self.insert_picture)
+        self.pic_btn.pack(side="left", padx=(10, 0))
         ttk.Label(bar1, text="  paragraph style, font, size", style=S("PageHint.TLabel")).pack(side="left", padx=(6, 0))
         barf = ttk.Frame(right, style=S("Page.TFrame"))
         barf.grid(row=1, column=0, sticky="we", pady=(4, 0))
@@ -247,7 +317,8 @@ class BookEditor:
         self.status.grid(row=4, column=0, sticky="w", pady=(4, 0))
         bot = ttk.Frame(right, style=S("Page.TFrame"))
         bot.grid(row=5, column=0, sticky="we", pady=(6, 0))
-        ttk.Button(bot, text="Preview this chapter", style=S("TButton"), command=self.preview_here).pack(side="left")
+        self.prev_btn = ttk.Button(bot, text="Preview this chapter", style=S("TButton"), command=self.preview_here)
+        self.prev_btn.pack(side="left")
         ttk.Button(bot, text="Save project...", style=S("TButton"), command=app.save_project_dialog).pack(side="left", padx=6)
         ttk.Button(bot, text="Open project...", style=S("TButton"), command=app.open_project_dialog).pack(side="left")
         t = self.txt
@@ -256,9 +327,13 @@ class BookEditor:
                         ("<Control-f>", self.find_window), ("<Control-h>", self.find_window)):
             t.bind(seq, lambda e, fn=fn: (fn(), "break")[1])
         t.bind("<KeyPress>", self._keypress, add="+")
-        t.bind("<KeyRelease>", lambda e: self._update_toolbar(), add="+")
+        t.bind("<KeyRelease>", lambda e: self._key_released(), add="+")
         t.bind("<ButtonRelease-1>", lambda e: self._update_toolbar(), add="+")
-        t.bind("<<Paste>>", lambda e: self._snap(force=True), add="+")
+        t.bind("<<Paste>>", self._paste, add="+")
+        t.bind("<<Copy>>", self._clip_record, add="+")
+        t.bind("<<Cut>>", lambda e: (self._snap(force=True), self.sec == "contents" and self._keep_marks(),
+                                     self._clip_record(), self.after_edit())[2], add="+")
+        self.clip = None
         t.bind("<Double-1>", self._double_click, add="+")
         muted = th.MUTED
         t.tag_configure("f_u", underline=True)
@@ -273,6 +348,9 @@ class BookEditor:
         t.tag_configure("st|anote", lmargin1=24, lmargin2=24, foreground=muted)
         t.tag_configure("st|scene", justify="center", foreground=muted)
         t.tag_configure("st|image", justify="center", foreground=muted)
+        for st in self.CENTRED:                    # title page, bookplate, dedication, THE END
+            t.tag_configure(f"st|{st}", justify="center")
+        t.tag_configure("st|meta", lmargin1=0, lmargin2=18)
         t.tag_configure("al|left", justify="left")
         t.tag_configure("al|center", justify="center")
         t.tag_configure("al|right", justify="right")
@@ -288,19 +366,63 @@ class BookEditor:
         self.fallback = next((f for f in ("Georgia", "Times New Roman", "DejaVu Serif", "Liberation Serif")
                               if f.lower() in self.families), "TkDefaultFont")
         self.update_fonts(app.fonts if hasattr(app, "fonts") else [])
+        self._mode_ui()
 
-    # ------------------------------------------------------------ chapters
+    # ------------------------------------------------------------ the list: front pages, chapters, back pages
     def chapters(self):
         return self.app.book.chapters if self.app.book is not None else []
 
+    def _listed(self, key):
+        """The front/back pages in the list. Pages read from the source are listed when the book has them."""
+        book = self.app.book
+        if bf_matter.is_edited(book, key):
+            return True
+        return {"work_info": bool(book.fic_meta), "summary": bool(book.fic_summary),
+                "work_notes": bool(book.fic_notes),
+                "front_text": any(b.kind == "para" for b in book.front_blocks)}.get(key, True)
+
+    def items(self):
+        """What each line of the list is: ("head", text), ("sec", page key) or ("ch", chapter index)."""
+        book = self.app.book
+        if book is None or getattr(book, "fixed_pdf", ""):
+            return [("ch", i) for i in range(len(self.chapters()))]
+        out = [("head", "FRONT PAGES")] + [("sec", k) for k in bf_matter.FRONT if self._listed(k)]
+        out += [("head", "CHAPTERS")] + [("ch", i) for i in range(len(book.chapters))]
+        return out + [("head", "BACK PAGES")] + [("sec", k) for k in bf_matter.BACK if self._listed(k)]
+
+    def chapter_rows(self):
+        return [it for it in self.rows if it[0] == "ch"]
+
+    def _item_text(self, it):
+        if it[0] == "head":
+            return it[1]
+        if it[0] == "ch":
+            ch = self.chapters()[it[1]]
+            return "   " + ch.display() + ("" if ch.include else "   (left out)")
+        return "   " + self.app.section_label(it[1])
+
+    def _shown_item(self):
+        if self.sec is not None:
+            return ("sec", self.sec)
+        return ("ch", self.cur) if self.cur is not None else None
+
     def refresh_list(self):
         self.lst.delete(0, "end")
-        for ch in self.chapters():
-            self.lst.insert("end", ch.display() + ("" if ch.include else "   (left out)"))
-        if self.cur is not None and self.cur < self.lst.size():
-            self.lst.selection_clear(0, "end")
-            self.lst.selection_set(self.cur)
-            self.lst.see(self.cur)
+        self.rows = self.items()
+        for n, it in enumerate(self.rows):
+            self.lst.insert("end", self._item_text(it))
+            if it[0] == "head":
+                bg = self.lst.cget("background")
+                self.lst.itemconfigure(n, foreground=th.MUTED, selectforeground=th.MUTED, selectbackground=bg)
+        self._reselect()
+
+    def _reselect(self):
+        it = self._shown_item()
+        self.lst.selection_clear(0, "end")
+        if it in self.rows:
+            n = self.rows.index(it)
+            self.lst.selection_set(n)
+            self.lst.see(n)
 
     def on_show(self):
         """The Edit tab was opened: show the book (it may have changed on other tabs)."""
@@ -312,6 +434,9 @@ class BookEditor:
         if bf_edit.load_fonts_for_editor(paths):
             import tkinter.font as tkfont
             self.families = {f.lower() for f in tkfont.families()}
+        if (self.cur_obj is not None or self.sec is not None) and \
+                getattr(self, "shown_fonts", None) != self._layout_fonts():
+            self.refresh()                           # the Layout fonts changed: show them
         chs = self.chapters()
         self.refresh_list()
         if self.app.book is not None and getattr(self.app.book, "fixed_pdf", ""):
@@ -319,57 +444,204 @@ class BookEditor:
             self._status("This PDF's pages are printed as they are, so there is no text to edit here. Choose "
                          "“Rebuild as an editable book” for PDF files on the Source tab to edit it.")
             return
+        if self.sec is not None and self.app.book is not None:
+            # a front/back page: its words may have changed on other tabs (Book info, Front & back...)
+            if self.loaded != ("sec", self.sec):
+                self.select_section(self.sec)
+            elif not (self.dirty or self.txt.edit_modified()) and self._section_changed():
+                self._load_section(keep_place=True)
+            self._mode_ui()
+            return
         if not chs:
             return
         idx = next((i for i, c in enumerate(chs) if c is self.cur_obj), None)
         if idx is None:
             self.cur = None
             self.select(0)
+        elif self.loaded is not self.cur_obj:    # the window was made again (light/dark): show its text again
+            self.cur = None
+            self.select(idx)
         elif idx != self.cur:
             self.cur = idx
             self.refresh_list()
 
     def reset(self):
         """The book was replaced (scanned again, new book, project opened)."""
-        self.cur, self.cur_obj = None, None
+        self.cur, self.cur_obj, self.sec, self.loaded = None, None, None, None
         self.undo_stack, self.redo_stack = [], []
+        self._clear_marks()
+        self.txt.configure(state="normal")
         self.txt.delete("1.0", "end")
         self.refresh_list()
+        self._mode_ui()
         if self.app.book is not None and th.TABS[self.app.cur_page][0] == "edit":
             self.select(0)
 
     def _picked(self):
         sel = self.lst.curselection()
-        if sel and sel[0] != self.cur:
-            self.select(sel[0])
+        it = self.rows[sel[0]] if sel and sel[0] < len(self.rows) else None
+        if it is None or it[0] == "head":
+            self._reselect()
+        elif it[0] == "ch" and (self.sec is not None or it[1] != self.cur):
+            self.select(it[1])
+        elif it[0] == "sec" and it[1] != self.sec:
+            self.select_section(it[1])
 
     def select(self, i):
         if not self.chapters():
             return
-        self.commit()
+        if not self.commit():
+            self._reselect()                  # the edits couldn't be applied: stay with them
+            return
         i = max(0, min(i, len(self.chapters()) - 1))
+        self.sec = None
         self.cur, self.cur_obj = i, self.chapters()[i]
         self.undo_stack, self.redo_stack = [], []
         self._load(bf_edit.blocks_to_paras(self.cur_obj.blocks))
+        self.loaded = self.cur_obj
         self.loading = True
         self.title_var.set(self.cur_obj.title)
         self.loading = False
         self.title_dirty = False
         self.refresh_list()
+        self._mode_ui()
         self.txt.mark_set("insert", "1.0")
         self.txt.see("1.0")
         self._status()
         self._update_toolbar()
 
+    def select_section(self, key):
+        """Show a front or back page (title page, dedication, contents, THE END...) in the text box."""
+        if self.app.book is None or key not in bf_matter.SECTIONS:
+            return
+        if not self.commit():
+            self._reselect()
+            return
+        self.cur, self.cur_obj, self.sec = None, None, key
+        self.undo_stack, self.redo_stack = [], []
+        self._load_section()
+        self.loading = True
+        self.title_var.set(self.app.section_heading(key))
+        self.loading = False
+        self.title_dirty = False
+        self.refresh_list()
+        self._mode_ui()
+        self.txt.mark_set("insert", "1.0")
+        self.txt.see("1.0")
+        self._status()
+        self._update_toolbar()
+
+    def _default_style(self):
+        """The style of text typed where there is no style yet (an empty page)."""
+        if self.sec is None or self.sec == "title":
+            return "para"
+        return bf_matter.SECTIONS[self.sec][3][0]
+
+    def _section_paras(self):
+        if self.sec == "contents":
+            return self._contents_paras()
+        return bf_edit.blocks_to_paras(self.app.section_blocks(self.sec))
+
+    def _section_changed(self):
+        """True when the page shown is no longer what the book holds (changed on another tab)."""
+        try:
+            if self.sec == "contents":
+                now = [(p.label, p.runs, p.indent, p.space) for p in self._contents_paras(keep=True)]
+                if now != [(p.label, p.runs, p.indent, p.space) for p in self.read()]:
+                    return True
+                # the same lines, but a typed page number changed elsewhere (e.g. moved by merging chapters):
+                # load it again, so saving this page can't put back the old numbers
+                book = self.app.book
+                rows = contents_rows(contents_entries(book, self.app.collect()), book.toc)
+                return [(r["uid"], r["page"]) for r in rows] != \
+                    [(r["uid"], r["page"]) for r in getattr(self, "toc_rows", [])]
+            return bf_edit.paras_to_blocks(self.read()) != self.app.section_blocks(self.sec)
+        except Exception:
+            return True
+
+    def _load_section(self, keep_place=False):
+        ins, top = self.txt.index("insert"), self.txt.yview()[0]
+        tl = {"Left": "left", "Right": "right"}.get(self.app.var("tp_align").get(), "center")
+        for st in ("btitle", "bsub", "bauth", "bcred"):       # the title page's alignment (Layout tab)
+            self.txt.tag_configure(f"st|{st}", justify=tl)
+        self._load(self._section_paras())
+        self.loaded = ("sec", self.sec)
+        if keep_place:
+            self.txt.mark_set("insert", ins)
+            self.txt.yview_moveto(top)
+
+    def _mode_ui(self):
+        """The buttons and hints for what is shown: a chapter, or a front/back page."""
+        sec = self.sec
+        if sec is None:
+            self.title_lab.configure(text="Chapter title")
+            self.title_entry.configure(state="normal")
+            for b in self.ch_buttons:
+                b.state(["!disabled"])
+            self.auto_btn.grid_remove()
+            self.sec_hint.grid_remove()
+            self.style_cb.configure(values=[lab for _k, lab in bf_edit.STYLES])
+            self.pic_btn.state(["!disabled"])
+            self.prev_btn.configure(text="Preview this chapter")
+            return
+        _name, _side, head, styles, pics, _src = bf_matter.SECTIONS[sec]
+        has_head = head is not None or sec == "contents"
+        self.title_lab.configure(text="Page heading" if has_head else "Page heading (this page has none)")
+        self.title_entry.configure(state="normal" if has_head else "disabled")
+        for n, b in enumerate(self.ch_buttons):
+            b.state(["!disabled"] if n == 0 or (sec == "contents" and n >= 2) else ["disabled"])
+        self.auto_btn.grid()
+        self.auto_btn.state(["!disabled"] if self.app.section_edited(sec) else ["disabled"])
+        self.sec_hint.configure(text=self.app.section_hint(sec))
+        self.sec_hint.grid()
+        self.style_cb.configure(values=[bf_edit.STYLE_NAMES[k] for k in styles])
+        self.pic_btn.state(["!disabled"] if pics else ["disabled"])
+        self.prev_btn.configure(text="Preview the book")
+
     def _title_changed(self):
-        if self.loading or self.cur_obj is None:
+        if self.loading:
+            return
+        if self.sec is not None:
+            self.app.set_section_heading(self.sec, self.title_var.get())
+            self._mode_ui()
+            return
+        if self.cur_obj is None:
             return
         self.cur_obj.title = self.title_var.get()
         self.title_dirty = True
         self.app.unsaved = True
-        self.lst.delete(self.cur)
-        self.lst.insert(self.cur, self.cur_obj.display() + ("" if self.cur_obj.include else "   (left out)"))
-        self.lst.selection_set(self.cur)
+        it = ("ch", self.cur)
+        if it in self.rows:
+            n = self.rows.index(it)
+            self.lst.delete(n)
+            self.lst.insert(n, self._item_text(it))
+            self.lst.selection_set(n)
+
+    def back_to_automatic(self):
+        """Forget the changes made to the page shown: it is made from the settings (and the source) again."""
+        key = self.sec
+        if key is None or not self.app.section_edited(key):
+            return
+        name = bf_matter.SECTIONS[key][0]
+        msg = (f"Make “{name}” automatically again, as BookForge makes it from your settings"
+               + (" and the source" if bf_matter.SECTIONS[key][5] else "") +
+               "?\n\nThe text and formatting you changed here are lost (Undo can't bring them back).")
+        if key == "contents":
+            msg += ("\n\nThis also undoes the changes made in Edit contents (renamed, hidden or added entries and "
+                    "typed page numbers).")
+        if not messagebox.askyesno("Back to automatic", msg):
+            return
+        self.dirty, self.title_dirty = False, False
+        self.txt.edit_modified(False)
+        self.app.clear_section(key)
+        self.undo_stack, self.redo_stack = [], []
+        self._load_section()
+        self.loading = True
+        self.title_var.set(self.app.section_heading(key))
+        self.loading = False
+        self.refresh_list()
+        self._mode_ui()
+        self._status(f"“{name}” is automatic again.")
 
     def add_chapter(self):
         if self.app.book is None:
@@ -399,12 +671,15 @@ class BookEditor:
             self.refresh_list()
 
     def move_chapter(self, d):
+        if self.sec == "contents":
+            self.move_entry(d)
+            return
         if self.cur is None:
             return
         self.commit()
         chs, i, j = self.chapters(), self.cur, self.cur + d
         if 0 <= j < len(chs):
-            chs[i], chs[j] = chs[j], chs[i]
+            self.app.swap_chapters(i, j)              # (an edited contents follows)
             self.cur = j
             self._structure_changed()
             self.refresh_list()
@@ -423,7 +698,7 @@ class BookEditor:
             tags.append(f"in|{max(1, min(int(p.indent), 8))}")
         if p.space:
             tags.append(f"sp|{p.space}")
-        if p.label:
+        if p.label and p.style != "tocentry":
             tags.append(f"lb|{p.label}")
         if p.style == "item":
             tags.append(f"bl|{p.bullet}|{p.depth}")
@@ -445,16 +720,18 @@ class BookEditor:
     def _load(self, paras):
         self.loading = True
         t = self.txt
+        t.configure(state="normal")
+        self._clear_marks()
         t.delete("1.0", "end")
         self.images, self.thumbs = {}, {}
         for n, p in enumerate(paras):
             start = t.index("end-1c")
             pic = p.style == "image" and p.block is not None and p.block.kind == "image"
             if pic:
-                p = dataclasses.replace(p, runs=[(bf_edit.picture_label(p.block), {})])
+                p = dataclasses.replace(p, runs=[(bf_edit.picture_label(p.block), {"pl": True})])
                 self._thumb_at(start, n, p.block)
             for text, f in p.runs:
-                tags = [f"f_{k}" for k in bf_edit.FLAGS if f.get(k)]
+                tags = [f"f_{k}" for k in bf_edit.FLAGS if f.get(k)] + (["pl"] if f.get("pl") else [])
                 if f.get("font"):
                     tags.append("ff|" + f["font"])
                 if f.get("size"):
@@ -462,6 +739,8 @@ class BookEditor:
                 if f.get("color"):
                     tags.append(self._color_tag(f["color"]))
                 t.insert("end", text, tuple(tags))
+            if p.style == "tocentry" and self.sec == "contents":
+                self._add_mark("end", p.label)            # the entry's page number, at the end of its line
             t.insert("end", "\n")
             for tg in self._line_tags(p, n):
                 t.tag_add(tg, start, "end-1c")
@@ -469,8 +748,11 @@ class BookEditor:
         t.edit_modified(False)
         self.dirty = False
         self.loading = False
+        if self._locked():
+            t.configure(state="disabled")
 
     def _runs(self, s, e):
+        """Formatted text runs between s and e. A picture's label (tag "pl") is not text of the book."""
         t = self.txt
         cuts = {t.index(s), t.index(e)}
         for _kind, _val, idx in t.dump(s, e, tag=True):
@@ -479,7 +761,7 @@ class BookEditor:
         runs = []
         for a, b in zip(cuts, cuts[1:]):
             text = t.get(a, b)
-            if not text:
+            if not text or "pl" in t.tag_names(a):
                 continue
             f = {}
             for tg in t.tag_names(a):
@@ -494,38 +776,92 @@ class BookEditor:
             runs.append((text, f))
         return bf_edit.merge(runs)
 
+    @staticmethod
+    def _vals(tags):
+        """The paragraph settings carried by a set of tags: {"st": style, "al": ..., "ob": ...}."""
+        return {tg.split("|", 1)[0]: tg.split("|", 1)[1] for tg in tags
+                if "|" in tg and not tg.startswith(("ff|", "fs|", "fc|", "df|"))}
+
+    def _para(self, style, runs, val, block=None):
+        bullet, depth = "", 0
+        if "bl" in val:
+            bullet, _, d = val["bl"].rpartition("|")
+            depth = int(d) if d.isdigit() else 0
+        return bf_edit.Para(style, runs, align=val.get("al", ""), indent=int(val.get("in", 0) or 0),
+                            space=int(val.get("sp", 0) or 0), label=val.get("lb", ""), bullet=bullet, depth=depth,
+                            group=val.get("vg"), block=block)
+
+    def _text_part(self, a, b, paras):
+        """Text that shares a line with a picture (typed next to it, or joined onto its line): its own
+        paragraph, in the style it had - never thrown away, never part of the picture."""
+        t = self.txt
+        if not t.compare(a, "<", b):
+            return
+        runs = self._runs(a, b)
+        if not "".join(x for x, _f in runs).strip():
+            return
+        val = self._vals(t.tag_names(a))
+        style = val.get("st", "para")
+        if style in ("image", "scene"):
+            style = "para"
+        paras.append(self._para(style, runs, val))
+
     def read(self):
-        """The text box as editor paragraphs."""
+        """The text box as editor paragraphs.
+
+        A picture is the small copy of it shown in the text (an embedded image named after its key in
+        self.images) - not its label or the line's tags, which typing, joining lines, styles or find & replace
+        can change. Text on the same line as a picture becomes a paragraph of its own; the label is never
+        book text."""
         t, paras, used = self.txt, [], set()
         last = int(t.index("end-1c").split(".")[0])
+        by_line = {}
+        for idx, key in self._pics():
+            by_line.setdefault(int(idx.split(".")[0]), []).append((idx, key))
         for ln in range(1, last + 1):
             s, e = f"{ln}.0", f"{ln}.end"
-            text = t.get(s, e)
+            pics = by_line.get(ln)
+            if pics:
+                pos = s
+                for idx, key in pics:
+                    self._text_part(pos, idx, paras)
+                    block = self.images[key]
+                    if key in used:                          # the same picture twice: a copy of it
+                        block = dataclasses.replace(block)
+                    used.add(key)
+                    paras.append(self._para("image", [(bf_edit.picture_label(block), {})],
+                                            self._vals(t.tag_names(idx)), block))
+                    pos = f"{idx}+1c"
+                self._text_part(pos, e, paras)
+                continue
+            runs = self._runs(s, e)
+            text = "".join(x for x, _f in runs)
             tags = set(t.tag_names(e) if t.compare(e, "<", "end-1c") else t.tag_names(s))
-            val = {tg.split("|", 1)[0]: tg.split("|", 1)[1] for tg in tags if "|" in tg and not tg.startswith(("ff|", "fs|", "fc|", "df|"))}
-            style = val.get("st", "para")
+            val = self._vals(tags)
+            if self.sec == "contents":
+                val["lb"] = self._mark_on_line(ln)          # "" = a line typed here: a new entry
+            style = val.get("st", self._default_style())
             ob = val.get("ob")
             block = self.images.get(int(ob)) if ob is not None and ob.isdigit() else None
-            if style in ("image", "scene"):
-                if block is None or ob in used or (style == "image" and not text.startswith("[picture")):
+            if style == "image":
+                style, block = "para", None                 # no picture on this line (any more): ordinary text
+            elif style == "scene":
+                if block is None or ob in used:
                     style, block = "para", None             # a copy made by pressing Enter: ordinary text
                 else:
                     used.add(ob)
             if not text and style not in ("scene",):
                 continue
-            bullet, depth = "", 0
-            if "bl" in val:
-                bullet, _, d = val["bl"].rpartition("|")
-                depth = int(d) if d.isdigit() else 0
-            paras.append(bf_edit.Para(style, self._runs(s, e), align=val.get("al", ""),
-                                      indent=int(val.get("in", 0) or 0), space=int(val.get("sp", 0) or 0),
-                                      label=val.get("lb", ""), bullet=bullet, depth=depth,
-                                      group=val.get("vg"), block=block))
+            paras.append(self._para(style, runs, val, block))
         return paras
 
     def commit(self):
         """Write the text box back into the book (only if something changed)."""
-        if self.cur_obj is None or self.loading:
+        if self.loading:
+            return True
+        if self.sec is not None:
+            return self._commit_section()
+        if self.cur_obj is None:
             return True
         changed = self.dirty or self.txt.edit_modified()
         if changed:
@@ -544,6 +880,219 @@ class BookEditor:
             self.app.fill_list()
         return True
 
+    def _commit_section(self):
+        """Write a front/back page back into the book (bf_matter), its words into the settings they belong to."""
+        key = self.sec
+        if self.app.book is None or self._locked():
+            return True
+        changed = self.dirty or self.txt.edit_modified()
+        if not changed:
+            return True
+        try:
+            paras = self.read()
+            if key == "contents":
+                note = self._commit_contents(paras)
+            else:
+                blocks = bf_edit.paras_to_blocks(paras)
+                note = ""
+                if not bf_matter.SECTIONS[key][4] and any(b.kind == "image" for b in blocks):
+                    blocks = [b for b in blocks if b.kind != "image"]
+                    note = "Pictures can't go on this page, so the picture was left out."
+                self.app.set_section(key, blocks)
+        except Exception as e:
+            messagebox.showerror("Edit", f"Your edits to this page couldn't be applied ({e}).\n\n"
+                                         "They are still in the editor - nothing has been lost.")
+            return False
+        self.txt.edit_modified(False)
+        self.dirty = False
+        self.refresh_list()
+        self._mode_ui()
+        if note:
+            self._status(note)
+        return True
+
+    # ------------------------------------------------------------ the contents page as text
+    # One line per entry shown on the contents page, in order. Each line ends with a small page-number mark
+    # (not text: typing and Backspace next to it go to the words before it, Delete doesn't remove it) that also
+    # tells which entry the line is, so the entry keeps its chapter however its words change. A line without a mark is a new entry; an entry whose
+    # line is gone is hidden (Edit contents... can show it again). Chapters are never changed from here.
+    def _locked(self):
+        """The contents are open in the Edit contents window: they are changed there until it is closed."""
+        cw = getattr(self.app, "contents_win", None)
+        return self.sec == "contents" and cw is not None and cw.alive()
+
+    def contents_window(self, opened):
+        """The Edit contents window was opened or closed."""
+        if self.sec != "contents" or self.app.book is None:
+            return
+        if opened:
+            self.txt.configure(state="disabled")
+            self._status("The contents are open in the Edit contents window: change them there, or close it to "
+                         "edit them here.")
+        else:
+            self._load_section(keep_place=True)
+            self._mode_ui()
+            self._status()
+
+    def _clear_marks(self):
+        for w in list(self.__dict__.get("mark_widgets", {}).values()):
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+        self.marks, self.mark_widgets = {}, {}
+
+    @staticmethod
+    def _toc_id(r, n):
+        return f"u:{r['uid']}" if not r["custom"] else f"c:{n}"
+
+    def _toc_row(self, ident):
+        return next((r for n, r in enumerate(self.toc_rows) if self._toc_id(r, n) == ident), None)
+
+    def _page_text(self, r):
+        if r is None:
+            return "new entry"
+        if r["page"]:
+            return f"p. {r['page']} (typed)"
+        lab = self.app.toc_labels.get(r["uid"]) if r["uid"] else None
+        return f"p. {lab}" if lab else ("p. auto" if r["uid"] else "no page")
+
+    def _add_mark(self, index, ident):
+        r = self._toc_row(ident) if ident else None
+        w = tk.Label(self.txt, text=self._page_text(r), font=(th.UI, 9), cursor="hand2", padx=8, pady=0, bd=0,
+                     background=self.txt.cget("background"), foreground=th.MUTED)
+        w.bind("<Button-1>", lambda e, w=w: self.contents_page(w))
+        w.bind("<Enter>", lambda e: self._status("Click a page number to type the number printed for that entry "
+                                                 "(the chapter stays where it is in the book)."))
+        self.txt.window_create(index, window=w, align="baseline")
+        self.marks[str(w)] = ident
+        self.mark_widgets[str(w)] = w
+
+    def _mark_on_line(self, ln):
+        for _k, name, _idx in self.txt.dump(f"{ln}.0", f"{ln}.end", window=True):
+            if str(name) in self.marks:
+                return self.marks[str(name)]
+        return ""
+
+    def _contents_paras(self, keep=False):
+        """The contents entries shown on the contents page, as editor lines (hidden entries aren't shown)."""
+        book, s = self.app.book, self.app.collect()
+        if not keep:
+            self.toc_auto = contents_entries(book, s)
+            self.toc_rows = contents_rows(self.toc_auto, book.toc)
+        auto = contents_entries(book, s) if keep else self.toc_auto
+        rows = contents_rows(auto, book.toc)
+        paras = []
+        for n, r in enumerate(rows):
+            if not r["show"]:
+                continue
+            words = r["title"] or r["auto"]
+            markup = bf_matter.restyle(r["markup"], words) if r.get("markup") else esc(words)
+            paras.append(bf_edit.Para("tocentry", bf_edit.parse_markup(markup), indent=1 if r["level"] >= 1 else 0,
+                                      space=int(r.get("space") or 0), label=self._toc_id(r, n)))
+        return paras
+
+    def _commit_contents(self, paras):
+        """The lines -> the book's contents changes (Book.toc, as Edit contents keeps them)."""
+        old = self.toc_rows
+        by_id = {self._toc_id(r, n): r for n, r in enumerate(old)}
+        new, ids, seen = [], [], set()
+        for p in paras:
+            if p.style in ("image", "scene"):
+                continue
+            markup = bf_edit.runs_to_markup(p.runs)
+            words = " ".join(plain(markup).split())
+            if not words:
+                continue
+            r = by_id.get(p.label) if p.label and p.label not in seen else None
+            lvl = 1 if p.indent >= 1 else 0
+            if r is None:
+                r = {"uid": None, "custom": True, "auto": "", "title": words, "page": "", "show": True,
+                     "level": lvl, "auto_level": lvl, "markup": None, "space": 0}
+            else:
+                r = dict(r)
+                seen.add(p.label)
+            r["show"], r["level"] = True, lvl
+            if r["custom"]:
+                r["title"], r["auto_level"] = words, lvl
+            else:
+                r["title"] = None if words == " ".join(r["auto"].split()) else words
+            r["space"] = max(0, min(int(p.space or 0), 72))
+            formatted = any(f for x, f in p.runs if x.strip())
+            r["markup"] = markup if formatted else None
+            new.append(r)
+            ids.append(p.label if p.label in by_id else None)
+        gone = 0
+        for n, r in enumerate(old):            # entries whose line was removed: hidden, in their place
+            ident = self._toc_id(r, n)
+            if ident in seen:
+                continue
+            if r["show"]:
+                gone += 1
+            if r["custom"]:
+                continue                        # a typed entry is removed
+            at = 0
+            for k in range(n - 1, -1, -1):
+                prev = self._toc_id(old[k], k)
+                if prev in ids:
+                    at = ids.index(prev) + 1
+                    break
+            new.insert(at, dict(r, show=False))
+            ids.insert(at, ident)
+        book = self.app.book
+        edits = keep_left_out(rows_to_edits(new, self.toc_auto), book.toc, book)   # (left-out chapters' entries stay)
+        if edits != (book.toc or []):
+            book.toc = edits
+            self.app.edited = True
+            self.app.unsaved = True
+        self.app.contents_changed_in_editor()
+        self._load_section(keep_place=True)      # the marks follow the entries as they are now
+        if gone:
+            return (f"{gone} entr{'y was' if gone == 1 else 'ies were'} taken off the contents page. Chapters "
+                    "stay in the book; Edit contents... (Front & back) can show them again.")
+        return ""
+
+    def move_entry(self, d):
+        """Contents: Move up / Move down move the entry the cursor is on (it stays linked to its chapter)."""
+        if self._locked():
+            return
+        t = self.txt
+        ln = int(t.index("insert").split(".")[0])
+        if not t.get(f"{ln}.0", f"{ln}.end"):
+            return
+        i = sum(1 for k in range(1, ln) if t.get(f"{k}.0", f"{k}.end"))      # its place among the entries
+        paras = self.read()
+        j = i + d
+        if not (0 <= i < len(paras) and 0 <= j < len(paras)):
+            return
+        self._snap(force=True)
+        paras[i], paras[j] = paras[j], paras[i]
+        self._load(paras)
+        self.dirty = True
+        self.app.unsaved = True
+        t.mark_set("insert", f"{j + 1}.end")
+        t.see("insert")
+
+    def contents_page(self, w):
+        """A click on an entry's page number: type the number the contents prints for it."""
+        if self._locked():
+            return
+        r = self._toc_row(self.marks.get(str(w)))
+        if r is None:
+            self._status("This is a new entry: its page number can be typed once the page has been saved "
+                         "(switch to another page or preview the book first).")
+            return
+        new = self.app.ask_text(self.txt.winfo_toplevel(), "Page number",
+                                "Page number to print beside this entry on the contents page (it doesn't move the "
+                                "chapter). Leave it empty to use the number worked out from the layout.", r["page"])
+        if new is None:
+            return
+        self._snap(force=True)
+        r["page"] = new.strip()
+        w.configure(text=self._page_text(r))
+        self.dirty = True
+        self.app.unsaved = True
+
     # ------------------------------------------------------------ display
     def update_fonts(self, names):
         vals = ["(default font)"] + [n for n in names if n not in (SAME_BODY, SAME_HEAD)]
@@ -555,8 +1104,18 @@ class BookEditor:
                "Courier (built-in)": "Courier New"}.get(fam, fam)
         return fam if fam.lower() in self.families else self.fallback
 
+    def _layout_fonts(self):
+        """(body font, Titles & headings font or "", bold headings) chosen on the Layout tab."""
+        app = self.app
+        try:
+            hf = app.var("heading_font").get()
+            return app.var("font_family").get(), ("" if hf in ("", SAME_BODY) else hf), bool(app.var("heading_bold").get())
+        except (tk.TclError, AttributeError):
+            return "", "", True
+
     def refresh(self, start="1.0", end="end"):
         t = self.txt
+        _body, heading_fam, heading_bold = self.shown_fonts = self._layout_fonts()
         for name in self.fontcache.values():
             t.tag_remove(name, start, end)
         cuts = {t.index(start), t.index(end)}
@@ -567,6 +1126,8 @@ class BookEditor:
             tags = set(t.tag_names(a))
             style = next((x[3:] for x in tags if x.startswith("st|")), "para")
             fam = next((x[3:] for x in tags if x.startswith("ff|")), "")
+            if not fam and style in ("head", "btitle", "bsub"):
+                fam = heading_fam                    # headings show in the Layout tab's Titles & headings font
             size = next((x[3:] for x in tags if x.startswith("fs|")), "")
             try:
                 base = self.STYLE_SIZE.get(style, 12)
@@ -578,8 +1139,8 @@ class BookEditor:
                 size = 12
             if "f_sup" in tags or "f_sub" in tags:
                 size *= 0.7
-            bold = "f_b" in tags or style == "head"
-            italic = "f_i" in tags or style in ("subtitle", "anote", "image")
+            bold = "f_b" in tags or (style in ("head", "btitle") and heading_bold)
+            italic = "f_i" in tags or style in ("subtitle", "anote", "image", "bsub", "plate", "ded")
             key = (self._tk_family(fam), int(round(size)), bold, italic)
             if key not in self.fontcache:
                 name = "df|%s|%d|%d|%d" % key
@@ -591,6 +1152,17 @@ class BookEditor:
     def _status(self, msg=None):
         if msg:
             self.status.configure(text=msg)
+            return
+        if self.sec is not None and self.app.book is not None:
+            if self._locked():
+                self.contents_window(True)
+                return
+            words = len(self.txt.get("1.0", "end").split())
+            how = ("changed by you" if self.app.section_edited(self.sec)
+                   else "automatic: made from your settings" + (" and the source" if bf_matter.SECTIONS[self.sec][5] else ""))
+            off = self.app.section_off(self.sec)
+            self.status.configure(text=f"{bf_matter.SECTIONS[self.sec][0]}  \u00b7  {words:,} words  \u00b7  {how}"
+                                       + (f"  \u00b7  not printed now: {off}" if off else ""))
             return
         if self.cur_obj is None:
             return
@@ -628,8 +1200,14 @@ class BookEditor:
     def _keypress(self, e):
         if e.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Left", "Right", "Up",
                         "Down", "Home", "End", "Prior", "Next"):
-            return
+            return None
         self._snap()
+        return self._guard_key(e)
+
+    def _key_released(self):
+        if self._pics() or self.txt.tag_ranges("pl"):
+            self.normalise_pictures()
+        self._update_toolbar()
 
     def _restore(self, state):
         paras, ins = state
@@ -715,9 +1293,15 @@ class BookEditor:
         self._after_format(*r)
 
     def set_line(self, prefix, value):
-        lines = self._lines()
+        if self.sec == "contents" and prefix == "al|":
+            self._status("Contents entries are always left-aligned, with their page numbers on the right.")
+            return
         self._snap(force=True)
+        self.normalise_pictures()
+        lines = self._lines()
         for ln in lines:
+            if prefix in ("st|", "bl|", "lb|", "vg|") and self._is_pic_line(ln):
+                continue                    # a paragraph style never turns a picture into text
             a, b = f"{ln}.0", f"{ln}.end+1c"
             for tg in self.txt.tag_names():
                 if tg.startswith(prefix):
@@ -732,14 +1316,33 @@ class BookEditor:
             self._update_toolbar()
             return
         self.set_line("st|", style)
+        if style == "head":
+            # Like a word processor: a paragraph style replaces a font set on the whole paragraph (for
+            # example one kept from the source), so the heading uses the Titles & headings font from Layout.
+            # A font set on some words only stays.
+            t, cleared = self.txt, False
+            for ln in self._lines():
+                a, b = f"{ln}.0", f"{ln}.end"
+                runs = self._runs(a, b)
+                faces = {f.get("font") for x, f in runs if x.strip()}
+                if len(faces) == 1 and None not in faces:
+                    for tg in t.tag_names():
+                        if tg.startswith("ff|"):
+                            t.tag_remove(tg, a, b)
+                    cleared = True
+            if cleared:
+                self._after_format(f"{self._lines()[0]}.0", f"{self._lines()[-1]}.end+1c")
+                self._status("Heading: printed in the Titles & headings font chosen on the Layout tab.")
         if style == "item":
             for ln in self._lines():
+                if self._is_pic_line(ln):
+                    continue
                 if not any(tg.startswith("bl|") for tg in self.txt.tag_names(f"{ln}.end")):
                     self.txt.tag_add("bl|\u2022|0", f"{ln}.0", f"{ln}.end+1c")
 
     def indent(self, d):
         cur = next((int(x[3:]) for x in self.txt.tag_names("insert lineend") if x.startswith("in|")), 0)
-        n = max(0, min(cur + d, 8))
+        n = max(0, min(cur + d, 1 if self.sec == "contents" else 8))     # contents: an entry or a sub-entry
         self.set_line("in|", str(n) if n else "")
 
     def insert_break(self):
@@ -758,27 +1361,372 @@ class BookEditor:
         self._after_format("insert linestart", "insert lineend")
 
     # ------------------------------------------------------------ pictures
+    PIC = "bfpic"            # embedded pictures are named bfpic<key> (Tk may add "#2" to a second copy)
+    LINE_TAGS = ("st", "al", "in", "sp", "lb", "bl", "vg", "ob")
+
     def _thumb_at(self, index, key, block):
-        """Show a small copy of the picture at the start of its line in the text box."""
+        """Show a small copy of the picture at the start of its line in the text box. The small copy is only
+        for the screen (the book keeps the picture's own bytes); when it can't be made, a grey box stands in,
+        so the picture is never lost because it can't be shown."""
+        ph = None
         im = bf_pictures.thumbnail(block.image, 220, 130) if block.image else None
-        if im is None:
-            return
-        try:
-            ph = tk_photo(im)
-        except Exception:
-            return
+        if im is not None:
+            try:
+                ph = tk_photo(im)
+            except Exception:
+                ph = None
+        if ph is None:
+            ph = tk.PhotoImage(width=90, height=60)
+            ph.put("#C8C8C8", to=(0, 0, 90, 60))
+            ph.put("#8A8A8A", to=(0, 0, 90, 2))
+            ph.put("#8A8A8A", to=(0, 58, 90, 60))
         self.thumbs[key] = ph
-        self.txt.image_create(index, image=ph, padx=6, pady=4)
+        self.txt.image_create(index, image=ph, padx=6, pady=4, name=f"{self.PIC}{key}")
+
+    def _pic_key(self, name):
+        name = str(name).split("#")[0]
+        if name.startswith(self.PIC) and name[len(self.PIC):].isdigit():
+            key = int(name[len(self.PIC):])
+            if key in self.images and self.images[key] is not None and self.images[key].kind == "image":
+                return key
+        return None
+
+    def _pics(self, start="1.0", end="end"):
+        """[(index, key)] of the pictures shown between start and end."""
+        out = []
+        for _kind, name, idx in self.txt.dump(start, end, image=True):
+            key = self._pic_key(name)
+            if key is not None:
+                out.append((self.txt.index(idx), key))
+        return out
+
+    def _pic_index(self, key):
+        return next((idx for idx, k in self._pics() if k == key), None)
+
+    def _line_vals_tags(self, index):
+        """The paragraph-level tags (style, alignment, indent...) at index."""
+        return [tg for tg in self.txt.tag_names(index) if tg.split("|", 1)[0] in self.LINE_TAGS and "|" in tg]
 
     def _picture_line(self, ln):
         """(key, Block) of the picture on text line ln, or None."""
-        tags = self.txt.tag_names(f"{ln}.end")
-        if "st|image" not in tags:
+        pics = self._pics(f"{ln}.0", f"{ln}.end")
+        if not pics:
             return None
-        ob = next((tg[3:] for tg in tags if tg.startswith("ob|")), None)
-        if ob is None or not ob.isdigit() or int(ob) not in self.images:
+        key = pics[0][1]
+        return key, self.images[key]
+
+    def _is_pic_line(self, ln):
+        return bool(self._pics(f"{ln}.0", f"{ln}.end"))
+
+    def _label_range(self, idx):
+        """(start, end) of the label right after the picture at idx (its end is idx+1c when there's none)."""
+        t = self.txt
+        a = t.index(f"{idx}+1c")
+        r = t.tag_nextrange("pl", a, f"{a} lineend")
+        if r and t.compare(r[0], "==", a):
+            return a, t.index(r[1])
+        return a, a
+
+    def _text_tags(self, tags):
+        """Tags for a paragraph of ordinary text made from tags that may be a picture's."""
+        out = [tg for tg in tags if not tg.startswith(("ob|", "st|"))]
+        st = next((tg for tg in tags if tg.startswith("st|")), "st|para")
+        return out + ["st|para" if st in ("st|image", "st|scene") else st]
+
+    def normalise_pictures(self):
+        """Keep every picture on a line of its own, with its own label: text that ended up on a picture's line
+        (typed, pasted, a line joined onto it) is moved to a line of its own, a damaged label is written
+        again, and a label left behind by a deleted picture is removed. Nothing the user typed is lost."""
+        t = self.txt
+        if self.loading:
+            return False
+        changed = False
+        pics = self._pics()
+        for idx, key in reversed(pics):
+            ln = int(idx.split(".")[0])
+            pic_tags = self._line_vals_tags(idx)
+            la, lb = self._label_range(idx)
+            want = bf_edit.picture_label(self.images[key])
+            if t.get(la, lb) != want:
+                t.delete(la, lb)
+                t.insert(la, want, tuple(pic_tags + ["pl"]))
+                lb = t.index(f"{la}+{len(want)}c")
+                changed = True
+            if t.compare(lb, "<", f"{ln}.end"):            # something after the label: its own line
+                rest_tags = self._text_tags(self._line_vals_tags(lb))
+                t.insert(lb, "\n", tuple(pic_tags))
+                a, b = f"{ln + 1}.0", f"{ln + 1}.end+1c"
+                for tg in self._line_vals_tags(a) + self._line_vals_tags(f"{ln + 1}.end"):
+                    t.tag_remove(tg, a, b)
+                for tg in rest_tags:
+                    t.tag_add(tg, a, b)
+                changed = True
+            if t.compare(idx, ">", f"{ln}.0"):              # something before the picture: its own line
+                before = self._text_tags(self._line_vals_tags(f"{ln}.0"))
+                for tg in self._line_vals_tags(f"{ln}.0"):
+                    t.tag_remove(tg, f"{ln}.0", idx)
+                for tg in before:
+                    t.tag_add(tg, f"{ln}.0", idx)
+                t.insert(idx, "\n", tuple(before))
+                changed = True
+        # labels whose picture was deleted (e.g. only the small picture was selected and deleted)
+        attached = {self._label_range(i)[0] for i, _k in self._pics()}
+        ranges = t.tag_ranges("pl")
+        for a, b in reversed(list(zip(ranges[0::2], ranges[1::2]))):
+            a, b = t.index(a), t.index(b)
+            if a in attached:
+                continue
+            ln = int(a.split(".")[0])
+            t.delete(a, b)
+            if not t.get(f"{ln}.0", f"{ln}.end") and not self._is_pic_line(ln) and t.compare(f"{ln}.end", "<", "end-1c"):
+                t.delete(f"{ln}.0", f"{ln + 1}.0")
+            changed = True
+        if changed:
+            self.dirty = True
+            self.refresh()
+        return changed
+
+    # ---- keys, cut/copy/paste: pictures stay whole
+    def _new_line(self, ln, above):
+        """An empty paragraph above or below picture line ln; the cursor goes there."""
+        t = self.txt
+        if above:
+            t.insert(f"{ln}.0", "\n", ("st|para",))
+            t.mark_set("insert", f"{ln}.0")
+        else:
+            pic_tags = self._line_vals_tags(f"{ln}.0")
+            t.insert(f"{ln}.end", "\n", tuple(pic_tags))
+            a, b = f"{ln + 1}.0", f"{ln + 1}.end+1c"
+            for tg in self._line_vals_tags(a):
+                t.tag_remove(tg, a, b)
+            t.tag_add("st|para", a, b)
+            t.mark_set("insert", a)
+        self.dirty = True
+
+    def _hint(self):
+        self._status("A picture keeps a line of its own. Double-click it to change or remove it "
+                     "(or select its whole line and press Delete).")
+
+    def _guard_key(self, e):
+        """Keys that would type into a picture's line or join it to the next/previous line. Returns "break"
+        when the key has been handled here."""
+        t = self.txt
+        ks = e.keysym
+        if self.sec == "contents" and t.tag_ranges("sel") and not e.state & (0x4 | 0x8) and (
+                (e.char and e.char.isprintable()) or ks in ("BackSpace", "Delete", "Return", "KP_Enter")):
+            self._keep_marks()                  # typing over a selection: see _keep_marks
+        if self.sec == "contents" and not t.tag_ranges("sel") and not e.state & (0x4 | 0x8):
+            return self._guard_mark(e)
+        if t.tag_ranges("sel") or (e.state & (0x4 | 0x8) and ks not in ("BackSpace", "Delete")):
+            return None                     # selections and shortcuts (Ctrl, Alt/Command): see normalise_pictures
+        ln = int(t.index("insert").split(".")[0])
+        at_start = t.compare("insert", "==", f"{ln}.0")
+        typing = bool(e.char) and (e.char.isprintable() or e.char in "\t") and ks not in ("BackSpace", "Delete")
+        if self._is_pic_line(ln):
+            idx = self._pics(f"{ln}.0", f"{ln}.end")[0][0]
+            before_pic = t.compare("insert", "<=", idx)
+            if ks in ("Return", "KP_Enter") or typing:
+                self._snap(force=True)
+                self._new_line(ln, above=before_pic)
+                return "break" if ks in ("Return", "KP_Enter") else None
+            if ks == "BackSpace":
+                if before_pic or t.compare("insert", "==", f"{idx}+1c"):
+                    if ln > 1 and not t.get(f"{ln - 1}.0", f"{ln - 1}.end") and not self._is_pic_line(ln - 1):
+                        self._snap(force=True)
+                        t.delete(f"{ln - 1}.0", f"{ln}.0")          # an empty line above: just remove it
+                        self.dirty = True
+                    elif ln > 1:
+                        t.mark_set("insert", f"{ln - 1}.end")
+                    return "break"
+                self._hint()
+                return "break"
+            if ks == "Delete":
+                if before_pic:                                     # Delete right before the picture removes it
+                    self._snap(force=True)
+                    t.delete(f"{ln}.0", f"{ln + 1}.0" if t.compare(f"{ln}.end", "<", "end-1c") else f"{ln}.end")
+                    self.dirty = True
+                    self._status("Picture removed (Undo brings it back).")
+                    return "break"
+                if t.compare("insert", ">=", f"{ln}.end") and t.compare(f"{ln}.end", "<", "end-1c") and \
+                        not t.get(f"{ln + 1}.0", f"{ln + 1}.end") and not self._is_pic_line(ln + 1):
+                    self._snap(force=True)
+                    t.delete(f"{ln + 1}.0", f"{ln + 2}.0")          # an empty line below: just remove it
+                    self.dirty = True
+                    return "break"
+                self._hint()
+                return "break"
             return None
-        return int(ob), self.images[int(ob)]
+        if ks == "BackSpace" and at_start and ln > 1 and self._is_pic_line(ln - 1):
+            if not t.get(f"{ln}.0", f"{ln}.end") and t.compare(f"{ln}.end", "<", "end-1c"):
+                self._snap(force=True)
+                t.delete(f"{ln}.0", f"{ln + 1}.0")
+                t.mark_set("insert", f"{ln - 1}.end")
+                self.dirty = True
+            else:
+                self._hint()
+            return "break"
+        if ks == "Delete" and t.compare("insert", "==", f"{ln}.end") and self._is_pic_line(ln + 1):
+            if not t.get(f"{ln}.0", f"{ln}.end"):
+                self._snap(force=True)
+                t.delete(f"{ln}.0", f"{ln + 1}.0")
+                self.dirty = True
+            else:
+                self._hint()
+            return "break"
+        return None
+
+    def _mark_at(self, index):
+        return any(str(name) in self.marks for _k, name, _i in self.txt.dump(index, f"{index}+1c", window=True))
+
+    def _keep_marks(self):
+        """Contents: a selection within one entry's line never takes its page-number mark (or the line's end)
+        with it, so retyping an entry's words keeps it linked to its chapter."""
+        t = self.txt
+        try:
+            a, b = t.index("sel.first"), t.index("sel.last")
+        except tk.TclError:
+            return
+        la, lb = int(a.split(".")[0]), int(b.split(".")[0])
+        if not (la == lb or (lb == la + 1 and b == f"{lb}.0")):
+            return                                       # several lines: removing lines hides their entries
+        for _k, name, idx in t.dump(a, b, window=True):
+            if str(name) in self.marks:
+                t.tag_remove("sel", idx, b)
+                if t.compare("insert", ">", idx):
+                    t.mark_set("insert", idx)          # (Tk replaces a selection only around the cursor)
+                break
+
+    def _guard_mark(self, e):
+        """Contents: keys next to an entry's page-number mark work on the entry's words, never on the mark."""
+        t, ks = self.txt, e.keysym
+        typing = bool(e.char) and e.char.isprintable() and ks not in ("BackSpace", "Delete")
+        if t.compare("insert", ">", "insert linestart") and self._mark_at("insert-1c") and (typing or ks == "BackSpace"):
+            t.mark_set("insert", "insert-1c")                 # the words are before the mark
+            if ks == "BackSpace":
+                if t.compare("insert", ">", "insert linestart"):
+                    t.delete("insert-1c")
+                    self.dirty = True
+                return "break"
+            return None
+        if ks == "Delete" and self._mark_at("insert"):
+            self._status("The page number belongs to its entry: to take an entry off the contents page, delete "
+                         "its whole line.")
+            return "break"
+        return None
+
+    def _clip_record(self, _e=None):
+        """Copy / cut: remember the pictures in the selection, so pasting brings them back as pictures
+        (the system clipboard only holds text)."""
+        t = self.txt
+        self.clip = None
+        try:
+            a, b = t.index("sel.first"), t.index("sel.last")
+        except tk.TclError:
+            return None
+        if not self._pics(a, b):
+            return None
+        items, pos = [], a
+        for idx, key in self._pics(a, b):
+            if t.compare(pos, "<", idx):
+                items.append(("text", self._raw_runs(pos, idx)))
+            items.append(("pic", self.images[key], self._line_vals_tags(idx)))
+            pos = self._label_range(idx)[1]
+        if t.compare(pos, "<", b):
+            items.append(("text", self._raw_runs(pos, b)))
+        self.clip = (t.get(a, b), items)
+        return None
+
+    def _raw_runs(self, a, b):
+        """[(text, tags)] between a and b, all tags kept (for pasting them back exactly)."""
+        t = self.txt
+        cuts = {t.index(a), t.index(b)}
+        for _k, _v, idx in t.dump(a, b, tag=True):
+            cuts.add(t.index(idx))
+        cuts = sorted(cuts, key=lambda x: tuple(int(v) for v in x.split(".")))
+        out = []
+        for x, y in zip(cuts, cuts[1:]):
+            text = t.get(x, y)
+            tags = tuple(tg for tg in t.tag_names(x) if tg not in ("sel", "pl") and not tg.startswith("df|"))
+            if text and "pl" not in t.tag_names(x):
+                out.append((text, tags))
+        return out
+
+    def _paste(self, _e=None):
+        t = self.txt
+        self._snap(force=True)
+        try:
+            data = t.clipboard_get()
+        except tk.TclError:
+            data = None
+        if self.sec == "contents":
+            self._keep_marks()
+        try:                                               # a selection is replaced by what is pasted
+            a = t.index("sel.first")
+            t.delete("sel.first", "sel.last")
+            t.mark_set("insert", a)
+        except tk.TclError:
+            pass
+        ln = int(t.index("insert").split(".")[0])
+        if self._is_pic_line(ln):                         # never paste into a picture's line
+            idx = self._pics(f"{ln}.0", f"{ln}.end")[0][0]
+            self._new_line(ln, above=t.compare("insert", "<=", idx))
+        clip = getattr(self, "clip", None)
+        if not (clip and data is not None and data == clip[0]):
+            self.after_edit()
+            return None                                     # ordinary text: Tk pastes it
+        broke = False                                       # a line break was just put after a picture
+        for item in clip[1]:
+            if item[0] == "text":
+                for text, tags in item[1]:
+                    if broke and text.startswith("\n"):
+                        text = text[1:]
+                    broke = False
+                    if text:
+                        t.insert("insert", text, tags)
+                continue
+            _k, block, tags = item
+            if t.compare("insert", ">", "insert linestart"):
+                t.insert("insert", "\n", tuple(self._line_vals_tags("insert-1c")))
+            key = max(self.images, default=-1) + 1
+            self.images[key] = dataclasses.replace(block)
+            tags = [tg for tg in tags if not tg.startswith("ob|")] + [f"ob|{key}"]
+            start = t.index("insert")
+            label = bf_edit.picture_label(block)
+            t.insert("insert", label, tuple(tags + ["pl"]))
+            self._thumb_at(start, key, self.images[key])
+            for tg in tags:
+                t.tag_add(tg, start, f"{start}+1c")
+            if t.compare("insert", "<", "insert lineend"):
+                t.insert("insert", "\n", tuple(tags))
+                t.mark_set("insert", "insert linestart")
+                broke = True
+        self.dirty = True
+        self.after_edit()
+        return "break"
+
+    def after_edit(self):
+        """After typing, pasting or replacing: keep pictures whole (see normalise_pictures)."""
+        self.txt.after_idle(lambda: (self.normalise_pictures(), self._update_toolbar()))
+
+    def _set_picture(self, ln, key, block):
+        """Replace the picture on line ln (its label and small copy follow)."""
+        t = self.txt
+        idx = self._pic_index(key)
+        if idx is not None:                 # a picture already in the text: tidy its line first, then find it
+            self.normalise_pictures()
+            idx = self._pic_index(key)
+        if idx is not None:
+            ln = int(idx.split(".")[0])
+            tags = self._line_vals_tags(idx)
+        else:
+            tags = [tg for tg in t.tag_names(f"{ln}.end") if not tg.startswith("df|") and tg != "pl"]
+        self.images[key] = block
+        t.delete(f"{ln}.0", f"{ln}.end")
+        t.insert(f"{ln}.0", bf_edit.picture_label(block), ("pl",))
+        self._thumb_at(f"{ln}.0", key, block)
+        for tg in tags:
+            t.tag_add(tg, f"{ln}.0", f"{ln}.end+1c")      # the small picture too, so it lines up the same way
+        self._after_format(f"{ln}.0", f"{ln}.end+1c")
 
     def _double_click(self, e):
         ln = int(self.txt.index(f"@{e.x},{e.y}").split(".")[0])
@@ -788,21 +1736,15 @@ class BookEditor:
             return "break"
         return None
 
-    def _set_picture(self, ln, key, block):
-        """Replace the picture on line ln (its label and small copy follow)."""
-        t = self.txt
-        tags = [tg for tg in t.tag_names(f"{ln}.end") if not tg.startswith("df|")]
-        self.images[key] = block
-        t.delete(f"{ln}.0", f"{ln}.end")
-        t.insert(f"{ln}.0", bf_edit.picture_label(block))
-        self._thumb_at(f"{ln}.0", key, block)
-        for tg in tags:
-            t.tag_add(tg, f"{ln}.0", f"{ln}.end+1c")      # the small picture too, so it lines up the same way
-        self._after_format(f"{ln}.0", f"{ln}.end+1c")
-
     def insert_picture(self):
-        if self.cur_obj is None:
+        if self.cur_obj is None and self.sec is None:
             self._status("Pick a chapter first.")
+            return
+        if self.sec is not None and not bf_matter.SECTIONS[self.sec][4]:
+            self._status("Pictures can go in chapters, the extra front page, the text before chapter 1 and the end "
+                         "pages - not on this page.")
+            return
+        if self._locked():
             return
         path = filedialog.askopenfilename(title="Insert picture", filetypes=bf_pictures.PICTURE_FILES,
                                           parent=self.txt.winfo_toplevel())
@@ -815,6 +1757,7 @@ class BookEditor:
             return
         self._snap(force=True)
         t = self.txt
+        self.normalise_pictures()
         ln = int(t.index("insert").split(".")[0])
         t.insert(f"{ln}.end", "\n")
         a, b = f"{ln + 1}.0", f"{ln + 1}.end+1c"
@@ -833,11 +1776,17 @@ class BookEditor:
         t = self.txt
         if ln is None:
             ln = int(t.index("insert").split(".")[0])
+        self.normalise_pictures()
         found = self._picture_line(ln)
         if not found:
             self._status("Click a picture first (or use Insert picture...).")
             return
         key, block = found
+
+        def where():
+            """The picture's line now (text may have moved while the window was open), or None."""
+            idx = self._pic_index(key)
+            return int(idx.split(".")[0]) if idx is not None else None
         app = self.app
         S = lambda n: f"edit.{n}"                            # noqa: E731  (the Edit step's colours)
         w = tk.Toplevel(t)
@@ -929,10 +1878,15 @@ class BookEditor:
             upd()
 
         def remove():
-            self._snap(force=True)
             w.destroy()
-            t.delete(f"{ln}.0", f"{ln}.end+1c")
-            self._after_format(f"{max(1, ln - 1)}.0", f"{ln}.0")
+            ln = where()
+            if ln is None:
+                return
+            self._snap(force=True)
+            last = not t.compare(f"{ln}.end", "<", "end-1c")
+            t.delete(f"{ln - 1}.end" if last and ln > 1 else f"{ln}.0", f"{ln}.end" if last else f"{ln}.end+1c")
+            self._after_format(f"{max(1, ln - 1)}.0", f"{max(1, ln - 1)}.end+1c")
+            self._status("Picture removed (Undo brings it back).")
 
         def ok():
             try:
@@ -943,6 +1897,10 @@ class BookEditor:
             al = next(k for k, n in bf_pictures.ALIGNS if n == align.get())
             new = dataclasses.replace(state["block"], img_width=0 if auto.get() else pct, img_place=code)
             w.destroy()
+            ln = where()
+            if ln is None:
+                self._status("That picture isn't in the text any more, so nothing was changed.")
+                return
             self._snap(force=True)
             for tg in t.tag_names(f"{ln}.end"):
                 if tg.startswith("al|"):
@@ -980,13 +1938,23 @@ class BookEditor:
         msg.grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
         t = self.txt
 
+        def search(pat, start):
+            """The next match at or after start that isn't inside a picture's label, or ''."""
+            while True:
+                pos = t.search(pat, start, stopindex="end", nocase=not case.get())
+                if not pos:
+                    return ""
+                if not any("pl" in t.tag_names(f"{pos}+{i}c") for i in range(len(pat))):
+                    return pos
+                start = f"{pos}+1c"
+
         def find(start=None):
             pat = fv.get()
             if not pat:
                 return None
-            pos = t.search(pat, start or "insert", stopindex="end", nocase=not case.get())
+            pos = search(pat, start or "insert")
             if not pos:
-                pos = t.search(pat, "1.0", stopindex="end", nocase=not case.get())
+                pos = search(pat, "1.0")
             if not pos:
                 msg.configure(text="Not found in this chapter.")
                 return None
@@ -1007,6 +1975,9 @@ class BookEditor:
             if t.get(a, b).lower() != fv.get().lower() and fv.get():
                 find()
                 return
+            if any("pl" in t.tag_names(f"{a}+{i}c") for i in range(len(t.get(a, b)))):
+                find()                      # a picture's label is not text: never replaced
+                return
             self._snap(force=True)
             tags = tuple(x for x in t.tag_names(a) if x != "sel")
             t.delete(a, b)
@@ -1020,7 +1991,7 @@ class BookEditor:
             self._snap(force=True)
             n, pos = 0, "1.0"
             while True:
-                pos = t.search(fv.get(), pos, stopindex="end", nocase=not case.get())
+                pos = search(fv.get(), pos)
                 if not pos:
                     break
                 tags = tuple(x for x in t.tag_names(pos) if x != "sel")
@@ -1038,11 +2009,11 @@ class BookEditor:
 
     # ------------------------------------------------------------ preview link
     def preview_here(self):
-        if self.cur_obj is None:
+        if self.cur_obj is None and self.sec is None:
             return
         if not self.commit():
             return
-        self.app._preview_target = id(self.cur_obj)
+        self.app._preview_target = id(self.cur_obj) if self.cur_obj is not None else None
         self.app.preview_book()
 
 
@@ -1159,7 +2130,9 @@ class PreviewWindow:
         self.info.configure(text=f"\u201c{result['title']}\u201d typeset with your current settings at "
                                  f"{time.strftime('%H:%M')} \u2014 exactly as the printing files will be. "
                                  "Nothing has been saved yet." +
-                                 (" Printing sheets show how pages are arranged and folded." if self.sheets else ""))
+                                 (" Printing sheets show how pages are arranged and folded." if self.sheets else "") +
+                                 ("  WARNING: " + empty_pages_note(result["empty_pages"])
+                                  if result.get("empty_pages") else ""))
         self.i = min(keep, len(self.items) - 1)
         self.w.title(f"Preview \u2014 {result['title']}")
         self.w.lift()
@@ -1310,13 +2283,14 @@ class ContentsEditor:
         self.app = app
         self.auto = contents_entries(app.book, app.collect())
         self.rows = contents_rows(self.auto, app.book.toc)
+        self.book_ref, self.orig = app.book, list(app.book.toc or [])     # what Cancel goes back to
         w = self.w = tk.Toplevel(app)
         w.title("Edit contents")
         w.configure(background=th.CARD)
         w.transient(app)
         w.geometry("820x560")
         w.minsize(640, 400)
-        w.protocol("WM_DELETE_WINDOW", self.close)
+        w.protocol("WM_DELETE_WINDOW", self.close_asking)
         S = lambda n: f"{self.K}.{n}"                     # noqa: E731
         fr = ttk.Frame(w, padding=12, style=S("Card.TFrame"))
         fr.pack(fill="both", expand=True)
@@ -1324,8 +2298,10 @@ class ContentsEditor:
         fr.rowconfigure(1, weight=1)
         ttk.Label(fr, style=S("CardHint.TLabel"), wraplength=760, justify="left",
                   text="Change what the contents page lists. Double-click an entry to rename it, or its page "
-                       "number to type your own. Page numbers you don't type are worked out from the finished "
-                       "layout every time the book is made, so they stay right after other changes."
+                       "number to type your own. A typed number is only what the contents prints beside the entry: "
+                       "the chapter itself stays where it is in the book. Page numbers you don't type are worked "
+                       "out from the finished layout every time the book is made, so they stay right after other "
+                       "changes. Preview and Make the book use these changes even while this window is open."
                   ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         box = ttk.Frame(fr, style=S("Card.TFrame"))
         box.grid(row=1, column=0, sticky="nsew")
@@ -1352,11 +2328,15 @@ class ContentsEditor:
             ttk.Button(side, text=text, style=S("TButton"), command=fn).pack(fill="x", pady=2)
         bot = ttk.Frame(fr, style=S("Card.TFrame"))
         bot.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        for text, fn in (("OK", self.ok), ("Cancel", self.close), ("Preview book", self.preview)):
+        for text, fn in (("OK", self.ok), ("Cancel", self.cancel), ("Preview book", self.preview)):
             ttk.Button(bot, text=text, style=S("TButton"), command=fn).pack(side="right", padx=2)
         self.info = ttk.Label(bot, style=S("CardHint.TLabel"), wraplength=380, justify="left")
         self.info.pack(side="left", fill="x", expand=True)
         self.fill()
+        ed = getattr(app, "editor", None)
+        if ed is not None:
+            app.contents_win = self
+            ed.contents_window(True)          # Specific Text Edit waits while the contents are changed here
 
     def alive(self):
         try:
@@ -1371,6 +2351,8 @@ class ContentsEditor:
         if book is None:
             self.close()
             return
+        if book is not self.book_ref:                     # another book now (read again, project opened)
+            self.book_ref, self.orig = book, list(book.toc or [])
         pending = rows_to_edits(self.rows, self.auto)
         self.auto = contents_entries(book, self.app.collect())
         known = {a["uid"] for a in self.auto}
@@ -1392,7 +2374,7 @@ class ContentsEditor:
             tags = []
             if not r["show"]:
                 tags.append("hidden")
-            if r["custom"] or r["title"] or r["page"]:
+            if r["custom"] or r["title"] or r["page"] or r.get("markup") or r.get("space"):
                 tags.append("edited")
             tv.insert("", "end", iid=str(i), values=("\u2713" if r["show"] else "\u2014", text, self.page_text(r)),
                       tags=tuple(tags))
@@ -1437,8 +2419,9 @@ class ContentsEditor:
         if i is None:
             return
         r = self.rows[i]
-        new = self.app.ask_text(self.w, "Page number", "Page number to show for this entry. Leave it empty to "
-                                "use the number worked out from the layout.", r["page"])
+        new = self.app.ask_text(self.w, "Page number", "Page number to print beside this entry in the contents "
+                                "(it doesn't move the chapter). Leave it empty to use the number worked out from "
+                                "the layout.", r["page"])
         if new is not None:
             r["page"] = new.strip()
             self.fill(i)
@@ -1492,12 +2475,30 @@ class ContentsEditor:
     def reset(self):
         if messagebox.askyesno("Undo all changes", "Go back to the automatic contents?", parent=self.w):
             self.rows = contents_rows(self.auto, [])
+            self.undo_all = True                  # (left-out chapters' changes go too)
             self.fill()
 
-    def apply(self):
+    def edits(self):
+        """What the window's entries mean for the book (Book.toc): the entries shown, plus those of chapters left
+        out for now (unticked on the Chapters step), which come back with their changes when put back."""
         new = rows_to_edits(self.rows, self.auto)
-        if new != (self.app.book.toc or []):
-            self.app.book.toc = new
+        book = self.app.book
+        if getattr(self, "undo_all", False) or book is None:
+            return new
+        return keep_left_out(new, book.toc, book)
+
+    def pending(self):
+        """True when the window holds changes the book doesn't have yet."""
+        book = self.app.book
+        return book is not None and book is self.book_ref and self.edits() != (book.toc or [])
+
+    def apply(self):
+        book = self.app.book
+        if book is None or book is not self.book_ref:
+            return
+        new = self.edits()
+        if new != (book.toc or []):
+            book.toc = new
             self.app.edited = True
             self.app.unsaved = True
 
@@ -1509,9 +2510,36 @@ class ContentsEditor:
         self.apply()
         self.close()
 
+    def cancel(self):
+        """Back to the contents as they were when the window was opened (changes already used by a preview
+        are undone too)."""
+        book = self.app.book
+        if book is not None and book is self.book_ref and (book.toc or []) != self.orig:
+            book.toc = list(self.orig)
+            self.app.unsaved = True
+        self.close()
+
+    def close_asking(self):
+        """The window's close button: never throw typed changes away without asking."""
+        book = self.app.book
+        changed = self.pending() or (book is not None and book is self.book_ref and (book.toc or []) != self.orig)
+        if changed:
+            ans = messagebox.askyesnocancel("Edit contents", "Keep the changes you made to the contents?",
+                                            parent=self.w)
+            if ans is None:
+                return
+            if not ans:
+                self.cancel()
+                return
+            self.apply()
+        self.close()
+
     def close(self):
         self.app.contents_win = None
         self.w.destroy()
+        ed = getattr(self.app, "editor", None)
+        if ed is not None:
+            ed.contents_window(False)        # Specific Text Edit shows the contents as they are now
 
 
 def app_dir():
@@ -1537,6 +2565,8 @@ class App(tk.Tk):
         self.__dict__["_unsaved"] = value
         if value:
             self.__dict__["book_rev"] = self.__dict__.get("book_rev", 0) + 1
+            if "vars" in self.__dict__:
+                self._setting_changed()        # an open preview may not show this edit yet
 
     def __init__(self):
         super().__init__()
@@ -1597,6 +2627,7 @@ class App(tk.Tk):
             else:
                 v = tk.StringVar(value=d)
             self.vars[key] = v
+            v.trace_add("write", lambda *a: self._setting_changed())
         return self.vars[key]
 
     def S(self, name):
@@ -1719,6 +2750,60 @@ class App(tk.Tk):
             if update and self.book is not None:
                 self.after(60, self._auto_preview)
 
+    # Settings that don't change what the preview shows (where files go, which other formats are made...)
+    PREVIEW_IGNORE = {"out_dir", "open_when_done", "fmt_pdf", "fmt_epub", "fmt_docx", "fmt_html", "fmt_txt",
+                      "imp_files", "check_updates", "dark_mode", "sheet_unit", "sheet_w", "sheet_h"}
+
+    def _preview_key(self, s):
+        """The settings as the preview sees them (the paper as its size in points, whatever unit it's typed in)."""
+        out = {k: v for k, v in s.items() if k not in self.PREVIEW_IGNORE}
+        try:
+            out["_sheet"] = tuple(round(x, 3) for x in bf_impose.sheet_points(s))
+        except Exception:
+            out["_sheet"] = (s.get("sheet_w"), s.get("sheet_h"), s.get("sheet_unit"))
+        return out
+
+    def _setting_changed(self):
+        """A setting was changed: when a preview is open, check (shortly, once typing stops) whether it still
+        shows the book as it will print."""
+        if getattr(self, "_loading_settings", False):
+            return
+        pw = getattr(self, "preview_win", None)
+        if pw is None or not pw.alive():
+            return
+        job = getattr(self, "_stale_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except (tk.TclError, ValueError):
+                pass
+        self._stale_job = self.after(500, self._check_preview_current)
+
+    def _check_preview_current(self):
+        """Mark an open preview "Out of date" when the settings changed after it was made, so a font (or any
+        other) change never looks as if it did nothing."""
+        self._stale_job = None
+        pw = getattr(self, "preview_win", None)
+        snap = getattr(self, "_preview_snapshot", None)
+        if pw is None or not pw.alive() or pw.result is None or snap is None or self.busy:
+            return False
+        if self.__dict__.get("book_rev", 0) != getattr(self, "_preview_rev", None):
+            what = "The book was changed"
+        elif self._preview_key(self.collect()) != self._preview_key(snap):
+            what = "Settings were changed"
+        else:
+            return False
+        pw.mark_stale(what + " after this preview was made, so these pages no longer show the book as it will "
+                      "print. Click \u201cUpdate preview\u201d (or Preview book) to see your changes.")
+        return True
+
+    def _preview_failed(self, why, always=False):
+        """A preview couldn't be made: an open preview window must not keep showing older pages as if they were
+        the result."""
+        pw = getattr(self, "preview_win", None)
+        if (always or self.mode == "preview") and pw is not None and pw.alive():
+            pw.mark_stale(why)
+
     def _auto_preview(self):
         pw = getattr(self, "preview_win", None)
         if pw is not None and pw.alive() and not self.busy and self.book is not None:
@@ -1742,15 +2827,20 @@ class App(tk.Tk):
                 custom_page_inches(self._raw("custom_w"), self._raw("custom_h"))
             page_size_inches(s)
         except ValueError as e:
-            return f"{e}\n\n(Layout step, Page size.)"
+            return f"{e}\n\n(Layout step, Book page size.)"
         if s.get("fmt_impose"):
             try:
                 self._placement_values()
             except ValueError as e:
                 return f"{e}\n\n(Output step, Page placement.)"
+            if s.get("sig_format", "").startswith("Custom") and s.get("imp_layout") not in bf_impose.WACKY:
+                try:
+                    bf_impose.custom_sizes(s)
+                except ValueError as e:
+                    return f"{e}\n\n(Output step, Binding layout.)"
         if s.get("sheet_size") == "Custom" and s.get("fmt_impose"):
             if getattr(self, "_sheet_error", ""):
-                return f"The custom paper size can't be used yet: {self._sheet_error}\n\n(Output step, Printer & paper.)"
+                return f"The custom printer paper size can't be used yet: {self._sheet_error}\n\n(Output step, Printer & paper.)"
             try:
                 bf_impose.sheet_points(s)
             except ValueError as e:
@@ -1767,6 +2857,7 @@ class App(tk.Tk):
         t.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.texts[key] = t
+        t.bind("<KeyRelease>", lambda e: self._setting_changed(), add="+")
         return f
 
     @staticmethod
@@ -1884,8 +2975,14 @@ class App(tk.Tk):
     def show_tab(self, i):
         prev = getattr(self, "cur_page", None)
         if prev is not None and prev != i and th.TABS[prev][0] == "edit":
-            self._commit_editor()
+            if not self._commit_editor():
+                # the edits couldn't be applied: stay with them in Specific Text Edit (they are still there)
+                self.shelf.current = prev
+                self.shelf.draw()
+                return
         self.cur_page = i
+        if th.TABS[i][0] == "src":
+            self.update_source_note()
         self.pages[i].tkraise()
         # Steps that show what was read from the source (title/author, contents, chapters, text) read it first
         if th.TABS[i][0] in ("info", "front", "chap", "edit") and not self.busy:
@@ -1939,6 +3036,13 @@ class App(tk.Tk):
                            "you can edit and restyle.", style=self.S("CardHint.TLabel"), wraplength=560,
                   justify="left").pack(side="left", padx=4)
         self._trace_once("pdf_mode", self._pdf_mode_changed)
+        rr = ttk.Frame(g, style=self.S("Card.TFrame"))
+        rr.grid(row=4, column=0, columnspan=3, sticky="we", padx=6, pady=(8, 2))
+        self.reread_btn = ttk.Button(rr, text="\u21bb  Re-read source", style=self.S("TButton"),
+                                     command=self.reread_source)
+        self.reread_btn.pack(side="left")
+        self.source_note = ttk.Label(rr, style=self.S("CardHint.TLabel"), wraplength=640, justify="left")
+        self.source_note.pack(side="left", padx=10)
 
         t.rowconfigure(1, weight=1)
         pg = ttk.LabelFrame(t, text="Paste or type text  (mark chapters with \"Chapter 1\" lines "
@@ -1976,6 +3080,10 @@ class App(tk.Tk):
         nxt.grid(row=4, column=0, columnspan=2, sticky="e", padx=6, pady=(4, 8))
         ttk.Button(nxt, text="Next: book info  \u2192", style=self.S("TButton"),
                    command=lambda: self.shelf.select(th.tab_index("info"))).pack(side="right")
+        try:
+            self.texts["paste_text"].bind("<KeyRelease>", lambda e: self._note_soon(), add="+")
+        except (KeyError, AttributeError):
+            pass
 
     # ------------------------------------------------------------ Chapters step
     SPLIT_LABELS = [
@@ -2091,6 +3199,202 @@ class App(tk.Tk):
         self.shelf.select(self.edit_tab())
         self.editor.select(idx)
 
+    # ------------------------------------------------------------ front & back pages (bf_matter)
+    # A page edited in Specific Text Edit is kept with the book (Book.matter); one that isn't is made from the
+    # settings exactly as before. The plain boxes for the dedication, extra front page and back-cover text
+    # show an edited page's words but can't be typed in (the formatted page is what prints).
+    MATTER_BOXES = {"dedication": "dedication", "note": "note_text", "blurb": "blurb"}
+    FRONT_BACK_BUTTONS = {"title": "Title page", "bookplate": "Bookplate", "work_info": "Work info",
+                          "summary": "Summary", "work_notes": "Author's notes", "contents": "Contents",
+                          "front_text": "Text before chapter 1",
+                          "the_end": "THE END", "end_matter": "End pages", "notes_page": "Notes pages"}
+    SECTION_HINTS = {
+        "title": "The words are the Title, Subtitle, Author and credit lines on Book info (changing one here "
+                 "changes it there). Position: Layout tab, Titles.",
+        "bookplate": "Its words are the Bookplate wording (Front & back), which also says where it prints. A "
+                     "print page: in the print PDF and Word, not in the EPUB, web page or text file.",
+        "dedication": "Printed on a page of its own after the title page.",
+        "note": "Heading and place (before or after the contents): Book info. Pictures can go here.",
+        "work_info": "Read from the source (reading it again brings back the original). Printed or not: "
+                     "Front & back.",
+        "summary": "Read from the source (reading it again brings back the original). Printed or not: Front & back.",
+        "work_notes": "Notes for the whole work, read from the source (a chapter's own notes are in that "
+                      "chapter). Printed or not: Front & back.",
+        "contents": "One line per entry: a new line adds an entry, removing a line hides one. Move up / down "
+                    "move an entry, Indent + makes a sub-entry. Click a page number to type your own.",
+        "front_text": "Text before the first chapter, read from the source (\u201cKeep text before the first "
+                      "chapter\u201d, Source tab), or typed here. Printed after the contents. Pictures can go here.",
+        "the_end": "Printed after the last chapter when \u201cPrint THE END\u201d is on (Front & back).",
+        "end_matter": "Pages after the last chapter and THE END: an afterword, thanks, notes... Printed when it "
+                      "has text. Pictures can go here.",
+        "notes_page": "Heading and a short text above the lines of the lined Notes pages (how many: Front & back). "
+                      "Pages for printing: not in the EPUB, Word, web page or text file.",
+        "blurb": "The text on the back cover (Output tab, Cover).",
+    }
+
+    def matter_settings(self):
+        """(the book with the Book info applied, the settings), as the pages are made from them."""
+        s = self.collect()
+        b = copy.copy(self.book)
+        apply_info(b, s)
+        return b, s
+
+    def section_blocks(self, key):
+        b, s = self.matter_settings()
+        return bf_matter.section_blocks(b, s, key)
+
+    def section_heading(self, key):
+        if self.book is None:
+            return ""
+        b, s = self.matter_settings()
+        return bf_matter.section_heading(b, s, key)
+
+    def section_edited(self, key):
+        if self.book is None:
+            return False
+        if key == "contents":
+            return bool(self.book.toc) or bf_matter.is_edited(self.book, key)
+        return bf_matter.is_edited(self.book, key)
+
+    def section_off(self, key):
+        """Why a front/back page isn't printed with the current settings ('' when it is)."""
+        s = self.collect()
+        blocks = self.section_blocks(key) if self.book is not None else []
+        an = s.get("an_mode", "")
+        return {"title": "" if s["title_page"] else "Title page is off (Front & back)",
+                "bookplate": "" if s["bookplate"] != "None" else "the bookplate is set to None (Front & back)",
+                "dedication": "" if bf_matter.has_text(blocks) else "it has no text",
+                "note": "" if (bf_matter.has_text(blocks) or (s.get("note_title") or "").strip()) else "it has no text",
+                "work_info": "" if s.get("fic_info") != "Leave out" else "Work info is set to Leave out (Front & back)",
+                "summary": "" if s.get("fic_summary") != "Leave out" else "Story summary is set to Leave out "
+                                                                       "(Front & back)",
+                "work_notes": "" if not an.startswith("Leave") else "Author's notes are set to Leave out (Front & back)",
+                "contents": "" if s["toc"] else "the contents page is off (Front & back)",
+                "the_end": "" if s.get("the_end") else "\u201cPrint THE END\u201d is off (Front & back)",
+                "end_matter": "" if bf_matter.has_text(blocks) else "it has no text",
+                "front_text": "" if bf_matter.has_text(blocks) else "it has no text",
+                "notes_page": "" if int(s.get("notes_pages") or 0) > 0 else "there are 0 Notes pages (Front & back)",
+                }.get(key, "")
+
+    def section_label(self, key):
+        name = bf_matter.SECTIONS[key][0]
+        bits = []
+        if self.section_edited(key):
+            bits.append("changed")
+        off = self.section_off(key)
+        if key == "blurb":
+            bits.append("cover")
+        elif off:
+            bits.append("empty" if off == "it has no text" else "off")
+        return name + (f"   ({', '.join(bits)})" if bits else "")
+
+    def section_hint(self, key):
+        return self.SECTION_HINTS.get(key, "")
+
+    def set_section(self, key, blocks):
+        """Specific Text Edit changed a front/back page: keep it with the book, and its words in the settings
+        they belong to (see bf_matter)."""
+        info, s = self.matter_settings()
+        bf_matter.set_override(self.book, key, blocks)
+        if key == "title":
+            for kind, fld in bf_matter.TITLE_LINES:
+                b = next((x for x in blocks if x.kind == kind), None)
+                words = " ".join(plain(b.text or "").split()) if b is not None else ""
+                if words and words != (getattr(info, fld) or "").strip():
+                    self.var(fld).set(words)
+        elif key == "bookplate":
+            b = next((x for x in blocks if x.kind == "plate"), None)
+            words = " ".join(plain(b.text or "").split()) if b is not None else ""
+            if words and words != (s.get("bookplate_text") or "").strip():
+                self.var("bookplate_text").set(words)
+        elif key in self.MATTER_BOXES:
+            self._set_box(self.MATTER_BOXES[key], bf_matter.plain_text(blocks))
+        if bf_matter.SECTIONS[key][5]:
+            self.edited = True                 # read from the source: reading it again would replace this
+        self.unsaved = True
+        self.sync_matter_ui()
+
+    def set_section_heading(self, key, text):
+        if self.book is None:
+            return
+        if key == "note":
+            self.var("note_title").set(text)
+        elif key == "contents":
+            self.var("toc_title").set(text)
+        elif bf_matter.SECTIONS[key][2] is not None:
+            bf_matter.set_heading(self.book, key, text)
+            if bf_matter.SECTIONS[key][5]:
+                self.edited = True
+            self.unsaved = True
+        self.sync_matter_ui()
+
+    def clear_section(self, key):
+        """Back to automatic: the page is made from the settings (and the source) again."""
+        if self.book is None:
+            return
+        bf_matter.clear(self.book, key)
+        if key == "contents" and self.book.toc:
+            self.book.toc = []
+            self._refresh_contents_win()
+        self.unsaved = True
+        self.sync_matter_ui()
+
+    def edit_section(self, key):
+        """Open a front/back page in Specific Text Edit."""
+        if self.book is None or getattr(self.book, "fixed_pdf", ""):
+            messagebox.showinfo("Edit the page", "Pick a source first (Source step): the front and back pages are "
+                                "edited together with the book." if self.book is None else
+                                "This PDF's pages are printed as they are, so BookForge doesn't add pages to it.")
+            return
+        self.shelf.select(self.edit_tab())
+        if th.TABS[self.cur_page][0] == "edit":
+            self.editor.select_section(key)
+
+    def _set_box(self, key, text):
+        box = self.texts.get(key)
+        if box is None or box.get("1.0", "end-1c") == text:
+            return
+        was = str(box.cget("state"))
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        box.insert("1.0", text)
+        box.configure(state=was)
+
+    def sync_matter_ui(self):
+        """The plain boxes and the Front & back list follow the pages edited in Specific Text Edit."""
+        book = self.book
+        for key, box in self.MATTER_BOXES.items():
+            t = self.texts.get(box)
+            if t is None:
+                continue
+            ov = bf_matter.override(book, key) if book is not None else None
+            if ov is not None:
+                self._set_box(box, bf_matter.plain_text(ov))
+            try:
+                t.configure(state="disabled" if ov is not None else "normal")
+            except tk.TclError:
+                pass
+            lab = self.__dict__.get("matter_notes", {}).get(key)
+            if lab is not None:
+                lab.configure(text="Formatted in Specific Text Edit, so it is changed there (Back to automatic "
+                                   "there lets you type it here again)." if ov is not None else
+                              "Plain text. For bold, italics, fonts, sizes or alignment use Edit with formatting.")
+        for key, btn in self.__dict__.get("matter_states", {}).items():
+            try:
+                btn.configure(text=self.FRONT_BACK_BUTTONS[key] + ("  (changed)" if self.section_edited(key) else ""))
+            except tk.TclError:
+                pass
+
+    def contents_changed_in_editor(self):
+        """Specific Text Edit changed the contents: an open Edit contents window shows it too."""
+        cw = self.contents_win
+        if cw is not None and cw.alive() and self.book is cw.book_ref:
+            cw.auto = contents_entries(self.book, self.collect())
+            cw.rows = contents_rows(cw.auto, self.book.toc)
+            cw.orig = list(self.book.toc or [])
+            cw.fill(cw._sel())
+        self.sync_matter_ui()
+
     def save_project_dialog(self):
         if not self._commit_editor():
             return False
@@ -2101,6 +3405,11 @@ class App(tk.Tk):
         p = filedialog.asksaveasfilename(title="Save project", defaultextension=".bookforge", initialfile=base + ".bookforge",
                                          filetypes=[("BookForge project", "*.bookforge")])
         if not p:
+            return False
+        if not_the_source(p, self.collect()) != p:
+            messagebox.showerror("Save project", "That file is the book's source, so saving the project there "
+                                                 "would replace it. The source is never changed by BookForge: "
+                                                 "save the project under another name.")
             return False
         self._embed_cover_art()
         try:
@@ -2131,7 +3440,7 @@ class App(tk.Tk):
             return
         settings.pop("dark_mode", None)
         for k in ("blank_pages_start", "blank_pages_end",     # projects made before these existed: none
-                  "imp_offset_x", "imp_offset_y"):
+                  "imp_offset_x", "imp_offset_y") + TITLE_LAYOUT_KEYS:  # (titles: where they always printed)
             settings.setdefault(k, DEFAULTS[k])
         self.apply(settings)
         self._mode_changed()
@@ -2141,6 +3450,7 @@ class App(tk.Tk):
         self.book_sig = self.source_sig(self.collect())
         self.fill_list()
         self.editor.reset()
+        self.sync_matter_ui()
         self.shelf.select(self.edit_tab())
         self._book_switched(f"Another project was opened ({os.path.basename(p)}). The preview is being made "
                             "again for it\u2026")
@@ -2155,20 +3465,35 @@ class App(tk.Tk):
         self.entry(g, 3, "Extra credit line", "credit", 60)
         ttk.Label(g, text='e.g. "Translated by Edgar Taylor"  or  "Illustrated by ..."',
                   style=self.S("CardHint.TLabel")).grid(row=4, column=1, sticky="w", padx=6)
+        self.matter_notes, self.matter_states = {}, {}
         d = self.group(t, "Dedication page (optional)", row=1, column=0, columnspan=2)
         self.textbox(d, "dedication", height=3).grid(row=0, column=0, columnspan=2, sticky="nsew")
         d.columnconfigure(0, weight=1)
+        self._matter_row(d, 1, "dedication")
         n = self.group(t, "Extra front page: introduction, about the author, notes... (optional)",
                        row=2, column=0, columnspan=2)
         self.entry(n, 0, "Heading", "note_title", 50)
         self.combo(n, 1, "Place it", "note_place", ["After contents", "Before contents"])
         self.textbox(n, "note_text", height=7).grid(row=2, column=0, columnspan=2, sticky="nsew", pady=4)
+        self._matter_row(n, 3, "note")
         t.rowconfigure(2, weight=1)
 
+    def _matter_row(self, parent, row, key):
+        """Under a plain text box: Edit with formatting... (Specific Text Edit) and what the box is now."""
+        f = ttk.Frame(parent, style=self.S("Card.TFrame"))
+        f.grid(row=row, column=0, columnspan=2, sticky="we", pady=(2, 0))
+        f.columnconfigure(1, weight=1)
+        ttk.Button(f, text="Edit with formatting...", style=self.S("TButton"),
+                   command=lambda: self.edit_section(key)).grid(row=0, column=0, sticky="w")
+        lab = ttk.Label(f, style=self.S("CardHint.TLabel"), justify="left", wraplength=420)   # (then: the room it gets)
+        lab.grid(row=0, column=1, sticky="we", padx=8)
+        self.wrap_to_width(lab)
+        self.matter_notes[key] = lab
+
     def _tab_layout(self, t):
-        g = self.group(t, "Page & margins (inches)", row=0, column=0)
-        self.combo(g, 0, "Page size", "page_size", list(PAGE_SIZES))
-        self.spin(g, 1, "Custom width", "custom_w", 2, 17, 0.25, "used when size = Custom")
+        g = self.group(t, "Book page & margins (inches)", row=0, column=0)
+        self.combo(g, 0, "Book page size", "page_size", list(PAGE_SIZES))
+        self.spin(g, 1, "Custom width", "custom_w", 2, 17, 0.25, "used when Book page size = Custom")
         self.spin(g, 2, "Custom height", "custom_h", 2, 17, 0.25)
         self.spin(g, 3, "Top margin", "margin_top", 0.2, 3, 0.05)
         self.spin(g, 4, "Bottom margin", "margin_bottom", 0.2, 3, 0.05)
@@ -2215,7 +3540,8 @@ class App(tk.Tk):
         self.combo(c, 2, "Chapter title case", "title_case", ["As written", "Title Case", "UPPERCASE"])
         self.spin(c, 3, "Chapter title size (pt)", "title_size", 10, 60, 1)
         self.spin(c, 4, "Sub-heading size (pt)", "sub_size", 8, 40, 0.5)
-        self.spin(c, 5, "Drop chapter start down (in)", "chapter_sink", 0, 4, 0.25)
+        ttk.Label(c, text="Alignment and position of chapter titles: Titles, below.", style=self.S("CardHint.TLabel")
+                  ).grid(row=5, column=0, columnspan=2, sticky="w", padx=6, pady=2)
         self.check(c, 6, "Ornament under chapter titles", "ornament")
         self.check(c, 7, "Drop cap (large first letter) in each chapter", "drop_cap")
         self.spin(c, 8, "Drop cap height (lines)", "drop_cap_lines", 2, 5, 1)
@@ -2236,6 +3562,31 @@ class App(tk.Tk):
         self.check(n, 4, "Hide number on blank pages", "pn_hide_blank")
         self.check(n, 5, "Hide number on the title page", "pn_hide_title")
         self.check(n, 6, "Running headers (book title / chapter title)", "running_heads")
+
+        # Titles BookForge makes (not headings typed in the text): alignment and where they sit on the page
+        tg = self.group(t, "Titles: alignment & position", row=2, column=1)
+        self.combo(tg, 0, "Title page alignment", "tp_align", TITLE_ALIGNS, width=14)
+        self.spin(tg, 1, "Title page position", "tp_pos", 0, 90, 5, "%")
+        self.spin(tg, 2, "Book title size (pt)", "tp_title_size", 0, 144, 1, "0 = auto")
+        self.combo(tg, 3, "Chapter title alignment", "ch_align", TITLE_ALIGNS, width=14)
+        self.spin(tg, 4, "Drop chapter start down (in)", "chapter_sink", 0, 4, 0.25, "0 = top")
+        self.combo(tg, 5, "Part title alignment", "part_align", TITLE_ALIGNS, width=14)
+        self.spin(tg, 6, "Part title position", "part_pos", 0, 90, 5, "%")
+        self.spin(tg, 7, "Part title size (pt)", "part_size", 0, 144, 1, "0 = auto")
+        note = ttk.Label(tg, style=self.S("CardHint.TLabel"), justify="left", wraplength=420,
+                         text="Position % = how far down the text area the title starts (standard: title page 20, "
+                              "parts 30). Title page: title, "
+                              "subtitle, author and credit line move together (the bookplate stays centred). Chapter titles: the number line, title, subtitle and ornament, and "
+                              "the headings BookForge adds (Contents, Work info, Notes). Headings inside the text "
+                              "keep their own alignment from Specific Text Edit. Drop chapter start down: when the "
+                              "page has less room, the title goes only as low as still leaves room for the chapter's "
+                              "first lines (or its opening picture) below it. Fonts: Titles & headings font and "
+                              "Bold titles (Text); chapter title size: Chapters. Used by the PDFs, the Word document "
+                              "(same places on its pages), and the EPUB and web page (alignment, the sizes set here, "
+                              "and space above for positions: a screen has no fixed page). Cover title: Output tab, "
+                              "Cover.")
+        note.grid(row=8, column=0, columnspan=2, sticky="we", padx=6, pady=(6, 0))
+        self.wrap_to_width(note)
 
     def _tab_front(self, t):
         g = self.group(t, "Front of the book", row=0, column=0)
@@ -2268,9 +3619,22 @@ class App(tk.Tk):
         self.check(b, 0, "Print \"THE END\" after the last chapter", "the_end")
         self.spin(b, 1, "Lined \"Notes\" pages at the end", "notes_pages", 0, 20, 1)
         self._blank_pages_row(b, 2, "end", "Blank pages at end", "after everything else")
-        ttk.Label(t, text="Dedication and the extra front page are on the Book info tab.",
-                  style=self.S("PageHint.TLabel"), wraplength=320, justify="left").grid(
-            row=1, column=1, sticky="nw", padx=12, pady=12)
+        e = self.group(t, "Text & formatting of these pages", row=1, column=1)
+        hint = ttk.Label(e, style=self.S("CardHint.TLabel"), justify="left", wraplength=320,
+                         text="Opens the page in Specific Text Edit, to change its words, fonts, sizes, bold, "
+                              "italics, colours and alignment. A page you haven't changed there is made from the "
+                              "settings here and on Book info, as always. Dedication and the extra front page: "
+                              "Book info; back-cover text: Output.")
+        hint.grid(row=0, column=0, columnspan=2, sticky="we", padx=6, pady=(0, 6))
+        self.wrap_to_width(hint)
+        self.matter_states = {}
+        for n, key in enumerate(k for k in self.FRONT_BACK_BUTTONS):
+            b = ttk.Button(e, style=self.S("TButton"), command=lambda k=key: self.edit_section(k))
+            b.grid(row=1 + n // 2, column=n % 2, sticky="we", padx=4, pady=2)
+            self.matter_states[key] = b
+        e.columnconfigure(0, weight=1, uniform="pages")
+        e.columnconfigure(1, weight=1, uniform="pages")
+        self.sync_matter_ui()
 
     def _tab_output(self, t):
         g = self.group(t, "Save to", row=0, column=0, columnspan=2)
@@ -2295,7 +3659,8 @@ class App(tk.Tk):
         self.combo(b, 1, "Signature format", "sig_format", SIG_FORMATS, width=34)
         self.spin(b, 2, "Sheets per signature", "sig_sheets", 1, 40, 1, "standard signatures")
         self.entry(b, 3, "Custom signature sizes", "sig_custom", 24)
-        ttk.Label(b, text="sheets per signature, e.g. 4, 4, 6, 6", style=self.S("CardHint.TLabel")).grid(
+        ttk.Label(b, text="sheets per signature, in order, e.g. 4, 4, 6, 6 (only as many as the book needs)",
+                  style=self.S("CardHint.TLabel"), wraplength=200, justify="left").grid(
             row=4, column=1, sticky="w", padx=6)
         self.spin(b, 5, "Flyleafs (blank leaves each end)", "flyleafs", 0, 10, 1)
         self.entry(b, 6, "Page range", "imp_range", 24)
@@ -2306,7 +3671,7 @@ class App(tk.Tk):
                                                          "Both aggregated & per-signature files",
                                                          "Signature files only"], width=34)
         pr = self.group(t, "Printer & paper", row=2, column=1)
-        self.combo(pr, 0, "Paper size", "sheet_size", list(SHEETS))
+        self.combo(pr, 0, "Printer paper size", "sheet_size", list(SHEETS))
         self.paper_lbl = ttk.Label(pr, style=self.S("CardHint.TLabel"), wraplength=330, justify="left")
         self.paper_lbl.grid(row=1, column=1, sticky="we", padx=6)
         self.wrap_to_width(self.paper_lbl)
@@ -2316,13 +3681,13 @@ class App(tk.Tk):
                            state="readonly", width=16, style=self.S("TCombobox"))
         ucb.grid(row=2, column=1, sticky="w", padx=6, pady=3)
         ucb.bind("<<ComboboxSelected>>", lambda e: self._paper_unit_chosen())
-        # A custom size is only used when this is ticked (ticking it sets Paper size to Custom, and choosing
+        # A custom size is only used when this is ticked (ticking it sets Printer paper size to Custom, and choosing
         # Custom in the list ticks it); otherwise the boxes are greyed out and the chosen preset is used.
         self.custom_paper_on = tk.BooleanVar(value=False)
-        ttk.Checkbutton(pr, text="Use a custom paper size", variable=self.custom_paper_on,
+        ttk.Checkbutton(pr, text="Use a custom printer paper size", variable=self.custom_paper_on,
                         command=self._custom_paper_toggled, style=self.S("Card.TCheckbutton")).grid(
             row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 2))
-        self.lab(pr, 4, "Custom paper size")
+        self.lab(pr, 4, "Custom printer paper size")
         cf = ttk.Frame(pr, style=self.S("Card.TFrame"))
         cf.grid(row=4, column=1, sticky="w", padx=6, pady=3)
         self.sheet_w_text, self.sheet_h_text = tk.StringVar(), tk.StringVar()
@@ -2384,11 +3749,11 @@ class App(tk.Tk):
         self.spin(mk, 7, "Sewing stations", "sewing_count", 0, 12, 1)
         self.spin(mk, 8, "Tape width (pt)", "sewing_tape", 0, 144, 1, "0 = single holes")
         c = self.group(t, "Cover", row=1, column=1)
-        self.combo(c, 0, "Paper (sets spine width)", "paper", list(PAPERS))
+        self.combo(c, 0, "Paper weight (sets spine width)", "paper", list(PAPERS))
         self.spin(c, 1, "Spine width (inches)", "spine_width", 0, 4, 0.01, "0 = estimate it")
-        ttk.Label(c, text="For the best fit, measure the thickness of your printed pages and type it here.",
-                  style=self.S("CardHint.TLabel"), wraplength=250, justify="left").grid(
-            row=2, column=1, sticky="w", padx=6)
+        self.wrap_to_width(ttk.Label(c, text="For the best fit, measure the thickness of your printed pages and type "
+                                             "it here.", style=self.S("CardHint.TLabel"), wraplength=250,
+                                     justify="left")).grid(row=2, column=1, sticky="we", padx=6)
         self.cover_thumbs = {}
         for r, which in ((3, "front"), (4, "back")):
             ttk.Label(c, text=f"{which.capitalize()} cover picture", style=self.S("Card.TLabel")).grid(
@@ -2407,18 +3772,27 @@ class App(tk.Tk):
             self._trace_once(f"cover_{which}_image", lambda w=which: self._cover_thumb(w))
         self.combo(c, 5, "Pictures", "cover_image_fit", bf_pictures.COVER_FITS, width=34)
         self.check(c, 6, "Print the title and author over the front picture", "cover_text_over_art")
-        self.check(c, 7, "Also print the front picture as the first page of the book", "cover_art_in_book")
+        # the front cover's own title placement (the cover is laid out apart from the title page)
+        self.combo(c, 7, "Cover title alignment", "cover_align", COVER_ALIGNS, width=20)
+        self.spin(c, 8, "Cover title position", "cover_pos", 5, 85, 1, "% down")
+        self.check(c, 9, "Also print the front picture as the first page of the book", "cover_art_in_book")
         pv = ttk.Frame(c, style=self.S("Card.TFrame"))
-        pv.grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 2))
+        pv.grid(row=10, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 2))
         ttk.Button(pv, text="Preview cover", style=self.S("TButton"),
                    command=lambda: self.preview_book(view="cover")).pack(side="left")
         ttk.Label(pv, text="  real size, with the spine for your page count",
                   style=self.S("CardHint.TLabel")).pack(side="left")
-        ttk.Label(c, text="Back cover text (optional):", style=self.S("Card.TLabel")).grid(row=9, column=0, columnspan=2,
-                                                             sticky="w", padx=6)
-        self.textbox(c, "blurb", height=6, width=40).grid(row=10, column=0, columnspan=2,
+        ttk.Label(c, text="Back cover text (optional):", style=self.S("Card.TLabel")).grid(row=11, column=0,
+                                                                                            columnspan=2, sticky="w",
+                                                                                            padx=6)
+        self.textbox(c, "blurb", height=6, width=40).grid(row=12, column=0, columnspan=2,
                                                           sticky="nsew", padx=6)
-        c.rowconfigure(10, weight=1)
+        c.rowconfigure(12, weight=1)
+        bf = ttk.Frame(c, style=self.S("Card.TFrame"))
+        bf.grid(row=13, column=0, columnspan=2, sticky="we", padx=6)
+        bf.columnconfigure(0, weight=1)
+        self._matter_row(bf, 0, "blurb")
+        self.sync_matter_ui()
 
     # ------------------------------------------------------------ settings
     def collect(self):
@@ -2458,13 +3832,14 @@ class App(tk.Tk):
             self.refresh_fonts()
         for k, v in data.items():
             if k in self.texts:
-                self.texts[k].delete("1.0", "end")
-                self.texts[k].insert("1.0", v or "")
+                self._set_box(k, v or "")
             elif k in DEFAULTS and not isinstance(DEFAULTS[k], list):
                 try:
                     self.var(k).set(v)
                 except tk.TclError:
                     pass
+        if "vars" in self.__dict__ and getattr(self, "editor", None) is not None:
+            self.sync_matter_ui()              # a page formatted in Specific Text Edit keeps its own words
 
     def save_settings(self, path, keep_book=False):
         data = self.collect()
@@ -2506,7 +3881,8 @@ class App(tk.Tk):
         if messagebox.askyesno("Reset", "Put every setting back to its default?"):
             self.apply(DEFAULTS)
             for k in ("dedication", "note_text", "blurb", "hyph_words"):
-                self.texts[k].delete("1.0", "end")
+                self._set_box(k, "")
+            self.sync_matter_ui()
 
     # ------------------------------------------------------------ light / dark
     def toggle_dark(self):
@@ -2518,6 +3894,7 @@ class App(tk.Tk):
         self._close_placement()
         self._commit_editor()
         editing = getattr(getattr(self, "editor", None), "cur_obj", None)
+        editing_sec = getattr(getattr(self, "editor", None), "sec", None)
         state = self.collect()
         tab = self.shelf.current
         sel = self._sel()
@@ -2538,7 +3915,8 @@ class App(tk.Tk):
             for i in sel:
                 if self.ctree.exists(str(i)):
                     self.ctree.selection_add(str(i))
-        self.editor.cur_obj = editing
+        self.editor.cur_obj, self.editor.sec = editing, editing_sec
+        self.sync_matter_ui()
         self.shelf.select(tab)
         try:
             self.save_settings(os.path.join(app_dir(), "settings.json"))
@@ -2858,8 +4236,10 @@ class App(tk.Tk):
         """Clear everything that belongs to the current book; keep layout, fonts and output settings."""
         if self.busy:
             return
-        if self.edited and not messagebox.askyesno(
-                "New book", "Start a new book? Your chapter changes for the current book will be lost."):
+        self._commit_editor()
+        if (self.edited or (self.unsaved and self.book is not None)) and not messagebox.askyesno(
+                "New book", "Start a new book? Your changes to the current book (chapters, text, front and back "
+                            "pages) will be lost if you haven't saved them as a project."):
             return
         for k in BOOK_KEYS:
             if k in self.texts:
@@ -2871,6 +4251,7 @@ class App(tk.Tk):
                 self.var(k).set("")
         self.book, self.book_sig, self.edited, self.autofilled = None, None, False, {}
         self.unsaved = False
+        self.sync_matter_ui()
         self._book_switched("New book: there is nothing to preview yet. Pick a source, then click "
                             "Update preview.", update=False)
         self.editor.reset()
@@ -2883,8 +4264,9 @@ class App(tk.Tk):
         self.status.configure(text="New book. Pick a source, check the chapters, then click Preview book.")
 
     def on_close(self):
+        if self.book is not None and not getattr(self, "_closing", False) and not self._commit_editor():
+            return                       # typing not yet in the book couldn't be applied: stay with it
         if getattr(self, "unsaved", False) and self.book is not None and not getattr(self, "_closing", False):
-            self._commit_editor()
             ans = messagebox.askyesnocancel(
                 "Save your edits?", "You've edited this book. Save your edits as a BookForge project before closing?\n\n"
                                     "Yes = save   No = close without saving   Cancel = keep working")
@@ -3115,15 +4497,15 @@ class App(tk.Tk):
         except tk.TclError:
             s.update(sheet_w="", sheet_h="")
         try:
-            text = "Paper size: " + bf_impose.paper_label(s)
+            text = "Printer paper size: " + bf_impose.paper_label(s)
             if self.var("rotate_paper").get():
                 text += "  \u2013 turned 90\u00b0 when printed"
         except ValueError as e:
-            text = f"Paper size: {bf_impose.sheet_name(s)} \u2013 {e}"
+            text = f"Printer paper size: {bf_impose.sheet_name(s)} \u2013 {e}"
         self.paper_lbl.configure(text=text)
 
     def _custom_paper_sync(self):
-        """Tick box, custom boxes and Paper size agree: the custom size is used only when Paper size is Custom.
+        """Tick box, custom boxes and Printer paper size agree: the custom size is used only when it is Custom.
         Returns True when it is."""
         name = self.var("sheet_size").get()
         custom = name == "Custom"
@@ -3139,7 +4521,8 @@ class App(tk.Tk):
         return custom
 
     def _custom_paper_toggled(self):
-        """'Use a custom paper size' ticked: Paper size becomes Custom; unticked: back to the paper chosen before."""
+        """'Use a custom printer paper size' ticked: Printer paper size becomes Custom; unticked: back to the paper
+        chosen before."""
         on = bool(self.custom_paper_on.get())
         name = self.var("sheet_size").get()
         if on and name != "Custom":
@@ -3301,11 +4684,13 @@ class App(tk.Tk):
         if self.busy:
             return
         if self.edited and not force and not messagebox.askyesno(
-                "Find chapters again?", "You've renamed, skipped, moved or merged chapters. Finding the "
-                                        "chapters again will undo those changes. Continue?"):
+                "Find chapters again?", "Finding the chapters again reads the source again and replaces the "
+                                        "book, so these changes will be lost:\n\n" + self.changes_text() +
+                                        "\n\nThe source itself is never changed. Continue?"):
             self._show_split()
             return
-        self.edited = False
+        # self.edited is cleared only when the source has been read (the "scanned" message): if reading fails,
+        # the book and its edits stay, still marked as edited, so nothing replaces them without asking.
         s = self.collect()
         self._start("Reading the source...", "scan")
 
@@ -3337,6 +4722,98 @@ class App(tk.Tk):
             (s["source_mode"] == "file" and os.path.exists(s.get("source_path", "")))
         if src_ok and (self.book is None or (self.source_sig(s) != self.book_sig and not self.edited)):
             self.scan()
+
+    # ------------------------------------------------------------ the source, the book read from it, your edits
+    # Rules: the source (pasted text or the chosen file) is never changed by BookForge. Reading it makes the
+    # book (self.book, with self.book_sig = what it was read from). Changes made on Chapters, Specific Text
+    # Edit and Edit contents change only the book (self.edited). An unedited book is read again whenever the
+    # source changes; an edited book is replaced only after asking (Re-read source, Find chapters again, or
+    # "Keep your chapter changes?" when the source changed before a preview or build).
+    def changes_text(self):
+        """The changes that reading the source again would replace, as lines for a question."""
+        out = ["• chapter changes (renamed, left out, moved, merged, added or deleted chapters)",
+               "• text, formatting and pictures changed in Specific Text Edit"]
+        if self.book is not None and self.book.toc:
+            out.append("• your Edit contents changes (renamed entries, typed page numbers...)")
+        src = bf_matter.source_edits(self.book) if self.book is not None else []
+        if src:
+            out.append("• your changes to these pages read from the source: " + ", ".join(src))
+        if self.book is not None and bf_matter.user_pages(self.book):
+            out.append("(Your own pages - title page, dedication, end pages... - are kept.)")
+        return "\n".join(out)
+
+    def source_problem(self, s):
+        """A plain message when the source can't be read as it is now (else None)."""
+        if s["source_mode"] == "paste":
+            if not s.get("paste_text", "").strip():
+                return "The paste box is empty. Paste or type the book's text there, or choose a file instead."
+        else:
+            p = (s.get("source_path") or "").strip()
+            if not p:
+                return "No file is chosen. Click Browse... and pick the book's file, or paste its text instead."
+            if not os.path.isfile(p):
+                return f"The file can't be found any more:\n{p}\n\nClick Browse... to pick it again."
+        return None
+
+    def reread_source(self):
+        """Re-read source (Source tab): read the pasted text or the chosen file again and rebuild the book from it.
+        The chapter list, Specific Text Edit, Edit contents and an open preview all follow."""
+        if self.busy:
+            return
+        if not self._commit_editor():
+            return
+        s = self.collect()
+        problem = self.source_problem(s)
+        if problem:
+            messagebox.showwarning("Re-read source", problem)
+            return
+        if self.book is not None and (self.edited or self.book.toc):
+            if not messagebox.askyesno("Re-read source?",
+                                       "Reading the source again replaces the book with what the source holds now, "
+                                       "so these changes will be lost:\n\n" + self.changes_text() +
+                                       "\n\nThe source itself is never changed. To keep this version, click No "
+                                       "and use Save project... first.\n\nRead the source again?"):
+                return
+        self.scan(force=True)
+
+    def _note_soon(self):
+        job = getattr(self, "_note_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except (tk.TclError, ValueError):
+                pass
+        self._note_job = self.after(400, self.update_source_note)
+
+    def update_source_note(self):
+        """The line beside Re-read source: what the book is made from right now."""
+        self._note_job = None
+        lab = getattr(self, "source_note", None)
+        if lab is None:
+            return
+        s = self.collect()
+        book = self.book
+        changed = book is not None and self.source_sig(s) != self.book_sig
+        if book is None:
+            text = "Not read yet: BookForge reads the source when you open the next steps, or press Re-read source."
+        elif getattr(book, "fixed_pdf", ""):
+            text = (f"Read: a PDF of {book.fixed_pages} pages, printed as they are."
+                    + ("  The source has changed since then: press Re-read source." if changed else ""))
+        elif self.edited and changed:
+            text = ("The source changed after you edited the book. Your edits are kept in the book until you choose: "
+                    "Preview will ask, or press Re-read source to start again from the source (your edits will be lost).")
+        elif self.edited:
+            text = ("The book has your changes (Chapters, Specific Text Edit, Edit contents). They are kept in the "
+                    "book and never written into this source; Re-read source starts again from the source.")
+        elif changed:
+            text = "The source has changed since it was read: it will be read again when you go on, or press Re-read source."
+        else:
+            n = len(book.chapters)
+            text = f"Read: {n} chapter{'s' if n != 1 else ''}. After changing the text or the file, press Re-read source."
+        try:
+            lab.configure(text=text)
+        except tk.TclError:
+            pass
 
     def fill_list(self):
         sel = self._sel()
@@ -3470,31 +4947,102 @@ class App(tk.Tk):
         i, j = sel[0], sel[0] + d
         chs = self.book.chapters
         if 0 <= j < len(chs):
-            chs[i], chs[j] = chs[j], chs[i]
+            self.swap_chapters(i, j)
             self.ctree.selection_set(str(j))
             self._changed()
             self.ctree.see(str(j))
 
+    def swap_chapters(self, i, j):
+        """Chapters i and j change places (Move up / Move down on the Chapters step or in Specific Text Edit).
+        An edited contents follows the new order: the two chapters' entries swap places too (they used to keep
+        the old order, so the contents no longer matched the book), changes still open in the Edit contents
+        window included (they are used, as Preview uses them, and the window shows the new order)."""
+        chs = self.book.chapters
+        a, b = chs[i].uid, chs[j].uid
+        cw = self.contents_win
+        if cw is not None and not (cw.alive() and cw.book_ref is self.book):
+            cw = None
+        if cw is not None:
+            self._apply_contents_window()
+        if self.book.toc:
+            self.book.toc = swap_contents_entries(self.book.toc, a, b)
+            if cw is not None:
+                cw.orig = swap_contents_entries(cw.orig, a, b)
+        chs[i], chs[j] = chs[j], chs[i]
+        if cw is not None:
+            cw.auto = contents_entries(self.book, self.collect())
+            cw.rows = contents_rows(cw.auto, self.book.toc)
+            cw.fill(cw._sel())
+
     def merge_ch(self):
-        """Undo a wrong split: the chapter's heading goes back into the text where it was."""
+        """Undo a wrong split: the chapter's heading goes back into the text where it was.
+        A page number typed for the chapter's contents entry (Edit contents) is kept: it moves to the entry of
+        the chapter before it, which survives the merge. When both entries have a different typed number, the
+        user chooses which one stays, or cancels the merge (nothing is changed then)."""
         sel = self._sel()
         if not self.book or len(sel) != 1 or sel[0] == 0:
             return
+        self._apply_contents_window()      # numbers typed in an open Edit contents window count, as for Preview
         i = sel[0]
         prev, ch = self.book.chapters[i - 1], self.book.chapters[i]
         heading = ch.title if not ch.label else f"{ch.label} {ch.title}".strip()
+        name = prev.display() or "the chapter before it"
+        toc = list(self.book.toc or [])
+        rows = {r["uid"]: r for r in contents_rows(contents_entries(self.book, self.collect()), toc)
+                if not r["custom"]}                     # the entries as Edit contents shows them now
+        gone_row, keep_row = rows.get(ch.uid), rows.get(prev.uid)
+        p_gone = gone_row["page"] if gone_row else ""
+        p_keep = keep_row["page"] if keep_row else ""
+        choice = None
+        if p_gone and p_keep and p_gone != p_keep:
+            ans = messagebox.askyesnocancel(
+                "Merge into previous",
+                f"Both chapters have a page number typed for their contents entry:\n\n"
+                f"   \u201c{name}\u201d: {p_keep}\n   \u201c{heading}\u201d: {p_gone}\n\n"
+                f"After merging, \u201c{name}\u201d has the only entry, so only one number can stay. "
+                "(A typed number is only what the contents page prints; the chapter starts where the layout "
+                "puts it.)\n\n"
+                f"Yes = keep {p_keep}\nNo = keep {p_gone}\nCancel = don't merge")
+            if ans is None:
+                self.status.configure(text="Merge cancelled - nothing was changed.")
+                return
+            choice = p_keep if ans else p_gone
+        page = merged_contents_page(p_keep, p_gone, choice)
         prev.blocks.append(Block("head" if ch.heading_kind == "head" else "para", esc(heading)))
         prev.blocks.extend(ch.blocks)
         del self.book.chapters[i]
+        if toc:
+            new = merge_contents_edits(toc, prev.uid, ch.uid, page)
+            auto = contents_entries(self.book, self.collect())
+            self.book.toc = new if rows_to_edits(contents_rows(auto, new), auto) else []
+            cw = self.contents_win
+            if cw is not None and cw.alive() and cw.book_ref is self.book:
+                # what the window's Cancel goes back to: merged too (same rules, the user's choice if it applies)
+                og = next((e.get("page") or "" for e in cw.orig if e.get("uid") == ch.uid), "").strip()
+                ok = next((e.get("page") or "" for e in cw.orig if e.get("uid") == prev.uid), "").strip()
+                cw.orig = merge_contents_edits(cw.orig, prev.uid, ch.uid,
+                                               merged_contents_page(ok, og, choice if choice in (ok, og) else ok))
+            self._refresh_contents_win()
         self.ctree.selection_set(str(i - 1))
         self._changed()
+        msg = []
+        if page and choice is None:
+            msg.append(f"The page number typed for its contents entry ({page}) is kept: the contents page now "
+                       f"prints it beside \u201c{name}\u201d (a typed number doesn't move the chapter).")
+        elif choice is not None:
+            msg.append(f"Its contents entry keeps the page number you chose ({choice}).")
+        what = [w for w, on in (("entry text", gone_row and (gone_row["title"] or gone_row.get("markup"))),
+                                ("hidden entry", gone_row and not gone_row["show"])) if on]
+        if what:                         # the rest of its contents entry goes with it: say so
+            msg.append(f"Its own contents changes ({', '.join(what)}) no longer apply.")
+        if msg:
+            self.status.configure(text=f"\u201c{heading}\u201d is now part of \u201c{name}\u201d. " + " ".join(msg))
 
     def reset_chapters(self):
         if self.book and (not self.edited or messagebox.askyesno(
-                "Undo all changes", "Find the chapters again from the source? Your renames, skips, moves "
-                                    "and merges will be lost.")):
-            self.edited = False
-            self.book = None
+                "Undo all changes", "Find the chapters again from the source? These changes will be lost:\n\n"
+                                    + self.changes_text())):
+            # the book is replaced when the source has been read (if reading fails, it stays as it is)
             self.scan(force=True)
 
     def _choose_book(self, s):
@@ -3503,10 +5051,13 @@ class App(tk.Tk):
         cached = self.book if (self.book is not None and sig == self.book_sig) else None
         if cached is None and self.book is not None and self.edited:
             if messagebox.askyesno("Keep your chapter changes?",
-                                   "The source or chapter settings changed after you edited the chapters.\n\n"
-                                   "Yes = use your edited chapters\nNo = find the chapters again "
-                                   "(your edits will be lost)"):
+                                   "The source or the source settings changed after you edited the book.\n\n"
+                                   "Yes = keep your edited book (the changed source is not used)\n"
+                                   "No = read the source again; these changes will be lost:\n\n" +
+                                   self.changes_text()):
                 cached = self.book
+                self.book_sig = sig          # answered: not asked again until the source changes again
+                self.update_source_note()
         return cached, sig
 
     # ------------------------------------------------------------ contents
@@ -3529,6 +5080,13 @@ class App(tk.Tk):
                                 "steps). The contents can be edited once BookForge knows the chapters.")
             return
         self.contents_win = ContentsEditor(self)
+
+    def _apply_contents_window(self):
+        """Changes typed in an open Edit contents window are used by Preview and Make the book: the window already
+        shows them as typed, so the book must not be made without them."""
+        cw = getattr(self, "contents_win", None)
+        if cw is not None and cw.alive():
+            cw.apply()
 
     def _refresh_contents_win(self):
         if self.contents_win is not None and self.contents_win.alive():
@@ -3572,15 +5130,23 @@ class App(tk.Tk):
         view="cover" also draws the cover and opens the preview on it."""
         if self.busy or not self._commit_editor():
             return
+        self._apply_contents_window()
         s = self.collect()
         problem = self.settings_problem(s)
         if problem:
             messagebox.showwarning("Check a setting", problem)
             return
+        snapshot = dict(s)
         if view == "cover":
             s["fmt_cover"] = True
         self._preview_view = view
         cached, sig = self._choose_book(s)
+        keep = bf_matter.user_pages(self.book)
+        self._preview_snapshot, self._preview_rev = snapshot, self.__dict__.get("book_rev", 0)
+        if cached is not None and book_problem(cached):
+            self._preview_failed("The preview couldn't be made: " + nothing_to_print(cached), always=True)
+            messagebox.showwarning("Nothing to print", nothing_to_print(cached))
+            return
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
         self.logbox.configure(state="disabled")
@@ -3593,10 +5159,13 @@ class App(tk.Tk):
                 else:
                     self.log("Reading the source...")
                     book = load_book(s, s.get("paste_text", ""), log=self.log)
+                    bf_matter.restore_user_pages(book, keep)     # title page, dedication, end pages... stay
                     self.q.put(("scanned", book, sig))
                     book = copy.copy(book)
                 apply_info(book, s)
                 self.q.put(("preview", build_preview(book, s, self.log)))
+            except NothingToPrint as e:
+                self.q.put(("nothing", str(e)))
             except Exception as e:
                 self.q.put(("error", str(e), traceback.format_exc()))
         threading.Thread(target=work, daemon=True).start()
@@ -3604,6 +5173,7 @@ class App(tk.Tk):
     def build(self):
         if self.busy or not self._commit_editor():
             return
+        self._apply_contents_window()
         s = self.collect()
         problem = self.settings_problem(s)
         if problem:
@@ -3618,6 +5188,10 @@ class App(tk.Tk):
         except Exception:
             pass
         cached, sig = self._choose_book(s)
+        keep = bf_matter.user_pages(self.book)
+        if cached is not None and book_problem(cached):
+            messagebox.showwarning("Nothing to print", nothing_to_print(cached))
+            return
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
         self.logbox.configure(state="disabled")
@@ -3630,12 +5204,15 @@ class App(tk.Tk):
                 else:
                     self.log("Reading the source...")
                     book = load_book(s, s.get("paste_text", ""), log=self.log)
+                    bf_matter.restore_user_pages(book, keep)     # title page, dedication, end pages... stay
                     self.q.put(("scanned", book, sig))
                     book = copy.copy(book)
                 apply_info(book, s)
                 folder, made, notes = run_build(book, s, self.log)
                 self.q.put(("toc_labels", dict(getattr(book, "_toc_labels", {}))))
                 self.q.put(("done", folder, made))
+            except NothingToPrint as e:
+                self.q.put(("nothing", str(e)))
             except Exception as e:
                 self.q.put(("error", str(e), traceback.format_exc()))
         threading.Thread(target=work, daemon=True).start()
@@ -3654,17 +5231,22 @@ class App(tk.Tk):
                 elif kind == "fonts":
                     self.refresh_fonts(item[1])
                 elif kind == "scanned":
+                    bf_matter.carry_over(self.book, item[1])      # title page, dedication, end pages... stay
                     self.book, self.book_sig = item[1], item[2]
                     self.edited = False
                     self.unsaved = False
                     if getattr(self, "editor", None) is not None:
                         self.editor.reset()
+                        self.sync_matter_ui()
+                    snap = getattr(self, "_preview_snapshot", None) if self.mode == "preview" else None
                     for k in ("title", "author"):
                         cur = self.var(k).get().strip()
                         new = (getattr(self.book, k) or "").strip()
                         if not cur or cur == self.autofilled.get(k):
                             self.var(k).set(new)
                             self.autofilled[k] = new
+                            if snap is not None:
+                                snap[k] = new          # filled in from the source: the preview uses it too
                     self.fill_list()
                     self.toc_labels = {}
                     self._refresh_contents_win()
@@ -3672,8 +5254,12 @@ class App(tk.Tk):
                         self._stop(f"PDF ready: {self.book.fixed_pages} pages, kept as they are. Click Preview book.")
                     elif self.mode == "scan":
                         self._stop(f"Found {len(self.book.chapters)} chapters. Check the list, then click Preview book.")
+                    self.update_source_note()
                     self._book_switched("The source changed, so this preview showed the previous book. It is "
                                         "being made again\u2026")
+                    if self.mode == "scan" and book_problem(self.book):
+                        messagebox.showwarning("Nothing to print", "The source was read, but " +
+                                               book_problem(self.book, source=True))
                 elif kind == "update":
                     newer, info = item[1], item[2]
                     if newer:
@@ -3700,6 +5286,7 @@ class App(tk.Tk):
                         self.preview_win.mode = "pages"
                         self.preview_win._mode_buttons()
                         self.preview_win.go(page - 1)
+                    self._check_preview_current()      # settings changed while it was being made
                 elif kind == "done":
                     folder, made = item[1], item[2]
                     self._stop(f"Finished! {len(made)} file(s) saved in {folder}")
@@ -3717,8 +5304,18 @@ class App(tk.Tk):
                     messagebox.showinfo("Book finished", "Saved to:\n" + folder + "\n\n" +
                                         "\n".join(os.path.basename(m) for m in made) +
                                         "\n\nPrinting tips are in 'READ ME - printing notes.txt'.")
+                elif kind == "nothing":
+                    # the book has nothing to print: say how to fix it (not an error report)
+                    self._stop("Nothing to print \u2014 see the message.")
+                    self._preview_failed("The preview couldn't be made: " + item[1])
+                    self.update_source_note()
+                    messagebox.showwarning("Nothing to print", item[1])
                 elif kind == "error":
                     self._stop("Something went wrong \u2014 see the message.")
+                    self._preview_failed("The preview couldn't be made (see the message), so the pages that were "
+                                         "here are not shown: they were made before the latest changes.\n\n"
+                                         + item[1])
+                    self.update_source_note()
                     try:
                         with open(os.path.join(app_dir(), "last_error.txt"), "w", encoding="utf-8") as f:
                             f.write(item[2])
@@ -3748,22 +5345,42 @@ class App(tk.Tk):
 
 
 def cli(argv):
-    """Headless mode: BookForge.exe --cli SOURCE OUTPUT_FOLDER [preset.json]"""
+    """Headless mode: BookForge.exe --cli SOURCE OUTPUT_FOLDER [preset.json]
+    SOURCE can also be a saved project (.bookforge): its book, with every edit, and its settings are used."""
     src, out = argv[0], argv[1]
     s = dict(DEFAULTS)
+    preset = {}
     if len(argv) > 2:
         with open(argv[2], encoding="utf-8") as f:
-            s.update({k: v for k, v in json.load(f).items() if k in DEFAULTS})
+            preset = {k: v for k, v in json.load(f).items() if k in DEFAULTS}
+    project = src.lower().endswith(".bookforge")
+    s.update(preset)
     s.update(source_mode="file", source_path=src, out_dir=out)
     os.makedirs(out, exist_ok=True)
-    logf = open(os.path.join(out, "BookForge log.txt"), "w", encoding="utf-8")
+    logf = open(not_the_source(os.path.join(out, "BookForge log.txt"), s), "w", encoding="utf-8")
 
     def log(m):
         logf.write(m + "\n")
         logf.flush()
     try:
-        book = apply_info(load_book(s), s)
+        if project:
+            book, ps = bf_edit.load_project(src)
+            s = dict(DEFAULTS)
+            s.update({k: v for k, v in ps.items() if k in DEFAULTS})
+            s.update(preset)
+            s.update(out_dir=out)
+            book = apply_info(book, s)
+        else:
+            book = apply_info(load_book(s), s)
+        try:
+            check_settings(s)
+        except ValueError as e:                    # a setting that can't be used: a plain message, as in the window
+            log(f"A setting can't be used: {e}")
+            return 1
         run_build(book, s, log)
+    except NothingToPrint as e:                    # a plain message, not an error in BookForge
+        log(str(e))
+        return 1
     except Exception:
         log(traceback.format_exc())
         return 1
