@@ -3,8 +3,9 @@ import os
 import tempfile
 
 from bf_core import safe_name, page_size_inches, blank_pages, plain, not_the_source
-from bf_pdf import build_pdf, empty_pages_note
+from bf_pdf import build_pdf, empty_pages_note, contents_fit_note
 from bf_export import build_cover, build_epub, build_docx, build_html, build_txt
+import bf_folio
 import bf_impose
 import bf_matter
 
@@ -194,6 +195,8 @@ def format_limits(book, s):
                                 if bf_matter.is_edited(book, k) for b in (bf_matter.override(book, k) or [])):
         out.append("The text file has no pictures: the pictures on the edited front/back pages are in the other "
                    "formats.")
+    if s.get("fmt_docx") and not getattr(book, "fixed_pdf", "") and bf_folio.word_note(s):
+        out.append(bf_folio.word_note(s))
     if bf_matter.is_edited(book, "blurb") and not s.get("fmt_cover") and (s.get("fmt_pdf") or s.get("fmt_impose")
                                                                          or others):
         out.append("The back-cover text you edited is printed on the cover only, and the cover PDF isn't being made "
@@ -274,7 +277,9 @@ def build_preview(book, s, log=print):
             "chapter_pages": list(getattr(book, "_chapter_pages", [])),
             "toc_labels": dict(getattr(book, "_toc_labels", {})),
             "empty_pages": list(getattr(book, "_empty_pages", [])),
-            "planned_blanks": dict(getattr(book, "_planned_blanks", None) or {})}
+            "planned_blanks": dict(getattr(book, "_planned_blanks", None) or {}),
+            "contents_fit": getattr(book, "_contents_fit", None),
+            "folio_notes": list(getattr(book, "_folio_notes", None) or [])}
 
 
 def run_build(book, s, log=print):
@@ -322,6 +327,13 @@ def run_build(book, s, log=print):
             notes.append(planned_blanks_note(book))
         if getattr(book, "_empty_pages", None):
             notes.append("WARNING: " + empty_pages_note(book._empty_pages))
+        for note in getattr(book, "_folio_notes", None) or []:     # page numbers (bf_folio)
+            notes.append("WARNING: " + note)
+        fit = getattr(book, "_contents_fit", None)        # "Fit contents on one page"
+        if fit is not None and not fit["fits"]:
+            notes.append("WARNING: " + contents_fit_note(fit))
+        elif fit is not None and fit["step"]:
+            notes.append(f"Contents fitted on one page: {contents_fit_note(fit)}.")
 
     if s["fmt_impose"]:
         log("Arranging pages on sheets for binding...")

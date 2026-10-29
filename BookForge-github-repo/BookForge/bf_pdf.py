@@ -22,6 +22,7 @@ from reportlab.platypus import TableStyle, Table
 
 from bf_core import page_size_inches, plain, esc, blank_pages
 import bf_matter
+import bf_folio
 
 GREY = HexColor("#555555")
 
@@ -674,6 +675,8 @@ class WriteLines(Flowable):
 # Document
 # --------------------------------------------------------------------------
 class BookDoc(BaseDocTemplate):
+    folio = bf_folio.Folio()           # how the numbers are written (build_pdf sets the book's own)
+
     def __init__(self, filename, s, book, **kw):
         BaseDocTemplate.__init__(self, filename, **kw)
         self.s, self.book = s, book
@@ -682,6 +685,7 @@ class BookDoc(BaseDocTemplate):
     def beforeDocument(self):
         # Reset every pass; the body start is only trusted once reached in THIS pass.
         self.bf = {"body_start": None, "opener": {}, "content": {}, "nonum": {}, "cur": "", "userblank": {}}
+        self.folio.text_pages.clear()                # (numbers printed as text instead: this pass's pages only)
 
     def handle_pageBegin(self):
         # Odd (right-hand) pages use the "odd" frame, even pages the "even" one, so the inside margin is
@@ -691,19 +695,30 @@ class BookDoc(BaseDocTemplate):
             self.pageTemplate = self.pageTemplates[0 if (self.page + 1) % 2 else 1]
         BaseDocTemplate.handle_pageBegin(self)
 
-    def page_label(self, p):
-        """The number printed on page p. Blank pages added before the book ("Blank pages at beginning") are
-        not counted: the book's own numbering starts after them, as it does without them."""
+    def page_value(self, p):
+        """Page p's number: (n, front) - front = True for the front matter's own i, ii, iii ("Roman front
+        matter, 1 on first chapter") - or None when the page has no number. Blank pages added before the book
+        ("Blank pages at beginning") are not counted: the book's own numbering starts after them."""
         mode = self.s.get("pn_mode", "")
         fb = int(self.s.get("blank_pages_start") or 0)
         if p <= fb:
-            return ""
+            return None
         if mode.startswith("Every"):
-            return str(p - fb)
+            return p - fb, False
         bs = self.bf.get("body_start")
         if bs is None or p < bs:
-            return roman(p - fb).lower() if mode.startswith("Roman") else ""
-        return str(p - bs + 1)
+            return (p - fb, True) if mode.startswith("Roman") else None
+        return p - bs + 1, False
+
+    def page_label(self, p):
+        """The number printed on page p as text (in the chosen numerals; the Roman front matter keeps i, ii,
+        iii), or "" for a page without a number. With number pictures this is the Arabic number (the contents
+        and Edit contents use it; the page itself gets the pictures)."""
+        v = self.page_value(p)
+        if v is None:
+            return ""
+        n, front = v
+        return roman(n).lower() if front else self.folio.text(n)
 
     def afterFlowable(self, f):
         if isinstance(f, Anchor):
@@ -932,7 +947,8 @@ def apply_contents_edits(auto, edits):
         if not r["show"]:
             continue
         if r["custom"]:
-            e = {"uid": None, "level": r["level"], "text": r["title"], "page": r["page"], "custom": True}
+            e = {"uid": None, "level": r["level"], "text": r["title"], "page": r["page"], "custom": True,
+                 "typed_page": True}
         else:
             e = dict(by_uid[r["uid"]])
             e["level"] = r["level"]
@@ -940,6 +956,7 @@ def apply_contents_edits(auto, edits):
                 e["text"], e["edited"] = r["title"], True
             if r["page"]:
                 e["page"] = r["page"]
+                e["typed_page"] = True      # (printed as typed, never as a page-number picture)
         if r.get("markup"):                 # formatted in Specific Text Edit: that look, with the entry's words
             e["markup"] = bf_matter.restyle(r["markup"], e["text"])
         if r.get("space"):
@@ -952,6 +969,8 @@ class BookTOC(TableOfContents):
     """The contents page: the automatic entries (reported while the chapters are typeset) with the
     changes from "Edit contents" applied. Page numbers are printed as the page shows them (1, 2... or
     i, ii...); a number typed in "Edit contents" replaces the automatic one."""
+
+    folio = None                                       # number pictures, when the page numbers are pictures
 
     def __init__(self, edits=None, **kw):
         TableOfContents.__init__(self, **kw)
@@ -971,6 +990,18 @@ class BookTOC(TableOfContents):
                 e["text"] = self.markup(esc(e["text"]))
         return out
 
+    pages = 1                                          # pages the contents took in the last pass
+
+    def beforeBuild(self):
+        TableOfContents.beforeBuild(self)
+        self.pages = 1
+
+    def split(self, availWidth, availHeight):
+        parts = TableOfContents.split(self, availWidth, availHeight)
+        if len(parts) > 1:
+            self.pages += 1
+        return parts
+
     markup = staticmethod(lambda m: m)                 # replaced by the font-coverage helper in build_pdf
     fix = staticmethod(lambda m: m)                    # replaced by build_pdf's font-name helper
 
@@ -985,6 +1016,10 @@ class BookTOC(TableOfContents):
                 return
             style = self.getLevelStyle(e["level"])
             dot = " . " if (self.dotsMinLevel >= 0 and e["level"] >= self.dotsMinLevel) else ""
+            f = self.folio
+            if f is not None and f.pictures and not e.get("typed_page") and str(e["page"]).isdigit() and \
+                    bf_folio.draw_contents_number(f, canvas, style, int(e["page"]), availWidth, dot, e.get("key")):
+                return                                   # the page's number pictures, as on the page itself
             drawPageNumbers(canvas, style, [(e["page"], e.get("key"))], availWidth, availHeight, dot)
         self.canv.setNamedCB("drawTOCEntryEnd", drawTOCEntryEnd)
         data = []
@@ -1028,6 +1063,194 @@ def contents_styles(R, B, size, variant):
                         ("TOPPADDING", (0, 0), (-1, -1), gap),
                         ("BOTTOMPADDING", (0, 0), (-1, -1), gap)])
     return ts0, tsP, ts1, table, fs
+
+
+def contents_styles_sized(R, B, fs, leading, gap, part_gap):
+    """Contents styles with the given type size, line spacing, space between entries and space above part
+    entries (used by "Fit contents on one page"; the same structure as contents_styles)."""
+    ts0 = ParagraphStyle("toc0", fontName=R, fontSize=fs, leading=leading,
+                         leftIndent=0, firstLineIndent=0, spaceBefore=gap, rightIndent=0.45 * inch)
+    tsP = ParagraphStyle("tocP", parent=ts0, fontName=B, spaceBefore=part_gap)
+    ts1 = ParagraphStyle("toc1", parent=ts0, leftIndent=0.3 * inch)
+    table = TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                        ("TOPPADDING", (0, 0), (-1, -1), gap),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), gap)])
+    return ts0, tsP, ts1, table, fs
+
+
+def contents_height(entries, styles, has_parts, width):
+    """The height of the contents list (without its heading) laid out exactly as the contents page draws it
+    (BookTOC.wrap): the same paragraphs, styles, space above entries and table."""
+    ts0, tsP, ts1, table_style, _fs = styles
+    data = []
+    for e in entries:
+        st = ts1 if e["level"] >= 1 else (tsP if has_parts else ts0)
+        try:
+            para = Paragraph(e["text"], st)
+        except Exception:
+            para = Paragraph(esc(plain(e["text"])), st)
+        if st.spaceBefore:
+            data.append([Spacer(1, st.spaceBefore)])
+        if e.get("space"):
+            data.append([Spacer(1, float(e["space"]))])
+        data.append([para])
+    if not data:
+        return 0.0
+    tbl = Table(data, colWidths=(width,), style=table_style)
+    return tbl.wrap(width, 1e9)[1]
+
+
+# "Fit contents on one page": how far the contents page may be tightened before it counts as not fitting.
+TOC_FIT_MIN_SIZE = 8.0            # pt, never smaller than this ...
+TOC_FIT_MIN_SCALE = 0.7           # ... nor than this x the body text size
+TOC_FIT_MIN_LEADING = 1.15        # line spacing (x the contents type size): lines never touch
+TOC_FIT_TITLE_GAP = 6.0           # pt below the contents heading at the most (normally 20)
+
+
+def fit_contents(entries, R, B, size, variant, has_parts, width, room, title_gap):
+    """"Fit contents on one page": the least change to the contents page's look that puts every entry on one
+    page. room = the height below the contents heading on its page; title_gap = the space under the heading;
+    variant = the look the contents have without the option (Normal, Compact, or what Automatic chose).
+    Tried in this order, the first that fits is used:
+      0. that look (contents_styles(variant)): nothing changes if it already fits;
+      1. less space between entries (and above part entries);
+      2. tighter line spacing, down to 1.15 x the type size;
+      3. smaller type, in 0.25 pt steps, down to max(8 pt, 0.7 x the body text size);
+      4. less space under the contents heading (20 -> 6 pt), with the largest type that then fits.
+    Entries are never left out, cut or overlapped (the same table as the contents page; titles wrap) and the
+    body text, chapter titles and margins are not touched. Returns a dict: fits, styles (None when it doesn't
+    fit), title_gap, step (0-4), size, leading, room, need (the height at the most compact readable look)."""
+    base = contents_styles(R, B, size, variant)
+    h0 = contents_height(entries, base, has_parts, width)
+    out = {"fits": True, "styles": base, "title_gap": title_gap, "step": 0, "size": base[0].fontSize,
+           "leading": base[0].leading, "room": room, "need": h0, "normal": h0}
+    if h0 <= room - 0.5:
+        return out
+    fs0, lead0 = base[0].fontSize, base[0].leading
+    part0 = base[1].spaceBefore
+    floor = max(TOC_FIT_MIN_SIZE, TOC_FIT_MIN_SCALE * size)
+    cands = []                                         # (step, fs, leading, gap, part_gap) in order
+    for pg in sorted({min(part0, 4.0), 2.0}, reverse=True):
+        cands.append((1, fs0, lead0, 0, pg))
+    lead = lead0
+    while lead * 0.95 >= fs0 * TOC_FIT_MIN_LEADING:
+        lead *= 0.95
+        cands.append((2, fs0, lead, 0, 2.0))
+    cands.append((2, fs0, fs0 * TOC_FIT_MIN_LEADING, 0, 2.0))
+    fs = fs0
+    while fs - 0.25 >= floor - 1e-6:
+        fs -= 0.25
+        cands.append((3, fs, fs * TOC_FIT_MIN_LEADING, 0, 2.0))
+    if floor < fs0 and abs(fs - floor) > 1e-6:
+        cands.append((3, floor, floor * TOC_FIT_MIN_LEADING, 0, 2.0))
+    for gap_now, extra, step4 in ((title_gap, 0.0, False), (min(title_gap, TOC_FIT_TITLE_GAP),
+                                                          title_gap - min(title_gap, TOC_FIT_TITLE_GAP), True)):
+        if step4 and extra <= 0:
+            continue
+        # (the heights only grow with the type size, so the largest size that fits is found by halving)
+        ok = lambda c: contents_height(entries, contents_styles_sized(R, B, c[1], c[2], c[3], c[4]),  # noqa
+                                       has_parts, width) <= room + extra - 0.5
+        lo, hi = 0, len(cands) - 1
+        if not ok(cands[hi]):
+            last = cands[hi]
+            out.update(need=contents_height(entries, contents_styles_sized(R, B, *last[1:]), has_parts, width))
+            continue
+        while lo < hi:                                 # the first (least changed) candidate that fits
+            mid = (lo + hi) // 2
+            if ok(cands[mid]):
+                hi = mid
+            else:
+                lo = mid + 1
+        step, fs, lead, gap, pg = cands[lo]
+        out.update(fits=True, styles=contents_styles_sized(R, B, fs, lead, gap, pg), title_gap=gap_now,
+                   step=4 if step4 else step, size=fs, leading=lead)
+        return out
+    out.update(fits=False, styles=None, floor=min(floor, fs0))
+    return out
+
+
+def contents_fit_note(fit, ahead=False):
+    """What "Fit contents on one page" did, in words (the log, the printing notes and the preview; ahead=True:
+    what it will do, for the Front & back step)."""
+    if fit.get("fits"):
+        bits = []
+        if fit["step"] >= 1:
+            bits.append("less space between entries")
+        if fit["step"] >= 2:
+            bits.append(f"line spacing {fit['leading']:.3g} pt")
+        if fit["step"] >= 3:
+            bits.append(f"type {fit['size']:.3g} pt")
+        if fit["step"] >= 4:
+            bits.append("less space under the heading")
+        return ", ".join(bits) or "it fits as it is"
+    pages = fit.get("pages")
+    return ("Fit contents on one page: the contents list is too long for one page. Even at its most compact "
+            f"readable look (tighter spacing, type down to "
+            f"{fit.get('floor', TOC_FIT_MIN_SIZE):.3g} pt) it would need about "
+            f"{fit['need'] / max(1.0, fit['room']):.1f} pages, so it "
+            + ("will keep" if ahead else "keeps") + " its normal look over "
+            + (f"{pages} pages" if pages else "more than one page") + ", as without this option (nothing is "
+            "left out). To get it onto one page: shorten long chapter titles, hide entries you don't need there "
+            "(Edit contents), or choose a bigger book page or smaller margins. Or untick \u201cFit contents on "
+            "one page\u201d if more contents pages are fine.")
+
+
+def contents_fit_estimate(book, s, log=lambda m: None):
+    """Whether the contents would fit on one page, worked out the way build_pdf does it but without typesetting
+    the book (for the Front & back step, before a preview): None when there is no contents page, else a dict
+    like fit_contents' plus "pages" (how many pages the contents take with the option off) and "asked"."""
+    if book is None or not s.get("toc") or getattr(book, "fixed_pdf", ""):
+        return None
+    pw, ph = page_size_inches(s)
+    fw = (pw - float(s["margin_inner"]) - float(s["margin_outer"])) * inch
+    fh = (ph - float(s["margin_top"]) - float(s["margin_bottom"])) * inch
+    if fw < 1.5 * inch or fh < 2 * inch:
+        return None
+    (R, B, _i, _bi), (HR, HB, _hi, _hbi), _d = font_roles(s, log)
+    HT = HB if s.get("heading_bold", True) else HR
+    size, ts = float(s["body_size"]), float(s["title_size"])
+    title = Paragraph(esc(s["toc_title"]), ParagraphStyle("toct", fontName=HT, fontSize=ts, leading=ts * 1.3))
+    gap = 20.0
+    room = fh - title.wrap(fw, fh)[1] - gap
+    cov = Coverage(R)
+
+    def fonts(m):                                      # editor fonts by name -> fonts the PDF can use
+        return re.sub(r'<font face="([^"]+)"', lambda x: '<font face="%s"' % (
+            html.unescape(x.group(1)) if html.unescape(x.group(1)) in pdfmetrics.getRegisteredFontNames() else R), m)
+    shown = [dict(e, text=fonts(e["markup"]) if e.get("markup") else esc(e["text"]))
+             for e in apply_contents_edits(contents_entries(book, s), book.toc)]
+    if not shown:
+        return None
+    has_parts = any(c.level == 0 for c in book.active())
+    spacing = s.get("toc_spacing", TOC_SPACING[0])
+    variant = 2 if spacing == "Compact" else 0
+    if spacing.startswith("Automatic") and len(shown) > 1:          # (the look without the option)
+        v, _base = automatic_contents_variant(shown, R, B, size, has_parts, fw, room, fh)
+        variant = variant if v is None else v
+    fit = fit_contents([dict(e, text=cov.apply(e["text"])) for e in shown], R, B, size, variant, has_parts, fw,
+                       room, gap)
+    fit["pages"] = len(contents_pages(shown, contents_styles(R, B, size, variant), has_parts, fw, room, fh))
+    fit["asked"] = bool(s.get("toc_one_page"))
+    fit["styles"] = None
+    return fit
+
+
+def automatic_contents_variant(entries, R, B, size, has_parts, width, first_h, h):
+    """"Contents spacing: Automatic": the tighter look (contents_styles variant 1-4, type never below 8 pt) that
+    keeps the last few entries from sitting alone on a page, or None for the normal look; and the entries per
+    page with the normal look."""
+    base = contents_pages(entries, contents_styles(R, B, size, 0), has_parts, width, first_h, h)
+    cap = max(base)
+    if len(base) > 1 and base[-1] <= max(3, -(-cap // 4)):
+        for v in (1, 2, 3, 4):
+            sty = contents_styles(R, B, size, v)
+            if sty[4] < 8:
+                break
+            if len(contents_pages(entries, sty, has_parts, width, first_h, h)) < len(base):
+                return v, base
+    return None, base
 
 
 def contents_pages(entries, styles, has_parts, width, first_h, h):
@@ -1449,6 +1672,8 @@ def build_pdf(book, s, out_path, log=print):
 
     chapters = book.active()
     has_parts = any(c.level == 0 for c in chapters)
+    book._contents_fit = None                       # "Fit contents on one page": what was done (see below)
+    folio = bf_folio.Folio(s, book)                 # page numbers: numerals / pictures (bf_folio)
     auto_toc = contents_entries(book, s)
     toc_by_uid = {e["uid"]: e for e in auto_toc}
     toc = None
@@ -1464,22 +1689,48 @@ def build_pdf(book, s, out_path, log=print):
                  for e in apply_contents_edits(auto_toc, book.toc)]
         spacing = s.get("toc_spacing", TOC_SPACING[0])
         variant = 2 if spacing == "Compact" else 0
+        tightened = None
         if spacing.startswith("Automatic") and len(shown) > 1:
             first_h = fh - title_p.wrap(fw, fh)[1] - st["toct"].spaceAfter
-            base = contents_pages(shown, contents_styles(R, B, size, 0), has_parts, fw, first_h, fh)
-            cap = max(base)
-            if len(base) > 1 and base[-1] <= max(3, -(-cap // 4)):
-                for v in (1, 2, 3, 4):
-                    sty = contents_styles(R, B, size, v)
-                    if sty[4] < 8:
-                        break
-                    if len(contents_pages(shown, sty, has_parts, fw, first_h, fh)) < len(base):
-                        variant = v
-                        log(f"Contents: spacing tightened so the last {base[-1]} entr"
-                            f"{'y doesn' if base[-1] == 1 else 'ies don'}'t sit alone on a page.")
-                        break
-        ts0, tsP, ts1, toc_table, _fs = contents_styles(R, B, size, variant)
+            v, base = automatic_contents_variant(shown, R, B, size, has_parts, fw, first_h, fh)
+            if v is not None:
+                variant = v
+                tightened = (f"Contents: spacing tightened so the last {base[-1]} entr"
+                             f"{'y doesn' if base[-1] == 1 else 'ies don'}'t sit alone on a page.")
+        styles = None
+        if s.get("toc_one_page") and shown:
+            # "Fit contents on one page": starting from the look the contents would have without it (so a list
+            # that already takes one page doesn't change), the least change that puts the whole list on one page
+            # (fit_contents), measured with the same paragraphs the contents page draws. The height doesn't
+            # depend on the page numbers (they sit in a column of their own), so the choice made here holds
+            # through every typesetting pass. Not possible at a readable size: the normal contents (as with the
+            # option off) and a warning.
+            gap = st["toct"].spaceAfter
+            room = fh - title_p.wrap(fw, fh)[1] - gap
+            fit_entries = [dict(e, text=cov.apply(fix_fonts(e["markup"])) if e.get("markup")
+                                else cov.apply(esc(e["text"]))) for e in shown]
+            fit = fit_contents(fit_entries, R, B, size, variant, has_parts, fw, room, gap)
+            book._contents_fit = dict(fit, styles=None, entries=len(shown))
+            if fit["fits"] and fit["step"]:
+                styles = fit["styles"]
+                tightened = None
+                if fit["title_gap"] != gap:
+                    story.pop()
+                    title_p = P(esc(s["toc_title"]), ParagraphStyle("toct1", parent=st["toct"],
+                                                                     spaceAfter=fit["title_gap"]))
+                    story.append(title_p)
+                log(f"Contents: fitted on one page ({contents_fit_note(fit)}).")
+        if tightened:
+            log(tightened)
+        if book._contents_fit is not None and not book._contents_fit["fits"]:
+            # (printed as with the option off; how many pages that takes, for the warning)
+            first_h = fh - title_p.wrap(fw, fh)[1] - st["toct"].spaceAfter
+            book._contents_fit["pages"] = len(contents_pages(shown, contents_styles(R, B, size, variant),
+                                                             has_parts, fw, first_h, fh))
+            log("WARNING: " + contents_fit_note(book._contents_fit))
+        ts0, tsP, ts1, toc_table, _fs = styles or contents_styles(R, B, size, variant)
         toc = BookTOC(edits=book.toc)
+        toc.folio = folio
         toc.markup = cov.apply
         toc.fix = fix_fonts
         toc.levelStyles = [tsP if has_parts else ts0, ts1]
@@ -1747,6 +1998,29 @@ def build_pdf(book, s, out_path, log=print):
         story.append(Marker(mark_blank))
 
     # ---- Page furniture
+    def draw_number_pictures(canv, parts, pos, x, y, how, rule, dashes, nsize):
+        """A page number drawn as pictures (bf_folio.Folio), kept inside the margin it sits in: digit pictures
+        stand on the number text's baseline, whole-number pictures are centred where the text would be; made
+        smaller (and said once) if they don't fit."""
+        h0 = folio.auto_height(nsize)
+        dash = R if dashes else None
+        dw = pdfmetrics.stringWidth("\u2014  \u2014", R, nsize) if dashes else 0
+        if pos == bf_folio.MIDDLE:
+            h = folio.fit(parts, h0, max_w=max(1.0, mo - 4 - dw), max_h=fh)
+            yb = mb + fh / 2 - h / 2
+        else:
+            if pos.startswith("Top"):
+                lo, hi = H - mt + 2, H - mt * 0.1
+            else:
+                lo, hi = mb * 0.1, mb - 2 - (3 if rule else 0)
+            h = folio.fit(parts, h0, max_w=max(1.0, fw - dw), max_h=max(1.0, hi - lo))
+            yb = y if folio.mode == bf_folio.DIGIT_IMAGES else y + nsize * 0.35 - h / 2
+            yb = min(max(yb, lo), hi - h)
+        folio.draw(canv, parts, x, yb, h, how, dash, nsize, yb + h / 2 - nsize * 0.35)
+        if rule:
+            canv.setLineWidth(0.5)
+            canv.line(x - 40, yb + h + 2, x + 40, yb + h + 2)
+
     def furniture(canv, doc):
         p = canv.getPageNumber()
         if doc.bf.get("fullpage", {}).get(p) or doc.bf["userblank"].get(p):
@@ -1763,24 +2037,31 @@ def build_pdf(book, s, out_path, log=print):
             not (opener and s["pn_hide_openers"])
         nsize = max(9.0, size * 0.8)
         if show:
-            txt = f"\u2014 {label} \u2014" if s["pn_style"] == "Dashes" else label
-            if pos.startswith("Top"):
-                y = H - mt * 0.55
+            # Where (bf_folio.anchor: the four positions of earlier versions exactly as before, plus top/bottom
+            # left/right and the middle of the outside margin - left / right-hand = the page's place in the book)
+            rule, dashes = s["pn_style"] == "Rule above", s["pn_style"] == "Dashes"
+            x, y, how = bf_folio.anchor(pos, odd, W, H, mi, mo, mt, mb, fw, fh, nsize)
+            centred = how == "center" and pos != bf_folio.MIDDLE      # top / bottom centre: italic, rule above
+            v = doc.page_value(p)
+            parts = folio.parts(v[0]) if folio.pictures and v and not v[1] else None
+            if parts:
+                draw_number_pictures(canv, parts, pos, x, y, how, centred and rule, dashes, nsize)
             else:
-                y = mb * 0.5
-            if pos.endswith("center"):
-                x = (mi if odd else mo) + fw / 2
-                canv.setFont(I if s["pn_style"] == "Rule above" else R, nsize)
-                canv.drawCentredString(x, y, txt)
-                if s["pn_style"] == "Rule above":
+                txt = f"\u2014 {label} \u2014" if dashes else label
+                canv.setFont(I if centred and rule else R, nsize)
+                if how == "center":
+                    canv.drawCentredString(x, y, txt)
+                elif how == "right":
+                    canv.drawRightString(x, y, txt)
+                else:
+                    canv.drawString(x, y, txt)
+                if centred and rule:
                     canv.setLineWidth(0.5)
                     canv.line(x - 40, y + nsize + 2, x + 40, y + nsize + 2)
-            else:
-                canv.setFont(R, nsize)
-                if odd:
-                    canv.drawRightString(W - mo, y, txt)
-                else:
-                    canv.drawString(mo, y, txt)
+                if pos == bf_folio.MIDDLE and pdfmetrics.stringWidth(txt, R, nsize) > mo - 4:
+                    folio.note_once("wide", "Page numbers: some numbers are wider than the outside margin, so they "
+                                            "reach into the text or the page edge (make the outside margin bigger "
+                                            "or choose another position).")
         bs = doc.bf.get("body_start")
         if s["running_heads"] and not opener and not blank and bs and p >= bs and \
                 not doc.bf.get("plate", {}).get(p):
@@ -1798,6 +2079,7 @@ def build_pdf(book, s, out_path, log=print):
     doc = BookDoc(out_path, s, book, pagesize=(W, H), leftMargin=mi, rightMargin=mo,
                   topMargin=mt, bottomMargin=mb, title=book.title, author=book.author,
                   creator="BookForge by ChunksBabyRuth")
+    doc.folio = folio
     doc.addPageTemplates([
         PageTemplate("odd", [odd_f], onPageEnd=furniture, autoNextPageTemplate="even"),
         PageTemplate("even", [even_f], onPageEnd=furniture, autoNextPageTemplate="odd"),
@@ -1822,11 +2104,20 @@ def build_pdf(book, s, out_path, log=print):
     book._chapter_pages = [(id(ch), anchors.get(f"ch{ci}")) for ci, ch in enumerate(chapters)]
     book._toc_labels = dict(doc.bf.get("toc_labels", {}))      # chapter uid -> page number (for Edit contents)
     book._empty_pages = empty_pages(doc)
+    book._folio_notes = folio.report()             # page-number pictures missing, Roman range, too big...
+    for note in book._folio_notes:
+        log("WARNING: " + note)
     # the pages left blank on purpose by the layout (not the "Blank pages at beginning/end" ones): page -> why
     book._planned_blanks = {p: why for p, why in sorted(doc.bf.get("planned", {}).items())
                             if not doc.bf["content"].get(p)}
     if book._empty_pages:
         log("WARNING: " + empty_pages_note(book._empty_pages))
+    fitted = getattr(book, "_contents_fit", None)
+    if fitted is not None and toc is not None:
+        fitted["split"] = toc.pages > 1             # did the contents run onto a second page (last pass)?
+        if fitted["fits"] and fitted["split"]:      # (measured to fit, so this should never happen)
+            fitted["fits"] = False
+            log("WARNING: " + contents_fit_note(fitted))
     if s.get("toc") and book.toc:
         # A number typed in "Edit contents" is always printed as typed - but say so when it isn't the page
         # the chapter really starts on, so a stale correction is noticed instead of silently printed.

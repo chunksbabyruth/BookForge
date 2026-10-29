@@ -801,3 +801,85 @@ font were already used by Word (Heading styles) and the PDFs; the EPUB and web p
       what keeps its own look; plain text unchanged; project save/reopen; older projects; window checks. 14 of its
       checks fail on the Phase 8 code (which then stops at the missing cover settings). Also checked in Chromium
       (not part of the tests): every title's alignment, size and position in the EPUB pages and the web page.
+
+## 1.8.1 - "Fit contents on one page" (2026-10-28; unreleased)
+Traced first: the contents page is one ReportLab table (bf_pdf.BookTOC, a TableOfContents) made from
+contents_entries + the Edit contents changes (apply_contents_edits), with the paragraph and table styles of
+contents_styles(variant). "Contents spacing" only ever picks one of those fixed looks: Normal, Compact, or
+Automatic, which tightens the spacing (type never below 8 pt) only when the last contents page would hold just a
+few entries. Nothing aimed at one page: a list taller than the text area is split over as many pages as it needs
+(the table splits; every page gets its page number). So there was no way to ask for one page.
+- [x] Setting toc_one_page ("Fit contents on one page", Front & back -> Contents page), off as standard; in
+      DEFAULTS, saved in projects; projects and presets without it open with it off (open_project_dialog's
+      setdefault list too). Off: the contents are made exactly as in 1.8.0 (same code path).
+- [x] bf_pdf.fit_contents: measures the contents list with the paragraphs, styles and table the contents page
+      draws (contents_height = BookTOC.wrap's table) against the room under the heading, and uses the first look
+      that fits, in this order: 0. the look the contents have without the option (Normal, Compact or what
+      Automatic chose; unchanged if it fits); 1. no space between entries, less above
+      part entries; 2. tighter line spacing (down to 1.15 x the type); 3. smaller contents type in 0.25 pt steps,
+      never below max(8 pt, 0.7 x the body text size); 4. less space under the contents heading (20 -> 6 pt).
+      Only the contents list's own styles change: the heading, the body text, chapter titles, margins and page
+      size are not touched. Long titles wrap; page numbers stay in their own right-hand column (so the height
+      doesn't depend on them and the multi-pass build can't loop: the look is chosen once, before the passes).
+- [x] Can't fit at a readable size: the contents are made exactly as with the option off (all entries, normal
+      look, Automatic/Compact as set) and a WARNING (log, printing notes, preview window info line) says how
+      many pages it needs and what to do (shorten titles, hide entries, bigger page / smaller margins, or untick).
+      Decided by the measured layout, not a chapter count. Safety net: if the contents still ran onto a second
+      page (BookTOC counts its splits), the result is reported as not fitted.
+- [x] Front & back shows a line under the option, worked out before any preview (contents_fit_estimate: the
+      same measurement without typesetting the book): "The contents take about N pages. Tick to fit them on one
+      page.", "The contents fit on one page (...)", or the warning. The "Automatic" spacing decision moved into
+      automatic_contents_variant (used by build_pdf and the estimate; same logic as before).
+- [x] Unchanged: Edit contents (rename, reorder, hide, add, typed page numbers = only the printed label, Indent +,
+      space above, formatted entries), chapter order, pagination of the chapters (the chapters start earlier
+      when the contents take fewer pages; the contents numbers are their real pages), EPUB / Word / web page /
+      text files (they have no fixed pages; Word keeps its own contents).
+- [x] tests/test_contents_one_page_181.py: reads the contents pages of the real PDFs (every word and its
+      position): off / older settings identical; short list unchanged with the option on; 30, 46 and long
+      wrapping titles on one page with nothing missing, cut, overlapping or below the text area, page numbers on
+      the right, type above the limit; 120 chapters and 14 very long titles: normal contents + warnings; edited
+      contents with parts; preview = print = imposed sheets with right-hand starts and blank pages; projects;
+      on/off; the estimate = the PDF; window checks. On the 1.8.0 code it stops at the missing option.
+
+## 1.8.1 - page numbers: numerals, number pictures, positions (2026-10-29; unreleased)
+Traced first: page numbers are drawn only by bf_pdf's page furniture (onPageEnd of both page templates) from
+BookDoc.page_label (pn_mode decides which pages count and where 1 is; "Roman front matter" uses roman().lower()
+before chapter 1); the same labels go to the contents (TOCEntry) and to Edit contents (toc_labels). Positions
+were "Bottom center" (default), "Bottom outside", "Top outside", "None"; pn_style (Rule above / Plain / Dashes) is
+the decoration. The preview and imposed sheets are made from that PDF (imposition only places pages; its tiny
+signature numbers are marks, not page numbers), so no second number can come from imposition. Word: a centred
+PAGE field in the footer (header for Top...), nothing else. EPUB / web page / text: no page numbers.
+- [x] bf_folio.py (new): numerals Arabic (standard) / lowercase / uppercase Roman (roman_numeral: subtractive
+      forms, 1-3999, None outside - printed in Arabic with a note) / custom digit images / custom whole-number
+      images; file-name patterns ({number}, {number:N} zero-padded; detect_pattern works it out from the files);
+      folder checks (digit_files / check_digits / check_pack: missing, damaged, non-picture, > 4000 px); Folio =
+      one book's numbers: text labels, pictures read when a page needs them (cached, each file once), the
+      warnings (missing pictures by page number, Roman range, shrunk to fit, wider than the margin); anchor() =
+      where a number goes (the four old positions computed exactly as before); drawing incl. contents numbers;
+      Word format/alignment/notes.
+- [x] Settings (bf_core DEFAULTS + PAGE_NUMBER_KEYS for older projects): pn_numerals (Arabic), pn_digits_dir,
+      pn_glyphs_dir, pn_glyph_pattern ({number}.png), pn_img_height (0 = automatic: text size for digits, 2x for
+      whole-number glyphs), pn_img_gap (1 pt). pn_position gains Top left / center / right, Bottom left / right,
+      Middle outside edge (by the page's place in the book: odd = right-hand).
+- [x] bf_pdf: BookDoc.page_value / page_label (numerals for the main sequence; the Roman front matter keeps i, ii,
+      iii); furniture draws text through anchor() (old positions identical) or the pictures, kept inside the
+      margin band (made smaller and said when too big); contents numbers drawn as the same pictures (typed numbers
+      stay text: apply_contents_edits marks typed_page); notes -> log, printing notes, preview info line.
+- [x] Projects: the ten digit pictures are kept in the book (Book.pn_digits, like the cover pictures) and used when
+      the folder is gone; whole-number folders are only referenced; save_project also stores each folder relative
+      to the project file and load_project uses that when a project was moved with its folders (moved_folders);
+      otherwise the warning says the folder isn't there and the numbers print as 1, 2, 3.
+- [x] Layout step: Numerals box; the picture settings (folder + Choose..., file names, picture height, space
+      between digits, a status line with the numbers covered / problems, and a sample) appear only for the
+      picture numerals; folders are refused (with the reason) unless usable; hints for Roman front matter, the
+      Roman range, running headers at the top centre, the middle of the edge.
+- [x] Word: Roman numerals as Word's own page-number format (w:pgNumType), left / centre / right; pictures and
+      the middle / outside edge are said in the printing notes (bf_folio.word_note).
+- [x] Checked: settings from before 1.8.1 and the standard print exactly as 1.8.0 (36 combinations of the old
+      positions, styles and numbering modes: every character and line identical). tests/test_page_numbers_181.py
+      (Cistercian numerals drawn as the codepo8 generator draws them - checked against the generator itself and
+      against Robert's pictures of 1-20, not kept in the repository).
+- [x] Found while checking (not new in 1.8.1, also in 1.8.0): with the window at 1400 x 1000, switching light/dark
+      on the Output tab froze BookForge - two wrapping hint labels side by side kept changing each other's column
+      width (BookForge.wrap_to_width rewrapped them back and forth forever). wrap_to_width no longer goes back up
+      to the width a label just left (it keeps the narrower wrapping). Checked at 19 window sizes.

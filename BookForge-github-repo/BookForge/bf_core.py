@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 
 APP_NAME = "BookForge"
-APP_VERSION = "1.8.0"
-BUILD_DATE = "2026-10-28"     # shown next to the version so different builds can be told apart
+APP_VERSION = "1.8.1"
+BUILD_DATE = "2026-10-29"     # shown next to the version so different builds can be told apart
 APP_AUTHOR = "ChunksBabyRuth"
 
 # --------------------------------------------------------------------------
@@ -61,11 +61,19 @@ DEFAULTS = {
     "pn_position": "Bottom center", "pn_style": "Rule above",
     "pn_mode": "Every page (title page = 1)", "pn_hide_openers": False,
     "pn_hide_blank": True, "pn_hide_title": False, "running_heads": False,
+    # Page numbers as Roman numerals or pictures (bf_folio; the standard prints exactly as before 1.8.1)
+    "pn_numerals": "Arabic numerals (1, 2, 3)",
+    "pn_digits_dir": "",               # folder with the digit pictures 0-9 ("Custom digit images")
+    "pn_glyphs_dir": "",               # folder with one picture per page number ("Custom whole-number images")
+    "pn_glyph_pattern": "{number}.png",  # their file names ({number:4} = with zeros, 0001.png)
+    "pn_img_height": 0.0,              # pt, 0 = automatic
+    "pn_img_gap": 1.0,                 # pt between digit pictures
     # Front & back matter
     "title_page": True, "bookplate": "On title page",
     "bookplate_text": "This Book Belongs To", "dedication": "", "toc": True,
     "toc_title": "CONTENTS", "toc_dots": False, "toc_numbers": "None",
     "toc_case": "Title Case", "toc_spacing": "Automatic (avoid a nearly empty last page)",
+    "toc_one_page": False,             # "Fit contents on one page" (off: the contents take the pages they need)
     "note_title": "", "note_text": "",
     "note_place": "After contents", "the_end": False, "notes_pages": 0,
     "blank_pages_start": 0, "blank_pages_end": 0,     # blank pages before / after the book (0 = none)
@@ -89,6 +97,10 @@ TITLE_ALIGNS = ["Centered", "Left", "Right"]
 # them and open with these defaults, which print the titles exactly where earlier versions did.
 TITLE_LAYOUT_KEYS = ("tp_align", "tp_pos", "tp_title_size", "ch_align", "part_align", "part_pos", "part_size",
                      "cover_align", "cover_pos")
+# Page-number settings added in 1.8.1: older projects don't have them and open with these defaults (Arabic
+# numerals, exactly as earlier versions printed them).
+PAGE_NUMBER_KEYS = ("pn_numerals", "pn_digits_dir", "pn_glyphs_dir", "pn_glyph_pattern", "pn_img_height",
+                    "pn_img_gap")
 # The front cover's title lines: the title page's alignment unless one is chosen for the cover itself.
 COVER_ALIGNS = ["Same as title page"] + TITLE_ALIGNS
 # "Blank pages at beginning / end": at most this many each, which keeps building and imposing quick
@@ -260,6 +272,9 @@ class Book:
     # Copies of the cover pictures, saved in projects so they still work if the picture files move
     cover_front: bytes = None
     cover_back: bytes = None
+    # Copies of the page-number digit pictures ({"0": bytes ... "9": bytes}), saved in projects like the cover
+    # pictures, used when the folder they came from isn't there any more
+    pn_digits: dict = field(default_factory=dict)
     # A PDF whose own pages are printed as they are ("Keep the pages as they are"); no chapters then
     fixed_pdf: str = ""
     fixed_pages: int = 0

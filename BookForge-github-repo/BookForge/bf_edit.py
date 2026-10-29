@@ -239,9 +239,18 @@ def _dec(o):
 def save_project(path, book, settings, app_version):
     """Write a .bookforge project (book with all edits + settings). Written to a temporary file first,
     so a failed save never destroys an earlier project file."""
+    settings = dict(settings)
+    folder = os.path.dirname(os.path.abspath(path))
+    for key in PICTURE_FOLDER_KEYS:                    # page-number picture folders: also where they are from the
+        d = (settings.get(key) or "").strip()          # project file, for when both are moved together
+        settings.pop(key + "_rel", None)
+        if d and os.path.isabs(d):
+            try:
+                settings[key + "_rel"] = os.path.relpath(d, folder)
+            except ValueError:                         # (another drive on Windows: no relative path)
+                pass
     data = {"bookforge_project": PROJECT_FORMAT, "app_version": app_version,
             "settings": settings, "book": _enc(book)}
-    folder = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=".bookforge_", suffix=".tmp", dir=folder)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -268,7 +277,31 @@ def load_project(path):
         assert isinstance(book, Book)
     except Exception as e:
         raise ValueError(f"the book inside it is damaged ({type(e).__name__})") from e
-    return book, dict(data.get("settings") or {})
+    settings = dict(data.get("settings") or {})
+    moved_folders(settings, path)
+    return book, settings
+
+
+# Page-number picture folders (bf_folio). A project keeps each one's place relative to the project file too.
+PICTURE_FOLDER_KEYS = ("pn_digits_dir", "pn_glyphs_dir")
+
+
+def moved_folders(settings, project_path):
+    """A project that was moved together with its page-number picture folders: when a folder isn't where it
+    was but is at the same place relative to the project file, use it there (settings changed in place).
+    Returns the keys that were changed. A folder found in neither place is left as it is (the Layout step,
+    the log and the printing notes say it isn't there)."""
+    changed = []
+    base = os.path.dirname(os.path.abspath(project_path))
+    for key in PICTURE_FOLDER_KEYS:
+        d = (settings.get(key) or "").strip()
+        rel = settings.pop(key + "_rel", None)
+        if d and not os.path.isdir(d) and rel:
+            cand = os.path.normpath(os.path.join(base, rel))
+            if os.path.isdir(cand):
+                settings[key] = cand
+                changed.append(key)
+    return changed
 
 
 # --------------------------------------------------------------------------- fonts for the editor display

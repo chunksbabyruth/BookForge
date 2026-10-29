@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Optional existing release tag to attach packages to (for example v1.8.0)"
+        description: "Optional existing release tag to attach packages to (for example v1.8.1)"
         required: false
         default: ""
         type: string
@@ -482,44 +482,23 @@ jobs:
             mac_note="The macOS app is not yet signed with a paid Apple Developer ID, so the first time you open it macOS asks you to allow it: open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. If macOS says the app is \"damaged\", run \`xattr -dr com.apple.quarantine /Applications/BookForge.app\` in Terminal once. The DMG includes a *How to open BookForge* note with these steps."
           fi
           cat > release-notes.md <<EOF
-          **BookForge v1.8.0 — edit every page of the book, titles placed where you want them, and fewer surprises**
+          **BookForge v1.8.1 — page numbers your way, and the whole contents on one page**
 
-          A feature and reliability update.
+          A small feature update. Books, settings and projects from earlier versions print exactly as before until you change one of the new options.
 
-          **Edit the front and back pages**
-          - Specific Text Edit now lists the front pages (title page, bookplate, dedication, extra front page, work info, summary, author's notes, contents, text before chapter 1), then the chapters, then the back pages (THE END, new end pages for an afterword or acknowledgements, the Notes pages and the back-cover text). Edit them like a chapter: words, fonts, sizes, bold, italics, underline, colours, alignment, indents and space above, with pictures on the extra front page, the text before chapter 1 and the end pages. **Back to automatic** undoes your changes to a page. The Front & back tab has a button for each page.
-          - The contents page can be edited as text: change or format a line to rename an entry, type a new line to add one, remove a line to hide one, **Move up / Move down**, **Indent +**, and click a page number to type your own (the chapter stays on its real page).
-          - Edited pages go into the preview, the print PDF, the printing sheets, the cover and the EPUB, Word, web page and text files, in the same order everywhere, and are saved in projects. What a format can't hold is said in the printing notes instead of being left out quietly: the bookplate is a print page (print PDF and Word), the Notes pages are for printing only, the EPUB, web page and text file have no page numbers, and the text file has no pictures.
-          - The Word document now uses an edited contents: its entries in their order, typed page numbers, and the real page numbers as fields Word fills in.
-          - The text before chapter 1 is now in the EPUB, Word, web page and text files too.
+          **Page numbers**
+          - New **Numerals** choice (Layout tab, Page numbers & headers): Arabic 1, 2, 3 (standard), lowercase or uppercase Roman numerals (IV, IX, XL, XC, CD, CM..., up to 3999), or your own pictures.
+          - **Custom digit images:** choose a folder with a picture for each digit, 0.png to 9.png. BookForge puts them side by side (page 128 = the pictures of 1, 2 and 8), all at one size, lined up on their bottom edge, with the height and spacing you set. Transparent PNGs work.
+          - **Custom whole-number images:** choose a folder with one picture per page number, for numeral systems such as Cistercian numerals where 128 is a single glyph. The file names (for example 128.png, 0128.png or cistercian_128.png) are worked out for you. Page numbers 1 to 9999; there is no 0. Only the pictures of the pages being printed are read.
+          - Folders are checked when you choose them, and you see a sample number. A missing or damaged picture never stops the book: that page gets 1, 2, 3 and the preview, the log and the printing notes say which pages.
+          - New positions: top left, centre or right, bottom left or right, and **Middle outside edge** (halfway down the outside margin: left on left-hand pages, right on right-hand pages). Bottom centre, bottom outside and top outside are still there.
+          - The preview, the print PDF, the printing sheets and the contents page all use your choice; imposition never adds a second number. Which pages are numbered, where 1 starts and the Roman front matter (i, ii, iii) are unchanged.
+          - The ten digit pictures are kept in saved projects. A whole-number folder is found again when you move it together with the project; otherwise BookForge tells you it isn't there.
+          - Word gets Roman numerals and left, centre or right placement; it can't use pictures or the middle of the edge, and the printing notes say so.
 
-          **Titles and headings**
-          - New on the Layout tab, **Titles: alignment & position**: the title page block left, centred or right, how far down it starts and the book title's size; chapter titles' alignment and how far down a chapter starts; part titles' alignment, position and size. The headings BookForge adds (Contents, Work info, Notes...) follow the chapter titles. The standard values print exactly as before.
-          - These settings now reach every format: the Word document puts the titles in the same places on its pages as the PDF, and the EPUB and web page use the same alignment and sizes, with each position as space above the title.
-          - The front cover has its own **Cover title alignment** (standard: the same as the title page) and **Cover title position** (Output tab, Cover).
-          - Fixed: a chapter title took the alignment or indent of the paragraph before it.
-
-          **Blank pages and signatures**
-          - Fixed the causes of unexpected empty pages: space after a picture, a dedication line, the fanfic summary or author's notes moving onto a page of its own; an untitled chapter opening with a full-page picture; an emptied THE END; long first paragraphs with **Drop chapter start down**; and a drop bigger than a small page has room for (which could also stop the book with an error).
-          - Every book is checked for pages with nothing printed that no setting asked for; the preview, the log and the printing notes name them.
-          - Custom signature sizes (for example 4, 4, 6, 6) are used in order and only as many as the book needs; only the last signature is completed with blank pages. They must be whole numbers of sheets: anything else is pointed out before anything is made, never guessed.
-          - The printing notes list the pages the layout leaves blank on purpose (left-hand pages before right-hand chapter starts, the back of the cover picture) apart from the padding, the flyleafs and the blank pages you added.
-
-          **Contents and chapters**
-          - Merging chapters keeps a page number you typed for the merged chapter's contents entry; when both chapters have one, BookForge asks which to keep (or cancel the merge).
-          - An edited contents follows the chapters when you move them, and a chapter you leave out keeps its contents changes for when you put it back.
-          - Continuous chapters: the contents page number is the page the chapter really starts on.
-          - Edit contents: Preview and Make the book use the changes in an open window; closing it asks before throwing changes away.
-
-          **Your source and your edits**
-          - **Re-read source** on the Source tab reads the file or pasted text again, after saying what would be lost. The source file is never changed: making the book never writes over it (a file that would get its name is saved with (BookForge) added), and Save project refuses to save onto it.
-          - Pictures in Specific Text Edit can't be lost, typed into or joined to text; cut, copy and paste carry the picture itself.
-          - Closing BookForge or starting a new book right after typing asks to save first; switching light/dark no longer empties the editor.
-          - A book with nothing to print says what to do instead of making empty files.
-          - An open preview says it is out of date when a setting changes; the editor shows headings in the Titles & headings font.
-
-          **Clearer names**
-          - **Book page size** (Layout tab: the size of each finished page) and **Printer paper size** (Output tab: the sheets that go through your printer) are named that way everywhere; the cover's paper list is **Paper weight (sets spine width)**. Settings, presets and projects from earlier versions open as before.
+          **Contents**
+          - New **Fit contents on one page** (Front & back tab, Contents page; off as standard). It puts a long contents list on one page: first less space between entries, then tighter lines, then slightly smaller contents type (never below 8 pt or 70 % of the body text), then less space under the heading. No entry is left out or cut, long titles wrap and the page numbers stay on the right.
+          - When the list can't fit at a readable size, the contents keep their normal look over the pages they need, and BookForge says so, with what you can do about it. A line under the option tells you before you make the book.
 
           **Downloads**
 

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from bf_core import PAPERS, page_size_inches, plain, esc
 from bf_pdf import font_roles, apply_case, auto_label, LABELISH, title_layout, _num
+import bf_folio
 import bf_matter
 
 
@@ -1148,7 +1149,22 @@ def build_docx(book, s, out_path):
 
     if s["pn_position"] != "None":
         fp = sec.footer.paragraphs[0] if not s["pn_position"].startswith("Top") else sec.header.paragraphs[0]
-        fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        # left / right as chosen; centred for the centre, the outside edge and the middle of the edge (Word keeps
+        # page numbers in the header or footer - the printing notes say so, see bf_folio.word_note)
+        fp.alignment = {"left": WD_ALIGN_PARAGRAPH.LEFT, "right": WD_ALIGN_PARAGRAPH.RIGHT}.get(
+            bf_folio.word_alignment(s), WD_ALIGN_PARAGRAPH.CENTER)
+        fmt = bf_folio.word_number_format(s)          # Roman numerals: Word's own page-number format
+        if fmt:
+            pg = OxmlElement("w:pgNumType")
+            pg.set(qn("w:fmt"), fmt)
+            sp = sec._sectPr
+            later = [c for c in sp if c.tag in {qn("w:" + n) for n in (
+                "cols", "formProt", "vAlign", "noEndnote", "titlePg", "textDirection", "bidi", "rtlGutter",
+                "docGrid", "printerSettings", "sectPrChange")}]
+            if later:
+                later[0].addprevious(pg)              # (the place the Word file format expects it)
+            else:
+                sp.append(pg)
         r = fp.add_run()
         for kind in ("begin", "instr", "end"):
             if kind == "instr":

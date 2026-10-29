@@ -16,13 +16,14 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from bf_core import (DEFAULTS, PAGE_SIZES, PAPERS, PDF_MODES, BLANK_PAGES_MAX, parse_blank_count,
-                     TITLE_ALIGNS, TITLE_LAYOUT_KEYS, COVER_ALIGNS,
+                     TITLE_ALIGNS, TITLE_LAYOUT_KEYS, PAGE_NUMBER_KEYS, COVER_ALIGNS,
                      APP_NAME, APP_VERSION, APP_AUTHOR, BUILD_DATE,
                      load_book, apply_info, plain, esc, Block, Chapter, page_size_inches, custom_page_inches,
                      not_the_source)
 import bf_fonts
 from bf_fonts import SAME_BODY, SAME_HEAD
 from bf_pdf import (HYPH_LANGS, TOC_SPACING, contents_entries, contents_rows, rows_to_edits, empty_pages_note,
+                    contents_fit_estimate, contents_fit_note,
                     merged_contents_page, merge_contents_edits, swap_contents_entries, keep_left_out)
 from bf_impose import LAYOUT_NAMES, SHEETS, SIG_FORMATS, SOURCE_ROT, SEWING_WHERE, FOLD_SIDES, UNITS, UNIT_CHOICES
 import bf_impose
@@ -30,6 +31,7 @@ import bf_placement
 from bf_build import (run_build, default_out_dir, build_preview, book_problem, nothing_to_print, NothingToPrint,
                       check_settings)
 import bf_edit
+import bf_folio
 import bf_matter
 import bf_pictures
 import bf_update
@@ -71,6 +73,17 @@ The seven steps are the tabs along the top, in order (Ctrl+1 ... Ctrl+7):
    book (they are part of the printed book, have no page number and are
    folded into the signatures like any other page; the EPUB, Word, web page
    and text files leave them out).
+   "Fit contents on one page" (Contents page box, off as standard) puts a
+   long contents list on one page: first less space between the entries,
+   then tighter lines, then slightly smaller contents type (never below
+   8 pt or 70 % of the body text size), then less space under the heading.
+   Every entry stays, long titles wrap, and the page numbers stay on the
+   right. If the list still doesn't fit, nothing is left out or cut: the
+   contents take the pages they need, as without the option, and BookForge
+   says so (the line under the option tells you before you make the book).
+   It changes the contents page of the print PDF, the preview and the
+   printing sheets only; the chapters and their text are not touched (they
+   just start earlier if the contents take fewer pages).
 4. CHAPTERS: check that the chapters were found correctly. You can rename,
    skip, reorder or merge chapters in the list. Merging keeps a page number
    you typed for the merged chapter's contents entry (it goes to the chapter
@@ -85,6 +98,27 @@ The seven steps are the tabs along the top, in order (Ctrl+1 ... Ctrl+7):
    into space above the title (a screen has no fixed page). The front
    cover has its own title alignment and position (Output step, Cover;
    standard: the title page's alignment, 32 % down the front).
+   Page numbers: "Position" (bottom or top: left, centre, right or the
+   outside edge; the middle of the outside edge - on the left of left-hand
+   pages, on the right of right-hand pages; or none). "Numerals": Arabic
+   1, 2, 3 (standard), lowercase or uppercase Roman numerals (up to 3999;
+   a bigger number prints as 1, 2, 3), or pictures: "Custom digit images"
+   takes a folder with a picture for each digit (0.png ... 9.png) and puts
+   them side by side (128 = 1, 2, 8); "Custom whole-number images" takes a
+   folder with one picture per page number, e.g. Cistercian numerals, named
+   by a pattern such as {number}.png or {number:4}.png (0001.png), numbers
+   1 to 9999. BookForge checks a folder when you choose it and shows a
+   sample; only the pictures of the pages being printed are read. A page
+   whose picture is missing or damaged gets its number as 1, 2, 3 and the
+   preview, the log and the printing notes say which. "Picture height" (0 =
+   automatic) and "Space between digits" set their size; they always stay
+   inside the margin. With "Roman front matter" the pages before chapter 1
+   keep i, ii, iii. The contents page shows the same numerals (numbers you
+   typed in Edit contents print as typed). The ten digit pictures are kept
+   in a saved project; a whole-number folder is not, so keep it (or move it
+   together with the project). Word uses Roman numerals and left / centre /
+   right too, but not pictures or the middle of the edge (the printing
+   notes say so); the EPUB, web page and text file have no page numbers.
 6. SPECIFIC TEXT EDIT: change the text, styles and fonts of any chapter.
    "Insert picture..." adds a picture where the cursor is; double-click a
    picture to set its size, alignment and whether it sits in the text, on a
@@ -2132,7 +2166,10 @@ class PreviewWindow:
                                  "Nothing has been saved yet." +
                                  (" Printing sheets show how pages are arranged and folded." if self.sheets else "") +
                                  ("  WARNING: " + empty_pages_note(result["empty_pages"])
-                                  if result.get("empty_pages") else ""))
+                                  if result.get("empty_pages") else "") +
+                                 ("  WARNING: " + contents_fit_note(result["contents_fit"])
+                                  if result.get("contents_fit") and not result["contents_fit"]["fits"] else "") +
+                                 "".join("  WARNING: " + n for n in result.get("folio_notes") or []))
         self.i = min(keep, len(self.items) - 1)
         self.w.title(f"Preview \u2014 {result['title']}")
         self.w.lift()
@@ -2766,6 +2803,8 @@ class App(tk.Tk):
     def _setting_changed(self):
         """A setting was changed: when a preview is open, check (shortly, once typing stops) whether it still
         shows the book as it will print."""
+        self._toc_fit_soon()
+        self._number_pictures_soon()
         if getattr(self, "_loading_settings", False):
             return
         pw = getattr(self, "preview_win", None)
@@ -2778,6 +2817,55 @@ class App(tk.Tk):
             except (tk.TclError, ValueError):
                 pass
         self._stale_job = self.after(500, self._check_preview_current)
+
+    def _toc_fit_soon(self):
+        """Work out again (shortly, once typing stops) whether the contents fit on one page."""
+        if "toc_fit_label" not in self.__dict__:
+            return
+        job = self.__dict__.get("_toc_fit_job")
+        if job:
+            try:
+                self.after_cancel(job)
+            except (tk.TclError, ValueError):
+                pass
+        self._toc_fit_job = self.after(400, self.update_toc_fit)
+
+    def update_toc_fit(self):
+        """The line under "Fit contents on one page": whether the contents fit on one page (an estimate made
+        the way the PDF is made; the preview and the printing notes say what was actually done)."""
+        self._toc_fit_job = None
+        lab = self.__dict__.get("toc_fit_label")
+        if lab is None:
+            return
+        text = ""
+        try:
+            s = self.collect()
+            if not s.get("toc"):
+                text = ""
+            elif self.book is None:
+                text = ("When the source has been read, this says whether the contents fit on one page." if
+                        s.get("toc_one_page") else "")
+            elif getattr(self.book, "fixed_pdf", ""):
+                text = ""
+            else:
+                fit = contents_fit_estimate(self.book, s)
+                if fit is None:
+                    text = ""
+                elif not s.get("toc_one_page"):
+                    text = (f"The contents take about {fit['pages']} pages." + (
+                        " Tick to fit them on one page." if fit["fits"] else
+                        " They are too long to fit on one page at a readable size.")) if fit["pages"] > 1 else ""
+                elif fit["fits"]:
+                    text = ("The contents fit on one page" + (
+                        f" ({contents_fit_note(fit)})." if fit["step"] else " as they are."))
+                else:
+                    text = "\u26a0 " + contents_fit_note(fit, ahead=True)
+        except Exception as e:                         # (an estimate: never in the way of the settings)
+            text = f"(Couldn't work out whether the contents fit: {e})"
+        try:
+            lab.configure(text=text)
+        except tk.TclError:
+            pass
 
     def _check_preview_current(self):
         """Mark an open preview "Out of date" when the settings changed after it was made, so a font (or any
@@ -2865,8 +2953,17 @@ class App(tk.Tk):
         """Let a hint/message label wrap to the width its column really gets (narrow windows included)."""
         def fit(e):
             w = max(40, e.width - 4)
-            if int(str(label.cget("wraplength")) or 0) != w:
-                label.configure(wraplength=w)
+            cur = int(str(label.cget("wraplength")) or 0)
+            if cur == w:
+                return
+            # Two labels side by side can make each other's columns wider and narrower in turn (each new
+            # wrapping changes how much room the other gets), which kept the window busy forever (seen after
+            # switching light/dark at 1400 x 1000). Going back up to the width just left: keep the narrower
+            # wrapping, which always fits.
+            if w > cur and getattr(label, "_bf_last_wrap", None) == w:
+                return
+            label._bf_last_wrap = cur
+            label.configure(wraplength=w)
         label.bind("<Configure>", fit, add="+")
         return label
 
@@ -2989,6 +3086,8 @@ class App(tk.Tk):
             self.after(50, self.auto_scan)
         if th.TABS[i][0] == "edit" and getattr(self, "editor", None) is not None:
             self.editor.on_show()
+        if th.TABS[i][0] == "front":
+            self._toc_fit_soon()
 
     def _dropdown_open(self):
         """True while a dropdown list is open (its list is a separate little window named ...popdown)."""
@@ -3412,6 +3511,7 @@ class App(tk.Tk):
                                                  "save the project under another name.")
             return False
         self._embed_cover_art()
+        self._embed_number_pictures()
         try:
             bf_edit.save_project(p, self.book, self.collect(), APP_VERSION)
         except Exception as e:
@@ -3440,8 +3540,8 @@ class App(tk.Tk):
             return
         settings.pop("dark_mode", None)
         for k in ("blank_pages_start", "blank_pages_end",     # projects made before these existed: none
-                  "imp_offset_x", "imp_offset_y") + TITLE_LAYOUT_KEYS:  # (titles: where they always printed)
-            settings.setdefault(k, DEFAULTS[k])
+                  "imp_offset_x", "imp_offset_y", "toc_one_page") + TITLE_LAYOUT_KEYS + PAGE_NUMBER_KEYS:
+            settings.setdefault(k, DEFAULTS[k])                       # (as they always printed)
         self.apply(settings)
         self._mode_changed()
         self.book, self.edited, self.unsaved = book, True, False
@@ -3477,6 +3577,196 @@ class App(tk.Tk):
         self.textbox(n, "note_text", height=7).grid(row=2, column=0, columnspan=2, sticky="nsew", pady=4)
         self._matter_row(n, 3, "note")
         t.rowconfigure(2, weight=1)
+
+    # ------------------------------------------------------------ page numbers as pictures
+    def _number_pictures_box(self, n, row):
+        """Under "Numerals": what the choice means (row + 1) and - only for the picture numerals - the folder of
+        pictures, their file names, size and spacing, whether they can be used and what a number looks like."""
+        self.pn_hint = ttk.Label(n, style=self.S("CardHint.TLabel"), justify="left", wraplength=420)
+        self.pn_hint.grid(row=row + 1, column=0, columnspan=2, sticky="we", padx=6, pady=(0, 2))
+        self.wrap_to_width(self.pn_hint)
+        box = ttk.Frame(n, style=self.S("Card.TFrame"))
+        box.grid(row=row, column=0, columnspan=2, sticky="we", padx=(18, 0), pady=(0, 4))
+        box.columnconfigure(1, weight=1)
+        self.pn_box = box
+        self.pn_rows = {}
+
+        def folder_row(r, label, key, cmd):
+            lab = ttk.Label(box, text=label, style=self.S("Card.TLabel"))
+            lab.grid(row=r, column=0, sticky="w", padx=6, pady=3)
+            f = ttk.Frame(box, style=self.S("Card.TFrame"))
+            f.grid(row=r, column=1, sticky="we", padx=6, pady=3)
+            f.columnconfigure(0, weight=1)
+            ttk.Entry(f, textvariable=self.var(key), width=28, style=self.S("TEntry")).grid(row=0, column=0,
+                                                                                         sticky="we")
+            ttk.Button(f, text="Choose...", command=cmd, style=self.S("TButton")).grid(row=0, column=1, padx=(6, 0))
+            return [lab, f]
+        self.pn_rows["digits"] = folder_row(0, "Digit pictures folder", "pn_digits_dir", self.choose_digit_folder)
+        self.pn_rows["whole"] = folder_row(1, "Number pictures folder", "pn_glyphs_dir", self.choose_number_folder)
+        lab = ttk.Label(box, text="File names", style=self.S("Card.TLabel"))
+        lab.grid(row=2, column=0, sticky="w", padx=6, pady=3)
+        cb = ttk.Combobox(box, textvariable=self.var("pn_glyph_pattern"), values=bf_folio.PATTERNS, width=28,
+                          style=self.S("TCombobox"))
+        cb.grid(row=2, column=1, sticky="we", padx=6, pady=3)
+        self.pn_rows["whole"] += [lab, cb]
+        self.spin(box, 3, "Picture height (pt)", "pn_img_height", 0, bf_folio.IMG_HEIGHT_MAX, 0.5, "0 = automatic")
+        self.spin(box, 4, "Space between digits (pt)", "pn_img_gap", 0, bf_folio.GAP_MAX, 0.25)
+        self.pn_rows["gap"] = [w for w in box.grid_slaves(row=4)]
+        self.pn_status = ttk.Label(box, style=self.S("CardHint.TLabel"), justify="left", wraplength=400)
+        self.pn_status.grid(row=5, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))
+        self.wrap_to_width(self.pn_status)
+        self.pn_sample = ttk.Label(box, style=self.S("Card.TLabel"), compound="left")
+        self.pn_sample.grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 4))
+        self.after_idle(self.update_number_pictures)
+
+    def _number_pictures_soon(self):
+        """Check the page-number pictures again shortly (once typing stops)."""
+        if "pn_box" not in self.__dict__:
+            return
+        job = self.__dict__.get("_pn_job")
+        if job:
+            try:
+                self.after_cancel(job)
+            except (tk.TclError, ValueError):
+                pass
+        self._pn_job = self.after(300, self.update_number_pictures)
+
+    def update_number_pictures(self, force=False):
+        """Show the picture settings only for the picture numerals; say whether the chosen pictures can be used,
+        which numbers a whole-number folder has, and what a page number looks like."""
+        self._pn_job = None
+        box = self.__dict__.get("pn_box")
+        if box is None:
+            return
+        try:
+            s = self.collect()
+        except tk.TclError:
+            return
+        mode = bf_folio.numerals(s)
+        stamp = []
+        for k in ("pn_digits_dir", "pn_glyphs_dir"):
+            try:
+                stamp.append(os.path.getmtime(s.get(k) or ""))
+            except OSError:
+                stamp.append(None)
+        key = (mode, tuple(s.get(k) for k in PAGE_NUMBER_KEYS), s.get("pn_mode"), s.get("pn_position"),
+               s.get("running_heads"), tuple(stamp), len(getattr(self.book, "pn_digits", None) or {}), str(box))
+        if not force and key == self.__dict__.get("_pn_key"):
+            return                                   # nothing that matters here changed
+        self._pn_key = key
+        hint = []
+        if s.get("pn_mode", "").startswith("Roman") and mode != bf_folio.ARABIC:
+            hint.append("The pages before chapter 1 keep i, ii, iii (Numbering: Roman front matter); these numerals "
+                        "are for chapter 1 on.")
+        if mode in (bf_folio.ROMAN_LOWER, bf_folio.ROMAN_UPPER):
+            hint.append(f"Roman numerals go up to {bf_folio.ROMAN_MAX}; a bigger page number prints as 1, 2, 3.")
+        if s.get("running_heads") and s.get("pn_position") in ("Top center",):
+            hint.append("The running headers sit at the top centre too, so they would overlap the numbers: choose "
+                        "another position or turn the running headers off.")
+        if s.get("pn_position") == bf_folio.MIDDLE:
+            hint.append("Middle outside edge: halfway down the outside margin - on the left of left-hand pages, on "
+                        "the right of right-hand pages.")
+        try:
+            self.pn_hint.configure(text=" ".join(hint))
+            self.pn_hint.grid() if hint else self.pn_hint.grid_remove()
+        except tk.TclError:
+            return
+        if mode not in bf_folio.PICTURE_MODES:
+            box.grid_remove()
+            return
+        box.grid()
+        digits = mode == bf_folio.DIGIT_IMAGES
+        for key, show in (("digits", digits), ("whole", not digits), ("gap", digits)):
+            for w in self.pn_rows[key]:
+                w.grid() if show else w.grid_remove()
+        img, text = None, ""
+        try:
+            if digits:
+                imgs, problems = bf_folio.check_digits(s.get("pn_digits_dir", ""))
+                if problems:
+                    copies = getattr(self.book, "pn_digits", None) or {}
+                    text = "\u26a0 " + " ".join(problems) + (" The copies saved in the project will be used." if
+                                                              len(copies) == 10 else
+                                                              " Until then the numbers print as 1, 2, 3.")
+                else:
+                    text = "All ten digit pictures can be used. Sample: 128 and 3,047."
+                    img = [bf_folio.compose_preview([imgs[d] for d in "128"], 36, 2),
+                           bf_folio.compose_preview([imgs[d] for d in "3047"], 36, 2)]
+            else:
+                nums, sample, im, problems = bf_folio.check_pack(s.get("pn_glyphs_dir", ""),
+                                                                 s.get("pn_glyph_pattern", ""))
+                if problems:
+                    text = "\u26a0 " + " ".join(problems) + " Until then the numbers print as 1, 2, 3."
+                else:
+                    text = (f"Pictures for page numbers {bf_folio.describe_numbers(nums)}. Pages without a picture "
+                            f"print their number as 1, 2, 3 (and BookForge says which). Sample: page {sample} "
+                            f"(\u201c{bf_folio.pattern_name(s['pn_glyph_pattern'], sample)}\u201d).")
+                    img = [bf_folio.compose_preview([im], 60, 0)]
+        except Exception as e:                       # (a check: never in the way of the settings)
+            text = f"(Couldn't check the pictures: {e})"
+        self.pn_status.configure(text=text)
+        if img:
+            from PIL import Image
+            gap = 24
+            w = sum(i.size[0] for i in img) + gap * (len(img) + 1)
+            h = max(i.size[1] for i in img) + 16
+            paper = Image.new("RGBA", (w, h), (255, 255, 255, 255))    # on white, like the page
+            x = gap
+            for i in img:
+                paper.alpha_composite(i, (x, (h - i.size[1]) // 2))
+                x += i.size[0] + gap
+            photo = tk_photo(paper)
+            self.pn_sample.configure(image=photo)
+            self.pn_sample.image = photo
+            self.pn_sample.grid()
+        else:
+            self.pn_sample.configure(image="")
+            self.pn_sample.image = None
+            self.pn_sample.grid_remove()
+
+    def choose_digit_folder(self):
+        """Choose the folder of digit pictures: it is used only if all ten can be read."""
+        cur = self.var("pn_digits_dir").get().strip()
+        p = filedialog.askdirectory(title="Folder with the digit pictures 0-9", initialdir=cur or None)
+        if not p:
+            return
+        imgs, problems = bf_folio.check_digits(p)
+        if problems:
+            messagebox.showerror("Digit pictures", "That folder can't be used for page numbers:\n\n" +
+                                 "\n".join(problems) + "\n\nThe folder needs one picture per digit, named 0.png, "
+                                 "1.png ... 9.png (PNG, JPEG, GIF, BMP or WebP; a transparent background works best).")
+            return
+        self.var("pn_digits_dir").set(p)
+        if self.book is not None:
+            self.book.pn_digits = bf_folio.digit_copies(p) or {}
+        self.update_number_pictures(force=True)
+
+    def choose_number_folder(self):
+        """Choose the folder with a picture for each page number; its file-name pattern is worked out from the
+        files (e.g. cistercian_128.png -> cistercian_{number}.png)."""
+        cur = self.var("pn_glyphs_dir").get().strip()
+        p = filedialog.askdirectory(title="Folder with a picture for each page number", initialdir=cur or None)
+        if not p:
+            return
+        pattern = bf_folio.detect_pattern(p) or self.var("pn_glyph_pattern").get()
+        nums, sample, im, problems = bf_folio.check_pack(p, pattern)
+        if problems:
+            messagebox.showerror("Number pictures", "That folder can't be used for page numbers:\n\n" +
+                                 "\n".join(problems) + "\n\nIt needs one picture per page number, named the same "
+                                 "way, e.g. 1.png, 2.png ... or cistercian_1.png, cistercian_2.png ...")
+            return
+        self.var("pn_glyphs_dir").set(p)
+        self.var("pn_glyph_pattern").set(pattern)
+        self.update_number_pictures(force=True)
+
+    def _embed_number_pictures(self):
+        """Keep copies of the digit pictures in the book (like the cover pictures), so a saved project still has
+        them when the folder isn't there."""
+        if self.book is None or self.var("pn_numerals").get() != bf_folio.DIGIT_IMAGES:
+            return
+        copies = bf_folio.digit_copies(self.var("pn_digits_dir").get().strip())
+        if copies:
+            self.book.pn_digits = copies
 
     def _matter_row(self, parent, row, key):
         """Under a plain text box: Edit with formatting... (Specific Text Edit) and what the box is now."""
@@ -3552,16 +3842,17 @@ class App(tk.Tk):
                    ["Keep the source's own", "* * *", "*", "~ ~ ~", "# # #", "Blank space"])
 
         n = self.group(t, "Page numbers & headers", row=1, column=1)
-        self.combo(n, 0, "Position", "pn_position",
-                   ["Bottom center", "Bottom outside", "Top outside", "None"])
+        self.combo(n, 0, "Position", "pn_position", bf_folio.POSITIONS)
         self.combo(n, 1, "Style", "pn_style", ["Rule above", "Plain", "Dashes"])
-        self.combo(n, 2, "Numbering", "pn_mode",
+        self.combo(n, 2, "Numerals", "pn_numerals", bf_folio.NUMERALS)
+        self._number_pictures_box(n, 3)
+        self.combo(n, 5, "Numbering", "pn_mode",
                    ["Every page (title page = 1)", "Start at 1 on first chapter",
                     "Roman front matter, 1 on first chapter"])
-        self.check(n, 3, "Hide number on chapter opening pages", "pn_hide_openers")
-        self.check(n, 4, "Hide number on blank pages", "pn_hide_blank")
-        self.check(n, 5, "Hide number on the title page", "pn_hide_title")
-        self.check(n, 6, "Running headers (book title / chapter title)", "running_heads")
+        self.check(n, 6, "Hide number on chapter opening pages", "pn_hide_openers")
+        self.check(n, 7, "Hide number on blank pages", "pn_hide_blank")
+        self.check(n, 8, "Hide number on the title page", "pn_hide_title")
+        self.check(n, 9, "Running headers (book title / chapter title)", "running_heads")
 
         # Titles BookForge makes (not headings typed in the text): alignment and where they sit on the page
         tg = self.group(t, "Titles: alignment & position", row=2, column=1)
@@ -3607,6 +3898,11 @@ class App(tk.Tk):
         ttk.Label(c, text="Rename, reorder, hide or add entries and fix page numbers.",
                   style=self.S("CardHint.TLabel"), wraplength=300, justify="left").grid(row=6, column=1, sticky="w",
                                                                                          padx=6)
+        self.check(c, 7, "Fit contents on one page", "toc_one_page")
+        # whether they would fit, worked out from the book and the settings (before any preview)
+        self.toc_fit_label = ttk.Label(c, style=self.S("CardHint.TLabel"), justify="left", wraplength=420)
+        self.toc_fit_label.grid(row=8, column=0, columnspan=2, sticky="we", padx=6, pady=(0, 4))
+        self.wrap_to_width(self.toc_fit_label)
         ff = self.group(t, "Fanfiction downloads (AO3, FanFicFare)", row=2, column=0, columnspan=2)
         self.combo(ff, 0, "Work info (rating, fandom, tags...)", "fic_info", ["Leave out", "Add a work info page"])
         self.combo(ff, 1, "Story summary", "fic_summary", ["Add a summary page", "Leave out"])
@@ -4817,6 +5113,7 @@ class App(tk.Tk):
 
     def fill_list(self):
         sel = self._sel()
+        self._toc_fit_soon()
         self.ctree.delete(*self.ctree.get_children())
         if not self.book:
             return
